@@ -10,10 +10,11 @@ fn main() -> std::io::Result<()> {
     let mut replay = Replay::new(seed, world.ships.len());
     let mut bot = ScriptedBot;
     let mut commander = ScriptedCommander::new(seed);
+    let mut raids = 0;
     while !world.done() {
         if world.tick % 450 == 0 {
             for team in 0..world.bases.len() as u8 {
-                commander.command(&mut world, team);
+                raids += commander.command(&mut world, team);
             }
         }
         let actions: Vec<Action> = (0..world.ships.len()).map(|i| bot.act(&observe(&world, i), &world.cfg)).collect();
@@ -21,6 +22,6 @@ fn main() -> std::io::Result<()> {
         replay.record(&world, &actions);
     }
     replay.save(&path)?;
-    println!("{path}: {} ticks, final state hash {:016x}", replay.ticks(), world.state_hash());
+    println!("{path}: {} ticks, {raids} raid orders, final state hash {:016x}", replay.ticks(), world.state_hash());
     Ok(())
 }

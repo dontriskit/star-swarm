@@ -146,20 +146,24 @@ impl ScriptedCommander {
         ScriptedCommander { rng: Rng::new(seed) }
     }
 
-    pub fn command(&mut self, world: &mut World, team: u8) {
+    /// Re-issues orders to one team and returns how many ships were sent to raid.
+    pub fn command(&mut self, world: &mut World, team: u8) -> usize {
         let teams = world.bases.len() as u32;
         if teams < 2 {
-            return;
+            return 0;
         }
         let other = (team as u32 + 1 + self.rng.below(teams - 1)) % teams;
         let target = world.bases[other as usize];
+        let mut raiders = 0;
         for ship in world.ships.iter_mut().filter(|s| s.team == team) {
             let levels: u32 = ship.levels.iter().map(|l| *l as u32).sum();
             ship.order = if levels >= Self::RAID_LEVELS {
+                raiders += 1;
                 Order { kind: OrderKind::Attack, target }
             } else {
                 Order::default()
             };
         }
+        raiders
     }
 }

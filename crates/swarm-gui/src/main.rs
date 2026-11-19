@@ -383,7 +383,13 @@ fn main() {
         match (arg.as_str(), args.next()) {
             ("--seed", Some(v)) => seed = v.parse().unwrap_or_else(|_| fail(&format!("--seed wants a number, got {v}"))),
             ("--replay", Some(path)) => {
-                playback = Some(Replay::load(&path).unwrap_or_else(|e| fail(&format!("cannot read replay {path}: {e}"))))
+                let replay = Replay::load(&path).unwrap_or_else(|e| fail(&format!("cannot read replay {path}: {e}")));
+                // Replays do not carry their config yet; one recorded with another fleet size cannot be stepped.
+                let ships = Config::default().teams * Config::default().ships_per_team;
+                if replay.ships as usize != ships {
+                    fail(&format!("replay {path} has {} ships, this build plays matches of {ships}", replay.ships));
+                }
+                playback = Some(replay)
             }
             _ => fail("usage: swarm-gui [--seed N] [--replay FILE]"),
         }
@@ -482,7 +488,7 @@ mod tests {
 #[cfg(test)]
 mod window_tests {
     use crate::Game;
-    use gpui_kit::{Modifiers, TestAppContext, VisualTestContext, init, point, px, size};
+    use gpui_kit::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, init, point, px, size};
     use swarm_sim::{OrderKind, Vec2};
 
     /// Drives the real window: events go through gpui's hit testing and the
@@ -520,5 +526,31 @@ mod window_tests {
             let target = g.world.ships[picked[0]].order.target;
             assert!(g.world.delta(target, Vec2::new(900.0, 1200.0)).len() < 2.0, "target {target:?}");
         });
+    }
+
+    /// In a running match the window is rebuilt every frame, so a redraw
+    /// always lands between a press and its release. Clicks must survive it.
+    #[gpui_kit::test]
+    fn clicks_survive_a_redraw_between_press_and_release(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (game, cx) = cx.add_window_view(|_, _| Game { paused: true, ..Game::new(1, None) });
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.run_until_parked();
+
+        let slow_click = |cx: &mut VisualTestContext, game: &Entity<Game>, at: Point<Pixels>| {
+            cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+            game.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            cx.run_until_parked();
+        };
+
+        let row = cx.debug_bounds("ship-1").expect("ship row was not painted").center();
+        slow_click(cx, &game, row);
+        assert_eq!(game.read_with(cx, |g, _| g.selected.len()), 1);
+
+        let attack = cx.debug_bounds("order-1").expect("order button was not painted").center();
+        slow_click(cx, &game, attack);
+        assert_eq!(game.read_with(cx, |g, _| g.order), OrderKind::Attack);
     }
 }

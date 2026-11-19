@@ -8,5 +8,8 @@ description = "Commander GUI for Star Swarm: give orders to a fleet that flies i
 gpui-kit = "0.10.0"
 swarm-sim = { path = "../swarm-sim" }
 
+# test-support pulls gpui-fast into dependency resolution, which wants wgpu =30.0.1.
+# Cargo.lock pins that version; if `cargo update` breaks resolution, run
+# `cargo update -p wgpu --precise 30.0.1`.
 [dev-dependencies]
 gpui-kit = { version = "0.10.0", features = ["test-support"] }
