@@ -1,11 +1,13 @@
-use crate::sim::{ORDER_KINDS, OrderKind, Vec2, World};
+use crate::sim::{Config, ORDER_KINDS, OrderKind, Vec2, World};
 
 /// How many of each kind of nearby object a ship sees.
 pub const NEAR: usize = 6;
+/// How many incoming enemy shots a ship sees.
+pub const SHOTS: usize = 4;
 const SELF_LEN: usize = 7 + 8 + 2 + ORDER_KINDS + 2;
-const NEAR_LEN: usize = 8;
+const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
-pub const OBS_LEN: usize = SELF_LEN + 3 * NEAR * NEAR_LEN;
+pub const OBS_LEN: usize = SELF_LEN + (3 * NEAR + SHOTS) * NEAR_LEN;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -18,6 +20,9 @@ pub struct Near {
     /// Remaining health as a fraction; 0 for crystals.
     pub hp: f32,
     pub enemy: bool,
+    /// Where another ship is pointing, as a unit vector in this ship's frame;
+    /// zero for everything that is not a ship.
+    pub facing: Vec2,
 }
 
 /// Everything one ship knows. Every controller gets exactly this: a human's
@@ -41,18 +46,20 @@ pub struct Observation {
     pub rocks: Vec<Near>,
     pub crystals: Vec<Near>,
     pub ships: Vec<Near>,
+    /// Enemy shots, nearest first, at most [`SHOTS`].
+    pub shots: Vec<Near>,
 }
 
-fn nearest(mut all: Vec<Near>) -> Vec<Near> {
+fn nearest(mut all: Vec<Near>, keep: usize) -> Vec<Near> {
     all.sort_by(|a, b| a.dist.total_cmp(&b.dist));
-    all.truncate(NEAR);
+    all.truncate(keep);
     all
 }
 
 pub fn observe(world: &World, ship: usize) -> Observation {
     let cfg = &world.cfg;
     let me = &world.ships[ship];
-    let see = |pos: Vec2, vel: Vec2, radius: f32, hp: f32, enemy: bool| {
+    let see = |pos: Vec2, vel: Vec2, radius: f32, hp: f32, enemy: bool, heading: Option<f32>| {
         let d = world.delta(me.pos, pos);
         let dist = d.len();
         (dist <= cfg.view_range).then(|| Near {
@@ -62,6 +69,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
             radius,
             hp,
             enemy,
+            facing: heading.map_or(Vec2::default(), |h| Vec2::from_angle(h - me.heading)),
         })
     };
     Observation {
@@ -82,11 +90,13 @@ pub fn observe(world: &World, ship: usize) -> Observation {
             world
                 .rocks
                 .iter()
-                .filter_map(|r| see(r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(3), false))
+                .filter_map(|r| see(r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(3), false, None))
                 .collect(),
+            NEAR,
         ),
         crystals: nearest(
-            world.crystals.iter().filter_map(|c| see(c.pos, Vec2::default(), 0.0, 0.0, false)).collect(),
+            world.crystals.iter().filter_map(|c| see(c.pos, Vec2::default(), 0.0, 0.0, false, None)).collect(),
+            NEAR,
         ),
         ships: nearest(
             world
@@ -94,8 +104,18 @@ pub fn observe(world: &World, ship: usize) -> Observation {
                 .iter()
                 .enumerate()
                 .filter(|(i, s)| *i != ship && s.alive)
-                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.ship_radius, s.hull / cfg.hull_max(s), s.team != me.team))
+                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.ship_radius, s.hull / cfg.hull_max(s), s.team != me.team, Some(s.heading)))
                 .collect(),
+            NEAR,
+        ),
+        shots: nearest(
+            world
+                .shots
+                .iter()
+                .filter(|s| s.team != me.team)
+                .filter_map(|s| see(s.pos, s.vel, 0.0, s.damage / cfg.hull, true, None))
+                .collect(),
+            SHOTS,
         ),
     }
 }
@@ -103,11 +123,22 @@ pub fn observe(world: &World, ship: usize) -> Observation {
 impl Observation {
     /// Fixed-length, roughly unit-scaled vector for a neural network.
     /// Missing neighbours are zero rows with the first element (present) at 0.
-    pub fn to_vec(&self, world: &World) -> Vec<f32> {
-        let cfg = &world.cfg;
+    pub fn to_vec(&self, cfg: &Config) -> Vec<f32> {
+        let mut v = vec![0.0; OBS_LEN];
+        self.fill(cfg, &mut v);
+        v
+    }
+
+    /// Writes the same vector as [`Observation::to_vec`] into `out`, which must be [`OBS_LEN`] long.
+    pub fn fill(&self, cfg: &Config, out: &mut [f32]) {
+        assert_eq!(out.len(), OBS_LEN);
         let (view, half, speed) = (cfg.view_range, cfg.world_size / 2.0, cfg.max_speed);
-        let mut v = Vec::with_capacity(OBS_LEN);
-        v.extend([
+        let mut at = 0;
+        let mut put = |values: &[f32]| {
+            out[at..at + values.len()].copy_from_slice(values);
+            at += values.len();
+        };
+        put(&[
             self.alive as u8 as f32,
             self.hull / self.hull_max,
             self.energy / self.energy_max,
@@ -116,14 +147,16 @@ impl Observation {
             self.vel.y / speed,
             self.ready as u8 as f32,
         ]);
-        v.extend(self.levels.iter().map(|l| *l as f32 / cfg.upgrade_max as f32));
-        v.extend([self.base.x / half, self.base.y / half]);
-        v.extend((0..ORDER_KINDS).map(|k| (k == self.order as usize) as u8 as f32));
-        v.extend([self.target.x / half, self.target.y / half]);
-        for group in [&self.rocks, &self.crystals, &self.ships] {
-            for slot in 0..NEAR {
+        put(&self.levels.map(|l| l as f32 / cfg.upgrade_max as f32));
+        put(&[self.base.x / half, self.base.y / half]);
+        let mut order = [0.0; ORDER_KINDS];
+        order[self.order as usize] = 1.0;
+        put(&order);
+        put(&[self.target.x / half, self.target.y / half]);
+        for (group, slots) in [(&self.rocks, NEAR), (&self.crystals, NEAR), (&self.ships, NEAR), (&self.shots, SHOTS)] {
+            for slot in 0..slots {
                 match group.get(slot) {
-                    Some(n) => v.extend([
+                    Some(n) => put(&[
                         1.0,
                         n.pos.x / view,
                         n.pos.y / view,
@@ -132,12 +165,13 @@ impl Observation {
                         n.radius / cfg.rock_radius_of(3),
                         n.hp,
                         n.enemy as u8 as f32,
+                        n.facing.x,
+                        n.facing.y,
                     ]),
-                    None => v.extend([0.0; NEAR_LEN]),
+                    None => put(&[0.0; NEAR_LEN]),
                 }
             }
         }
-        debug_assert_eq!(v.len(), OBS_LEN);
-        v
+        debug_assert_eq!(at, OBS_LEN);
     }
 }

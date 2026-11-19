@@ -13,5 +13,5 @@ pub mod sim;
 
 pub use bot::{Controller, ScriptedBot, ScriptedCommander};
 pub use obs::{Near, OBS_LEN, Observation, observe};
-pub use replay::Replay;
+pub use replay::{Replay, Setup};
 pub use sim::*;

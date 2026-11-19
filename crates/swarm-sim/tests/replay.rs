@@ -19,7 +19,7 @@ fn every_action_survives_encoding() {
 fn saved_replay_reproduces_the_match() {
     let seed = 11;
     let mut world = World::new(Config::default(), seed);
-    let mut replay = Replay::new(seed, world.ships.len());
+    let mut replay = Replay::new(seed, &world.cfg);
     let mut bot = ScriptedBot;
     let mut commander = ScriptedCommander::new(seed);
     for tick in 0..1500 {
@@ -41,7 +41,7 @@ fn saved_replay_reproduces_the_match() {
     assert_eq!(loaded.ticks(), 1500);
 
     // Playback needs no bots and no orders: the recorded actions are enough.
-    let mut again = World::new(Config::default(), loaded.seed);
+    let mut again = loaded.world();
     while let Some(actions) = loaded.actions(again.tick) {
         again.step(&actions);
         if let Some(hash) = loaded.hash_at(again.tick) {

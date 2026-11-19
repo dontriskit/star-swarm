@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/swarm-sim", "crates/swarm-gui"]
+members = ["crates/swarm-sim", "crates/swarm-gui", "crates/swarm-env", "crates/swarm-py"]
+# swarm-py is a Python extension built by maturin; plain `cargo build` and `cargo test` leave it out.
+default-members = ["crates/swarm-sim", "crates/swarm-gui", "crates/swarm-env"]
 
 [workspace.package]
 edition = "2024"

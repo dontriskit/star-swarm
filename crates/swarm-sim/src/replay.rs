@@ -1,11 +1,11 @@
 //! Recorded matches: the seed plus every ship's action on every tick, with a
 //! state hash every [`HASH_EVERY`] ticks so a diverging playback is detected.
 
-use crate::sim::{Action, UPGRADES, World};
+use crate::sim::{Action, Config, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0001";
+const MAGIC: &[u8; 8] = b"SWRP0002";
 pub const HASH_EVERY: u32 = 300;
 
 /// Packs an action into one byte: thrust, turn, fire, upgrade to buy.
@@ -23,22 +23,64 @@ pub fn decode(b: u8) -> Action {
     }
 }
 
-/// A match played with the default [`crate::Config`].
+/// The parts of [`Config`] that differ between matches; everything else is the default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Setup {
+    pub world_size: f32,
+    pub teams: u16,
+    pub ships_per_team: u16,
+    pub rock_count: u32,
+    pub max_ticks: u32,
+}
+
+impl Setup {
+    pub fn of(cfg: &Config) -> Self {
+        Setup {
+            world_size: cfg.world_size,
+            teams: cfg.teams as u16,
+            ships_per_team: cfg.ships_per_team as u16,
+            rock_count: cfg.rock_count as u32,
+            max_ticks: cfg.max_ticks,
+        }
+    }
+
+    pub fn config(&self) -> Config {
+        Config {
+            world_size: self.world_size,
+            teams: self.teams as usize,
+            ships_per_team: self.ships_per_team as usize,
+            rock_count: self.rock_count as usize,
+            max_ticks: self.max_ticks,
+            ..Config::default()
+        }
+    }
+
+    pub fn ships(&self) -> usize {
+        self.teams as usize * self.ships_per_team as usize
+    }
+}
+
+/// A recorded match: how it was set up, its seed, and every action.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Replay {
     pub seed: u64,
-    pub ships: u16,
+    pub setup: Setup,
     frames: Vec<u8>,
     hashes: Vec<u64>,
 }
 
 impl Replay {
-    pub fn new(seed: u64, ships: usize) -> Self {
-        Replay { seed, ships: ships as u16, frames: Vec::new(), hashes: Vec::new() }
+    pub fn new(seed: u64, cfg: &Config) -> Self {
+        Replay { seed, setup: Setup::of(cfg), frames: Vec::new(), hashes: Vec::new() }
+    }
+
+    /// The world this replay starts from.
+    pub fn world(&self) -> World {
+        World::new(self.setup.config(), self.seed)
     }
 
     pub fn ticks(&self) -> u32 {
-        (self.frames.len() / self.ships.max(1) as usize) as u32
+        (self.frames.len() / self.setup.ships().max(1)) as u32
     }
 
     /// Call right after `world.step(actions)`.
@@ -51,7 +93,7 @@ impl Replay {
 
     /// The actions to feed into the step that takes the world from `tick` to `tick + 1`.
     pub fn actions(&self, tick: u32) -> Option<Vec<Action>> {
-        let n = self.ships as usize;
+        let n = self.setup.ships();
         let start = tick as usize * n;
         self.frames.get(start..start + n).map(|f| f.iter().map(|b| decode(*b)).collect())
     }
@@ -65,7 +107,11 @@ impl Replay {
         let mut f = io::BufWriter::new(std::fs::File::create(path)?);
         f.write_all(MAGIC)?;
         f.write_all(&self.seed.to_le_bytes())?;
-        f.write_all(&self.ships.to_le_bytes())?;
+        f.write_all(&self.setup.world_size.to_le_bytes())?;
+        f.write_all(&self.setup.teams.to_le_bytes())?;
+        f.write_all(&self.setup.ships_per_team.to_le_bytes())?;
+        f.write_all(&self.setup.rock_count.to_le_bytes())?;
+        f.write_all(&self.setup.max_ticks.to_le_bytes())?;
         f.write_all(&(self.frames.len() as u64).to_le_bytes())?;
         f.write_all(&self.frames)?;
         f.write_all(&(self.hashes.len() as u32).to_le_bytes())?;
@@ -88,11 +134,21 @@ impl Replay {
         let mut b4 = [0u8; 4];
         f.read_exact(&mut b8)?;
         let seed = u64::from_le_bytes(b8);
+        f.read_exact(&mut b4)?;
+        let world_size = f32::from_le_bytes(b4);
         f.read_exact(&mut b2)?;
-        let ships = u16::from_le_bytes(b2);
+        let teams = u16::from_le_bytes(b2);
+        f.read_exact(&mut b2)?;
+        let ships_per_team = u16::from_le_bytes(b2);
+        f.read_exact(&mut b4)?;
+        let rock_count = u32::from_le_bytes(b4);
+        f.read_exact(&mut b4)?;
+        let max_ticks = u32::from_le_bytes(b4);
+        let setup = Setup { world_size, teams, ships_per_team, rock_count, max_ticks };
         f.read_exact(&mut b8)?;
         let len = u64::from_le_bytes(b8) as usize;
-        if ships == 0 || len % ships as usize != 0 || len > 1 << 30 {
+        let sane = world_size.is_finite() && world_size >= 100.0 && teams > 0 && teams <= 64 && ships_per_team > 0 && rock_count <= 100_000;
+        if !sane || len % setup.ships() != 0 || len > 1 << 30 {
             return Err(bad("corrupt replay header"));
         }
         let mut frames = vec![0u8; len];
@@ -103,6 +159,6 @@ impl Replay {
             f.read_exact(&mut b8)?;
             hashes.push(u64::from_le_bytes(b8));
         }
-        Ok(Replay { seed, ships, frames, hashes })
+        Ok(Replay { seed, setup, frames, hashes })
     }
 }

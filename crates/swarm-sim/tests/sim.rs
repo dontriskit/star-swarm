@@ -43,7 +43,7 @@ fn observation_vector_has_fixed_length_and_is_finite() {
     let mut world = World::new(Config::default(), 3);
     run(&mut world, 500);
     for i in 0..world.ships.len() {
-        let v = observe(&world, i).to_vec(&world);
+        let v = observe(&world, i).to_vec(&world.cfg);
         assert_eq!(v.len(), OBS_LEN);
         assert!(v.iter().all(|x| x.is_finite()));
     }

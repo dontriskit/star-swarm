@@ -9,7 +9,11 @@ Built for people and for bots: humans, scripted bots and trained policies all dr
 - `crates/swarm-sim`: the deterministic simulation core. No GUI, no I/O. Same seed and same actions give the same match on the same binary and machine. Also holds the scripted bot, the scripted commander and the replay format.
 - `crates/swarm-gui`: the commander GUI on [gpui-kit](https://gpui-kit.com/docs). You lead the blue team against two scripted commanders, or watch a saved replay.
 
-Planned (see the issues): a batched headless environment, PPO training in PyTorch, and ONNX inference in Rust so the fleet flies on a trained model.
+- `crates/swarm-env`: the batched headless environment. Many matches stepped side by side on all cores; every ship is one agent; reward weights are data.
+- `crates/swarm-py`: Python bindings for `swarm-env`, built with maturin.
+- `train/ppo.py`: PPO in PyTorch. One shared policy flies every ship.
+
+Planned (see the issues): combat training with self-play, ONNX inference in Rust so the fleet flies on a trained model, ships that follow orders, and a socket for external bots.
 
 ## Run
 
@@ -26,3 +30,16 @@ cargo run --release -p swarm-sim --example record -- 1 out.replay # record a bot
 In the GUI: pick an order (Kop, Atakuj, Broń, Zbiórka), then click a point on the map. With no ships selected the order goes to the whole fleet; click ships on the map or in the list to command only those. "Zapisz powtórkę" writes `star-swarm-<seed>.replay` to the current directory.
 
 On Linux the GUI needs a Wayland or X11 session and a working Vulkan driver.
+
+## Train
+
+```sh
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r train/requirements.txt
+(cd crates/swarm-py && VIRTUAL_ENV=$PWD/../../.venv ../../.venv/bin/maturin develop --release)
+
+.venv/bin/python train/ppo.py --name mine --updates 300    # writes runs/mine/
+cargo run --release -p swarm-env --example throughput     # environment speed alone
+```
+
+The run first measures the scripted bot on a fixed set of matches, then trains, then plays the trained policy on the same matches. Each line of `runs/<name>/metrics.jsonl` is one measurement: crystals per ship per minute, upgrade levels per ship at the end of a match, deaths per ship.

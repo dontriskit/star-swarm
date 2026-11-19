@@ -1,0 +1,9 @@
+[package]
+name = "swarm-env"
+version = "0.1.0"
+edition.workspace = true
+description = "Batched headless Star Swarm environment for reinforcement learning."
+
+[dependencies]
+rayon = "1"
+swarm-sim = { path = "../swarm-sim" }

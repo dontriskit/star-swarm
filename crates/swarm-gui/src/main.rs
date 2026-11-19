@@ -57,9 +57,9 @@ struct Game {
 impl Game {
     fn new(seed: u64, playback: Option<Replay>) -> Self {
         let seed = playback.as_ref().map_or(seed, |r| r.seed);
-        let world = World::new(Config::default(), seed);
+        let world = playback.as_ref().map_or_else(|| World::new(Config::default(), seed), Replay::world);
         Game {
-            recording: Replay::new(seed, world.ships.len()),
+            recording: Replay::new(seed, &world.cfg),
             status: match &playback {
                 Some(r) => format!("Powtórka: {} s gry.", (r.ticks() as f32 * world.cfg.dt) as u32),
                 None => "Wybierz rozkaz, potem kliknij punkt na mapie.".into(),
@@ -383,13 +383,7 @@ fn main() {
         match (arg.as_str(), args.next()) {
             ("--seed", Some(v)) => seed = v.parse().unwrap_or_else(|_| fail(&format!("--seed wants a number, got {v}"))),
             ("--replay", Some(path)) => {
-                let replay = Replay::load(&path).unwrap_or_else(|e| fail(&format!("cannot read replay {path}: {e}")));
-                // Replays do not carry their config yet; one recorded with another fleet size cannot be stepped.
-                let ships = Config::default().teams * Config::default().ships_per_team;
-                if replay.ships as usize != ships {
-                    fail(&format!("replay {path} has {} ships, this build plays matches of {ships}", replay.ships));
-                }
-                playback = Some(replay)
+                playback = Some(Replay::load(&path).unwrap_or_else(|e| fail(&format!("cannot read replay {path}: {e}"))))
             }
             _ => fail("usage: swarm-gui [--seed N] [--replay FILE]"),
         }

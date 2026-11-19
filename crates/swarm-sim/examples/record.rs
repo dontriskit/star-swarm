@@ -7,7 +7,7 @@ fn main() -> std::io::Result<()> {
     let seed = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
     let path = args.next().unwrap_or_else(|| format!("star-swarm-{seed}.replay"));
     let mut world = World::new(Config::default(), seed);
-    let mut replay = Replay::new(seed, world.ships.len());
+    let mut replay = Replay::new(seed, &world.cfg);
     let mut bot = ScriptedBot;
     let mut commander = ScriptedCommander::new(seed);
     let mut raids = 0;
