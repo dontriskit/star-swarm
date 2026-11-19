@@ -7,9 +7,11 @@
 
 pub mod bot;
 pub mod obs;
+pub mod replay;
 pub mod rng;
 pub mod sim;
 
-pub use bot::{Controller, ScriptedBot};
+pub use bot::{Controller, ScriptedBot, ScriptedCommander};
 pub use obs::{Near, OBS_LEN, Observation, observe};
+pub use replay::Replay;
 pub use sim::*;

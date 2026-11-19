@@ -1,0 +1,12 @@
+[package]
+name = "swarm-gui"
+version = "0.1.0"
+edition.workspace = true
+description = "Commander GUI for Star Swarm: give orders to a fleet that flies itself."
+
+[dependencies]
+gpui-kit = "0.10.0"
+swarm-sim = { path = "../swarm-sim" }
+
+[dev-dependencies]
+gpui-kit = { version = "0.10.0", features = ["test-support"] }

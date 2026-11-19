@@ -1,5 +1,6 @@
 use crate::obs::{Near, Observation};
-use crate::sim::{Action, Config, OrderKind, UPGRADES, Upgrade, Vec2};
+use crate::rng::Rng;
+use crate::sim::{Action, Config, Order, OrderKind, UPGRADES, Upgrade, Vec2, World};
 
 /// Anything that flies a ship: a human's input, a scripted bot, a trained
 /// policy, a remote agent.
@@ -127,5 +128,38 @@ impl Controller for ScriptedBot {
         }
         debug_assert_eq!(UPGRADES.len(), PRIORITY.len());
         act
+    }
+}
+
+/// Hand-written commander for teams no human leads: ships that have upgraded
+/// enough are sent to raid another team's base, the rest keep mining.
+#[derive(Clone, Debug)]
+pub struct ScriptedCommander {
+    rng: Rng,
+}
+
+impl ScriptedCommander {
+    /// Upgrade levels a ship needs before it is sent to fight.
+    const RAID_LEVELS: u32 = 6;
+
+    pub fn new(seed: u64) -> Self {
+        ScriptedCommander { rng: Rng::new(seed) }
+    }
+
+    pub fn command(&mut self, world: &mut World, team: u8) {
+        let teams = world.bases.len() as u32;
+        if teams < 2 {
+            return;
+        }
+        let other = (team as u32 + 1 + self.rng.below(teams - 1)) % teams;
+        let target = world.bases[other as usize];
+        for ship in world.ships.iter_mut().filter(|s| s.team == team) {
+            let levels: u32 = ship.levels.iter().map(|l| *l as u32).sum();
+            ship.order = if levels >= Self::RAID_LEVELS {
+                Order { kind: OrderKind::Attack, target }
+            } else {
+                Order::default()
+            };
+        }
     }
 }
