@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/swarm-sim"]
+
+[workspace.package]
+edition = "2024"
+
+[profile.release]
+opt-level = 3

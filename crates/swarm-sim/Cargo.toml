@@ -1,0 +1,5 @@
+[package]
+name = "swarm-sim"
+version = "0.1.0"
+edition.workspace = true
+description = "Deterministic simulation core of Star Swarm: no GUI, no I/O."
