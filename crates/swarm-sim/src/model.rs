@@ -128,3 +128,33 @@ impl Controller for ModelBot {
         self.held
     }
 }
+
+/// A trained miner that still takes orders: the network flies the ship while
+/// it is told to mine, the scripted bot takes over for every other order and,
+/// with `self_defence`, whenever an enemy comes within its fighting range.
+/// The network has only ever been trained to mine.
+pub struct HybridBot {
+    model: ModelBot,
+    script: crate::bot::ScriptedBot,
+    self_defence: bool,
+}
+
+impl HybridBot {
+    /// How close an enemy has to be before a mining ship hands over to the scripted bot.
+    const THREAT_RANGE: f32 = 260.0;
+
+    pub fn new(net: Arc<Net>, self_defence: bool) -> Self {
+        HybridBot { model: ModelBot::new(net, ModelBot::HOLD), script: crate::bot::ScriptedBot, self_defence }
+    }
+}
+
+impl Controller for HybridBot {
+    fn act(&mut self, obs: &Observation, cfg: &Config) -> Action {
+        let threatened = self.self_defence && obs.ships.iter().any(|s| s.enemy && s.dist < Self::THREAT_RANGE);
+        if obs.order != crate::sim::OrderKind::Mine || threatened {
+            self.script.act(obs, cfg)
+        } else {
+            self.model.act(obs, cfg)
+        }
+    }
+}

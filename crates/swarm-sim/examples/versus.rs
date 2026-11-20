@@ -10,7 +10,7 @@ fn main() -> std::io::Result<()> {
     let matches: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(20);
     let net = Arc::new(Net::load(&path)?);
 
-    for model_flies in [true, false] {
+    for pilot in ["model", "model + self-defence", "scripted bot (control)"] {
         let cfg = Config::default();
         // Per team: crystals, upgrade levels, kills, deaths, score.
         let mut totals = vec![[0f64; 5]; cfg.teams];
@@ -20,9 +20,10 @@ fn main() -> std::io::Result<()> {
             let mut pilots: Vec<Box<dyn Controller>> = world
                 .ships
                 .iter()
-                .map(|s| match s.team == 0 && model_flies {
-                    true => Box::new(ModelBot::new(net.clone(), ModelBot::HOLD)) as Box<dyn Controller>,
-                    false => Box::new(ScriptedBot),
+                .map(|s| match (s.team == 0, pilot) {
+                    (true, "model") => Box::new(ModelBot::new(net.clone(), ModelBot::HOLD)) as Box<dyn Controller>,
+                    (true, "model + self-defence") => Box::new(HybridBot::new(net.clone(), true)),
+                    _ => Box::new(ScriptedBot),
                 })
                 .collect();
             while !world.done() {
@@ -45,7 +46,7 @@ fn main() -> std::io::Result<()> {
         }
         let minutes = cfg.max_ticks as f64 * cfg.dt as f64 / 60.0;
         let ships = (matches * cfg.ships_per_team as u64) as f64;
-        println!("{matches} matches, team 0 flown by the {}:", if model_flies { "model" } else { "scripted bot (control)" });
+        println!("{matches} matches, team 0 flown by the {pilot}:");
         for (team, t) in totals.iter().enumerate() {
             println!(
                 "  team {team}: {:5.1} crystals per ship per minute, {:4.1} upgrade levels, {:4.1} kills, {:4.1} deaths per ship, team score {:6.0} per match",

@@ -11,7 +11,7 @@ use std::time::Instant;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Selectable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
-use swarm_sim::{Config, Controller, ModelBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, World, observe};
+use swarm_sim::{Config, Controller, HybridBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, World, observe};
 #[cfg(test)]
 use swarm_sim::Vec2;
 
@@ -59,14 +59,15 @@ struct Game {
 }
 
 impl Game {
-    /// Your fleet flies on a trained network and takes no orders; the other teams stay scripted.
+    /// Your fleet mines on a trained network; ships given any other order, or with an enemy
+    /// close by, are flown by the scripted bot. The other teams stay scripted.
     fn with_model(seed: u64, net: Arc<Net>) -> Self {
         let mut game = Game::new(seed, None);
         for i in game.my_ships().collect::<Vec<_>>() {
-            game.pilots[i] = Box::new(ModelBot::new(net.clone(), ModelBot::HOLD));
+            game.pilots[i] = Box::new(HybridBot::new(net.clone(), true));
         }
         game.model = Some(net);
-        game.status = "Twoja flota leci na modelu, pozostałe na botach skryptowych.".into();
+        game.status = "Twoja flota kopie na modelu. Wybierz rozkaz i kliknij punkt na mapie, żeby wysłać ją do walki.".into();
         game
     }
 
@@ -95,9 +96,9 @@ impl Game {
         }
     }
 
-    /// Orders only reach a scripted fleet in a live match.
+    /// Orders are given in a live match, not while watching a replay.
     fn takes_orders(&self) -> bool {
-        self.playback.is_none() && self.model.is_none()
+        self.playback.is_none()
     }
 
     fn running(&self) -> bool {
@@ -357,7 +358,7 @@ impl Game {
             .child(div().text_color(muted).child(if self.playback.is_some() {
                 "Powtórka (rozkazy wyłączone)"
             } else if self.model.is_some() {
-                "Flotą steruje model (nie słucha jeszcze rozkazów)"
+                "Rozkaz (Kop: leci model; pozostałe i obrona: skrypt)"
             } else {
                 "Rozkaz"
             }))
