@@ -28,9 +28,10 @@ for i in "${!stages[@]}"; do
   run="$name-s$((i + 1))"
   scale() { awk "BEGIN{print $1 * $starter * $share}"; }
   # The reward for a whole base stays the same however many hit points it has.
-  # At full starter reward: 0.2 for every crystal picked up (a small pack pays about 2.3, an
-  # XXL one about 25), 0.1 per size for a rock broken, 0.1 per point of damage to a small rock
-  # (1 for breaking one), 1 for anything bought.
+  # At full starter reward: 0.4 for every crystal picked up (a small pack pays about 4.6, an
+  # XXL one about 50). Rocks are shot for the crystals in them, so breaking one pays next to
+  # nothing by itself: 0.03 per size, and 0.02 per point of damage to a small rock (0.4 for
+  # breaking one), just enough for a new ship to find out that shooting rocks leads somewhere.
   # When time runs out everybody pays 30, and the standing bases are ranked by crystals handed
   # over: 20 back for the first, 20 more off for the last. Destroying the others still pays best.
   # Growing pays at every stage: 0.2 for a crystal handed over, 4 for an upgrade, a drone or a
@@ -52,6 +53,6 @@ for i in "${!stages[@]}"; do
     --reward deposit=0.2 --reward base_level=60 --reward buy=4 --reward tier=20 \
     --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
-    --reward collect="$(scale 0.2)" --reward rock="$(scale 0.1)" --reward rock_hit="$(scale 0.1)"
+    --reward collect="$(scale 0.4)" --reward rock="$(scale 0.03)" --reward rock_hit="$(scale 0.02)"
   init="runs/$run/policy.pt"
 done
