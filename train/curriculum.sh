@@ -44,7 +44,7 @@ for i in "${!stages[@]}"; do
   # No more than that: with three teams, a fight is time not spent mining and raising the base,
   # and the team that stays out of it gains. So fighting has to pay for itself; 0.3 more while the
   # team is attacking and the attacker has the upper hand; a kill pays 8.
-  $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-coef "$entropy_start" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
+  $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --value-warmup "${WARMUP:-0}" --entropy-coef "$entropy_start" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
     --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \

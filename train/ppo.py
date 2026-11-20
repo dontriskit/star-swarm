@@ -289,6 +289,12 @@ def train(args):
                 loss = policy_loss + args.value_coef * value_loss - entropy_coef * entropy.mean()
                 optim.zero_grad(set_to_none=True)
                 loss.backward()
+                if update <= args.value_warmup:
+                    # A policy taught elsewhere comes without a sense of what a position is worth.
+                    # Until it has one, only the value head learns: the rest is left as it came.
+                    for name, param in policy.named_parameters():
+                        if not name.startswith("value."):
+                            param.grad = None
                 nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
                 optim.step()
 
@@ -334,6 +340,7 @@ if __name__ == "__main__":
     p.add_argument("--entropy-coef", type=float, default=0.01)
     p.add_argument("--entropy-end", type=float, default=None, help="entropy coefficient at the last update (default: no fading)")
     p.add_argument("--init", default=None, metavar="POLICY.PT", help="start from a saved policy")
+    p.add_argument("--value-warmup", type=int, default=0, help="updates at the start in which only the value head learns")
     p.add_argument("--forget", default="none", choices=["none", "head", "shrink"],
                    help="with --init: reset the action and value heads, or shrink every weight and add noise")
     p.add_argument("--log-every", type=int, default=10)
