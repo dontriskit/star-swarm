@@ -236,16 +236,19 @@ def train(args):
     record({"kind": "scripted", **baseline})
 
     # Against "self" every team takes actions from us: team 0 from the policy being trained,
-    # the others from a frozen earlier copy of it. Against "scripted" only team 0 is ours.
-    self_play = args.opponent == "self"
+    # the others from a frozen earlier copy of it. With "mirror" all three teams fly on the
+    # policy being trained and all of them are learned from, three times the experience from
+    # every match. Against "scripted" only team 0 is ours.
+    mirror = args.opponent == "mirror"
+    self_play = args.opponent in ("self", "mirror")
     env = make_env(args, args.envs, args.seed, learners=args.teams if self_play else 1)
     # One of the training matches is streamed for `swarm-gui --watch` to show live.
     env.stream(str(out / "live.swl"))
     # And the matches in which the team being trained got somewhere are kept, for `swarm-gui --wins`.
     env.keep_wins(str(out / "wins"))
     team = torch.arange(env.agents, device=device) % env.ships // args.ships_per_team
-    ours = (team == 0).nonzero().squeeze(-1)
-    theirs = (team != 0).nonzero().squeeze(-1)
+    ours = (team >= 0 if mirror else team == 0).nonzero().squeeze(-1)
+    theirs = (team < 0 if mirror else team != 0).nonzero().squeeze(-1)
     n, steps = len(ours), args.steps
     everyone = torch.zeros(env.agents, len(HEADS), dtype=torch.long, device=device)
     rival = Policy(args.hidden).to(device)
@@ -308,7 +311,7 @@ def train(args):
     for update in range(1, args.updates + 1):
         # Exploration bonus fades linearly, so the policy ends up decisive.
         entropy_coef = args.entropy_coef + (args.entropy_end - args.entropy_coef) * (update - 1) / max(args.updates - 1, 1)
-        if self_play and (update - 1) % args.snapshot_every == 0:
+        if self_play and not mirror and (update - 1) % args.snapshot_every == 0:
             # Keep a few earlier versions and play this stretch against one of them, mostly the newest.
             past = (past + [{k: v.clone() for k, v in policy.state_dict().items()}])[-args.snapshots:]
             rival.load_state_dict(past[-1] if torch.rand(()) < 0.5 else past[int(torch.randint(len(past), ()))])
@@ -317,7 +320,7 @@ def train(args):
                 mem_buf[t] = state
                 actions, logp, value, state = policy.act(obs, state)
                 everyone[ours] = actions
-                if self_play:
+                if self_play and not mirror:
                     rival_actions, _, _, rival_state = rival.act(full[theirs], rival_state)
                     everyone[theirs] = rival_actions
                 rewards, dones = env.step(pack(everyone))
@@ -454,7 +457,7 @@ if __name__ == "__main__":
     p.add_argument("--max-ticks", type=int, default=36000)
     p.add_argument("--base-hp", type=float, default=1000.0)
     p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")
-    p.add_argument("--opponent", default="self", choices=["self", "scripted"],
+    p.add_argument("--opponent", default="self", choices=["self", "mirror", "scripted"],
                    help="who flies the other teams in training: earlier copies of the policy, or the scripted bot")
     p.add_argument("--snapshot-every", type=int, default=10, help="updates between new frozen copies for self-play")
     p.add_argument("--snapshots", type=int, default=6, help="how many frozen copies to keep")
