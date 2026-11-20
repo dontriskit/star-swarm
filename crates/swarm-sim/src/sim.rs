@@ -397,7 +397,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            radius: 12000.0,
+            radius: 4800.0,
             farm_kinds: [(1, 2, 10), (3, 3, 7), (4, 5, 4), (1, 5, 1)],
             farm_mix: [0, 0, 1, 0, 1, 2, 3, 3],
             home_farm: 600.0,
@@ -406,7 +406,7 @@ impl Default for Config {
             dt: 1.0 / 30.0,
             teams: 3,
             ships_per_team: 7,
-            rock_count: 11000,
+            rock_count: 1760,
             max_ticks: 36000,
             ship_radius: 16.0,
             ship_radii: [16.0, 20.0, 24.0, 29.0, 34.0, 40.0, 48.0],

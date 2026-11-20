@@ -52,15 +52,15 @@ fn bases_are_equally_far_apart() {
     let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
     let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
     let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
-    // A third of the way around a planet of radius 12000.
-    assert!((d01 - 25132.7).abs() < 5.0, "{d01}");
+    // A third of the way around a planet of radius 4800.
+    assert!((d01 - 10053.1).abs() < 5.0, "{d01}");
     assert!((d01 - d12).abs() < 5.0 && (d12 - d20).abs() < 5.0);
 }
 
 #[test]
 fn rocks_grow_in_farms_all_over_the_planet_the_same_for_every_team() {
     let world = World::new(Config::default(), 4);
-    assert_eq!(world.rocks.len(), 11000);
+    assert_eq!(world.rocks.len(), 1760);
     assert!(world.rocks.iter().all(|r| r.farm.is_some()), "every rock is in a farm, a straggler in one of its own");
     // Every farm holds rocks of its own sizes, inside its radius.
     for (f, farm) in world.farms.iter().enumerate() {
@@ -86,7 +86,7 @@ fn rocks_grow_in_farms_all_over_the_planet_the_same_for_every_team() {
     assert_eq!(obs.fields.len(), 8);
     assert!(obs.fields[0].dist < obs.fields[7].dist && obs.fields[7].dist < 3000.0, "{:?}", obs.fields[7]);
     let far = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(0.0, f32::max);
-    assert!(far > 30000.0, "the farthest farm is {far} away");
+    assert!(far > 12000.0, "the farthest farm is {far} away");
     // Away from any farm centre there is open space: farms keep their distance.
     let gap = (0..third).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| world.dist(world.farms[i].pos, world.farms[j].pos)).fold(f32::MAX, f32::min);
     assert!(gap > 2.0 * world.cfg.farm_radius + 100.0, "the closest two farms are {gap} apart");

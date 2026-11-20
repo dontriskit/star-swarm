@@ -30,7 +30,7 @@ impl Camera {
     /// Over the player's own base, close enough to take in its rock field on a big planet.
     pub fn home(world: &World) -> Self {
         let mut camera = Self::looking_at(world.bases[MY_TEAM as usize].pos);
-        camera.zoom = (world.cfg.radius / 3200.0).max(1.0);
+        camera.zoom = (world.cfg.radius / 2400.0).max(1.0);
         camera
     }
 
