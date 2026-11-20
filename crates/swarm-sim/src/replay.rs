@@ -5,7 +5,7 @@ use crate::sim::{Action, Buy, Config, DroneKind, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP000B";
+const MAGIC: &[u8; 8] = b"SWRP000C";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
@@ -76,6 +76,9 @@ pub struct Setup {
     pub ships_per_team: u16,
     pub rock_count: u32,
     pub max_ticks: u32,
+    /// Training changes how strong bases are from stage to stage.
+    pub base_hp: f32,
+    pub turret_damage: f32,
 }
 
 impl Setup {
@@ -86,6 +89,8 @@ impl Setup {
             ships_per_team: cfg.ships_per_team as u16,
             rock_count: cfg.rock_count as u32,
             max_ticks: cfg.max_ticks,
+            base_hp: cfg.base_hp,
+            turret_damage: cfg.turret_damage,
         }
     }
 
@@ -96,6 +101,8 @@ impl Setup {
             ships_per_team: self.ships_per_team as usize,
             rock_count: self.rock_count as usize,
             max_ticks: self.max_ticks,
+            base_hp: self.base_hp,
+            turret_damage: self.turret_damage,
             ..Config::default()
         }
     }
@@ -157,6 +164,8 @@ impl Replay {
         f.write_all(&self.setup.ships_per_team.to_le_bytes())?;
         f.write_all(&self.setup.rock_count.to_le_bytes())?;
         f.write_all(&self.setup.max_ticks.to_le_bytes())?;
+        f.write_all(&self.setup.base_hp.to_le_bytes())?;
+        f.write_all(&self.setup.turret_damage.to_le_bytes())?;
         f.write_all(&(self.frames.len() as u64).to_le_bytes())?;
         for frame in &self.frames {
             f.write_all(&frame.to_le_bytes())?;
@@ -191,7 +200,11 @@ impl Replay {
         let rock_count = u32::from_le_bytes(b4);
         f.read_exact(&mut b4)?;
         let max_ticks = u32::from_le_bytes(b4);
-        let setup = Setup { radius, teams, ships_per_team, rock_count, max_ticks };
+        f.read_exact(&mut b4)?;
+        let base_hp = f32::from_le_bytes(b4);
+        f.read_exact(&mut b4)?;
+        let turret_damage = f32::from_le_bytes(b4);
+        let setup = Setup { radius, teams, ships_per_team, rock_count, max_ticks, base_hp, turret_damage };
         f.read_exact(&mut b8)?;
         let len = u64::from_le_bytes(b8) as usize;
         let sane = radius.is_finite() && radius >= 100.0 && teams > 0 && teams <= 64 && ships_per_team > 0 && rock_count <= 100_000;

@@ -165,6 +165,13 @@ impl Env {
         self.inner.stream_to(path).map_err(|e| PyValueError::new_err(format!("cannot stream to {path}: {e}")))
     }
 
+    /// Keeps replays of the matches in which team 0 won, destroyed a base or came first on
+    /// time, from the first `slots` match slots, as files in `path`, for `swarm-gui --wins`.
+    #[pyo3(signature = (path, slots=16))]
+    fn keep_wins(&mut self, path: &str, slots: usize) -> PyResult<()> {
+        self.inner.keep_highlights(path, slots).map_err(|e| PyValueError::new_err(format!("cannot keep replays in {path}: {e}")))
+    }
+
     /// uint8 per agent: 1 where `step` uses the action passed in, 0 where the ship is scripted.
     fn controlled<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.controlled)

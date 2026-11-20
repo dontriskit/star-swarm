@@ -205,6 +205,11 @@ struct Game {
     recording: Replay,
     /// Set when watching a saved match instead of playing.
     playback: Option<Replay>,
+    /// With `--wins`: where training runs are, the saved matches found there (newest first),
+    /// and which of them is on screen.
+    wins_dir: Option<PathBuf>,
+    wins: Vec<PathBuf>,
+    win_at: usize,
     selected: BTreeSet<usize>,
     order: OrderKind,
     paused: bool,
@@ -256,6 +261,9 @@ impl Game {
             seed,
             commander: ScriptedCommander::new(seed),
             playback,
+            wins_dir: None,
+            wins: Vec::new(),
+            win_at: 0,
             selected: BTreeSet::new(),
             order: OrderKind::Mine,
             paused: false,
@@ -535,9 +543,66 @@ impl Game {
         }
     }
 
+    /// The saved matches of the team being trained under a runs directory, newest first.
+    fn find_wins(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|run| std::fs::read_dir(run.path().join("wins")).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "replay"))
+            .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
+            .collect();
+        found.sort();
+        found.into_iter().rev().map(|(_, p)| p).collect()
+    }
+
+    /// Shows the matches training has kept: the ones the team being trained won, destroyed a
+    /// base in, or came first in on time.
+    fn showing_wins(dir: PathBuf) -> Self {
+        let mut game = Game::new(1, None);
+        game.wins_dir = Some(dir);
+        game.show_win(0);
+        game
+    }
+
+    /// Puts the saved match at this place in the list (0 is the newest) on screen.
+    fn show_win(&mut self, at: usize) {
+        let Some(dir) = self.wins_dir.clone() else { return };
+        let wins = Self::find_wins(&dir);
+        if wins.is_empty() {
+            self.status = format!("W {} nie ma jeszcze zapisanych meczów: trening zapisuje wygrane, zburzone bazy i pierwsze miejsca.", dir.display());
+            self.wins = wins;
+            return;
+        }
+        let at = at.min(wins.len() - 1);
+        let path = &wins[at];
+        let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+        let what = if name.ends_with("wygrana") {
+            "wygrana"
+        } else if name.ends_with("zburzona-baza") {
+            "zburzona baza wroga"
+        } else {
+            "pierwsze miejsce po czasie"
+        };
+        let run = path.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("?").to_string();
+        match Replay::load(path) {
+            Ok(replay) => {
+                let status = format!("Mecz {} z {} (od najnowszego): {what}, przebieg {run}.", at + 1, wins.len());
+                let fresh = Game::new(0, Some(replay));
+                *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, spin: self.spin, wins_dir: Some(dir), wins, win_at: at, status, ..fresh };
+            }
+            Err(e) => self.status = format!("Nie da się odczytać {}: {e} (zapis z innej wersji gry?)", path.display()),
+        }
+    }
+
     fn restart(&mut self) {
         if self.watch.is_some() {
             return self.reload();
+        }
+        if self.wins_dir.is_some() {
+            return self.show_win(self.win_at);
         }
         let seed = self.seed.wrapping_add(1);
         let fresh = match self.model.clone() {
@@ -765,7 +830,14 @@ impl Game {
                     .child(Button::new("save").small().label("Zapisz powtórkę").on_click(cx.listener(|this, _, _, cx| {
                         this.save();
                         cx.notify();
-                    }))),
+                    })))
+                    // With --wins: step through the kept matches.
+                    .children(self.wins_dir.is_some().then_some([("newer", "◀ Nowszy", false), ("older", "Starszy ▶", true)]).into_iter().flatten().map(|(id, label, older)| {
+                        Button::new(id).small().label(label).on_click(cx.listener(move |this, _, _, cx| {
+                            this.show_win(if older { this.win_at + 1 } else { this.win_at.saturating_sub(1) });
+                            cx.notify();
+                        }))
+                    })),
             )
             .child(
                 div()
@@ -914,6 +986,7 @@ fn main() {
     let mut playback = None;
     let mut model = None;
     let mut watch = None;
+    let mut wins = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match (arg.as_str(), args.next()) {
@@ -925,7 +998,8 @@ fn main() {
                 model = Some(Arc::new(Net::load(&path).unwrap_or_else(|e| fail(&format!("cannot read policy {path}: {e}")))))
             }
             ("--watch", Some(dir)) => watch = Some(PathBuf::from(dir)),
-            _ => fail("usage: swarm-gui [--seed N] [--replay FILE | --model POLICY.swp | --watch RUNS_DIR]"),
+            ("--wins", Some(dir)) => wins = Some(PathBuf::from(dir)),
+            _ => fail("usage: swarm-gui [--seed N] [--replay FILE | --model POLICY.swp | --watch RUNS_DIR | --wins RUNS_DIR]"),
         }
     }
     application().with_assets(assets::Assets).run(move |cx| {
@@ -933,6 +1007,7 @@ fn main() {
         Theme::change(ThemeMode::Dark, None, cx);
         open_window(WindowOptions::default(), cx, move |_, cx| {
             cx.new(|_| match (watch, model) {
+                _ if wins.is_some() => Game::showing_wins(wins.unwrap()),
                 (Some(dir), _) => Game::watching(seed, dir),
                 (None, Some(net)) if playback.is_none() => Game::with_model(seed, net),
                 _ => Game::new(seed, playback),

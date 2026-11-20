@@ -154,6 +154,13 @@ struct Slot {
     commander: ScriptedCommander,
     index: u64,
     episode: u64,
+    /// Whether this slot's matches are recorded, the recording of the one in progress (only
+    /// when it has been recorded from its first tick), whether team 0 has destroyed a base in
+    /// it, and a finished recording worth keeping, waiting to be written out.
+    recorded: bool,
+    record: Option<swarm_sim::Replay>,
+    razed: bool,
+    keep: Option<(&'static str, swarm_sim::Replay)>,
 }
 
 pub struct VecEnv {
@@ -166,6 +173,9 @@ pub struct VecEnv {
     slots: Vec<Slot>,
     finished: Vec<EpisodeStats>,
     live: Option<std::io::BufWriter<std::fs::File>>,
+    /// Where recordings of team 0's good matches go, and how many have been written.
+    highlights: Option<std::path::PathBuf>,
+    saved: usize,
 }
 
 impl VecEnv {
@@ -182,10 +192,64 @@ impl VecEnv {
         let slots = (0..envs as u64)
             .map(|index| {
                 let seed = Self::seed_of(seed, index, 0, envs as u64);
-                Slot { seed, tape: None, on_tape: false, planned: [0; 4], world: World::new(cfg.clone(), seed), commander: ScriptedCommander::new(seed), index, episode: 0 }
+                Slot {
+                    seed,
+                    tape: None,
+                    on_tape: false,
+                    planned: [0; 4],
+                    world: World::new(cfg.clone(), seed),
+                    commander: ScriptedCommander::new(seed),
+                    index,
+                    episode: 0,
+                    recorded: false,
+                    record: None,
+                    razed: false,
+                    keep: None,
+                }
             })
             .collect();
-        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new(), live: None }
+        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new(), live: None, highlights: None, saved: 0 }
+    }
+
+    /// Records the matches of the first `slots` slots and keeps, as replay files in `dir`,
+    /// the ones in which team 0 got somewhere: it won (`wygrana`), it destroyed an enemy base
+    /// (`zburzona-baza`), or time ran out with its base standing and the most crystals handed
+    /// over (`pierwsze-miejsce`). The newest fifteen of each kind are kept.
+    pub fn keep_highlights(&mut self, dir: impl AsRef<std::path::Path>, slots: usize) -> std::io::Result<()> {
+        let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir)?;
+        for slot in self.slots.iter_mut().take(slots) {
+            slot.recorded = true;
+            // A match already under way cannot be recorded from the middle; the next one is.
+            slot.record = (slot.world.tick == 0).then(|| swarm_sim::Replay::new(slot.seed, &self.cfg));
+        }
+        self.highlights = Some(dir);
+        Ok(())
+    }
+
+    fn write_highlights(&mut self) {
+        let Self { slots, highlights, saved, .. } = self;
+        let Some(dir) = highlights else { return };
+        for slot in slots.iter_mut() {
+            let Some((kind, replay)) = slot.keep.take() else { continue };
+            *saved += 1;
+            // Numbered in the order they ended, and stamped so that runs do not overwrite each other.
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            if replay.save(dir.join(format!("{stamp}-{saved:04}-{kind}.replay"))).is_err() {
+                continue;
+            }
+            let mut of_kind: Vec<std::path::PathBuf> = std::fs::read_dir(&*dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(&format!("-{kind}.replay"))))
+                .collect();
+            of_kind.sort();
+            for old in of_kind.iter().rev().skip(15) {
+                let _ = std::fs::remove_file(old);
+            }
+        }
     }
 
     /// Streams the first slot's matches to a file as they are played: each match's seed and
@@ -316,6 +380,7 @@ impl VecEnv {
                 dones.fill(0);
                 let mut held: Vec<Action> = actions.iter().map(|b| decode(*b)).collect();
                 let team_of = |ship: usize| ship / per_team;
+                let mut razed = false;
                 for _ in 0..frame_skip {
                     if learners < cfg.teams {
                         // Scripted teams decide every tick, as they do in the game.
@@ -335,6 +400,9 @@ impl VecEnv {
                         slot.tape.as_mut().unwrap().push(Tape::Tick(held.iter().map(replay::encode).collect()));
                     }
                     slot.world.step(&held);
+                    if let Some(record) = &mut slot.record {
+                        record.record(&slot.world, &held);
+                    }
                     // The events are judged against the world as the tick left it.
                     let world = &slot.world;
                     let upper_hand = |by: usize, victim: usize, damage: f32| {
@@ -362,7 +430,8 @@ impl VecEnv {
                                 rewards[by as usize] += pay.base_hit * damage;
                                 (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] -= pay.base_lost * damage);
                             }
-                            Event::BaseDestroyed { team, .. } => {
+                            Event::BaseDestroyed { by, team } => {
+                                razed |= team != 0 && team_of(by as usize) == 0;
                                 (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] -= pay.lose);
                             }
                             Event::Collected { ship, amount } => rewards[ship as usize] += pay.collect * amount as f32,
@@ -432,6 +501,18 @@ impl VecEnv {
                                 }
                             }
                         }
+                        if let Some(replay) = slot.record.take() {
+                            let bases = &slot.world.bases;
+                            let first = bases[0].alive() && bases.iter().skip(1).all(|b| !b.alive() || b.deposited < bases[0].deposited);
+                            let kind = match slot.world.winner() {
+                                Some(0) => Some("wygrana"),
+                                _ if slot.razed || razed => Some("zburzona-baza"),
+                                None if first => Some("pierwsze-miejsce"),
+                                _ => None,
+                            };
+                            slot.keep = kind.map(|kind| (kind, replay));
+                        }
+                        slot.razed = false;
                         let mut stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
                         stats.plans = slot.planned.map(|ticks| ticks as f32 / (slot.world.tick.max(1) as usize * per_team) as f32);
                         slot.planned = [0; 4];
@@ -440,6 +521,9 @@ impl VecEnv {
                         slot.world = World::new(cfg.clone(), next);
                         slot.commander = ScriptedCommander::new(next);
                         slot.seed = next;
+                        if slot.recorded {
+                            slot.record = Some(swarm_sim::Replay::new(next, cfg));
+                        }
                         if let Some(tape) = &mut slot.tape {
                             tape.push(Tape::Episode(next));
                             slot.on_tape = true;
@@ -448,10 +532,12 @@ impl VecEnv {
                         return Some(stats);
                     }
                 }
+                slot.razed |= razed;
                 None
             })
             .collect();
         self.finished.extend(finished);
+        self.write_highlights();
         // A viewer missing a few ticks is no reason to stop training.
         let _ = self.flush_tape();
     }
@@ -615,6 +701,40 @@ mod tests {
             }
         }
         paid
+    }
+
+    #[test]
+    fn a_match_the_team_came_first_in_is_kept_and_plays_back_the_same() {
+        let dir = std::env::temp_dir().join(format!("star-swarm-wins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Short matches with the turrets off: nobody loses a base, so time runs out and
+        // whoever handed over the most comes first. Team 0 is given a head start.
+        let cfg = Config { rock_count: 0, max_ticks: 60, turret_damage: 0.0, base_hp: 777.0, ..Config::default() };
+        let mut env = VecEnv::new(cfg, 2, 3, 3, Rewards::default());
+        env.keep_highlights(&dir, 1).unwrap();
+        env.slots[0].world.bases[0].deposited = 500;
+        env.slots[1].world.bases[0].deposited = 500;
+        let agents = env.agents();
+        let fire = replay::encode(&Action { fire: true, thrust: true, ..Action::default() });
+        let (actions, mut rewards, mut dones) = (vec![fire; agents], vec![0f32; agents], vec![0u8; agents]);
+        let mut last = env.world(0).clone();
+        while dones[0] == 0 {
+            last = env.world(0).clone();
+            env.step(&actions, &mut rewards, &mut dones);
+        }
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+        assert_eq!(files.len(), 1, "only the first slot is recorded: {files:?}");
+        assert!(files[0].to_str().unwrap().ends_with("-pierwsze-miejsce.replay"));
+        let kept = swarm_sim::Replay::load(&files[0]).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!((kept.ticks(), kept.setup.base_hp), (60, 777.0), "the whole match, with the bases it was played with");
+        // Playing it back gets to where the match was three ticks before its end, and on from there.
+        let mut again = kept.world();
+        again.bases[0].deposited = 500;
+        while again.tick < last.tick {
+            again.step(&kept.actions(again.tick).unwrap());
+        }
+        assert_eq!(again.state_hash(), last.state_hash());
     }
 
     #[test]
