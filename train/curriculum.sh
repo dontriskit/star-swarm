@@ -34,8 +34,8 @@ for i in "${!stages[@]}"; do
   # XXL one about 50). Rocks are shot for the crystals in them, so breaking one pays next to
   # nothing by itself: 0.03 per size, and 0.02 per point of damage to a small rock (0.4 for
   # breaking one), just enough for a new ship to find out that shooting rocks leads somewhere.
-  # When time runs out everybody pays 30, and the standing bases are ranked by crystals handed
-  # over: 20 back for the first, 20 more off for the last. Destroying the others still pays best.
+  # A match is won by destroying the other two bases and by nothing else: one that runs out
+  # of time pays nobody anything.
   # Growing pays at every stage: 0.2 for a crystal handed over, 4 for an upgrade, a drone or a
   # tier bought and 20 more for the tier, 60 to every ship of the team when the base gains a level. Rocks pay nothing to
   # a ship with a full hold unless a teammate with room is within 500.
@@ -51,7 +51,7 @@ for i in "${!stages[@]}"; do
     --steps "${STEPS:-512}" --lam "${LAM:-0.99}" --envs "${ENVS:-256}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
     --opponent "${OPPONENT:-self}" --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
-    --reward time=0.00083 --reward draw=30 --reward place=20 \
+    --reward time=0.00083 \
     --reward deposit=0.2 --reward base_level=60 --reward buy=4 --reward tier=20 \
     --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \

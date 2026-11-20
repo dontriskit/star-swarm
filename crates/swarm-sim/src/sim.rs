@@ -354,8 +354,11 @@ pub struct Config {
     /// between them. The kinds of farm: smallest and biggest rock size, and rocks to a farm.
     /// The last kind is the straggler, one rock of any size on its own.
     pub farm_kinds: [(u8, u8, u32); 4],
-    /// The kinds in the order they are handed out, over and over, until the rocks are used up.
-    pub farm_mix: [u8; 8],
+    /// Farms nearer their base than this hold small rocks.
+    pub home_zone: f32,
+    /// Beyond the home zone, a farm where the next base is less than this much farther away
+    /// than the team's own holds big rocks; the rest hold medium ones.
+    pub contest_margin: f32,
     /// How far from its base each team's nearest farm is: one of small rocks, to start on.
     pub home_farm: f32,
     /// Ticks until a broken rock grows back in its farm. 0 replaces it at once.
@@ -398,8 +401,9 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             radius: 4800.0,
-            farm_kinds: [(1, 2, 10), (3, 3, 7), (4, 5, 4), (1, 5, 1)],
-            farm_mix: [0, 0, 1, 0, 1, 2, 3, 3],
+            farm_kinds: [(1, 2, 10), (3, 3, 7), (4, 5, 5), (1, 5, 1)],
+            home_zone: 2200.0,
+            contest_margin: 1500.0,
             home_farm: 600.0,
             rock_regrow: 12000,
             farm_radius: 200.0,
@@ -1008,42 +1012,68 @@ impl World {
                 world.ships.push(ship);
             }
         }
-        // Farms cover the whole planet. One wedge of it, a team's share with its base in the
-        // middle, is laid out at random and repeated around the axis, so every team has the same
-        // fields at the same distances.
+        // Farms cover the whole planet, and where a farm lies decides what grows in it. Around a
+        // base the rocks are small: safe, and poor. Farther out they are medium. Where two
+        // bases are about as far away (along the line half-way between them, and at the poles,
+        // which all three reach alike) the big rocks grow: the rich fields are the ones two
+        // teams come to from two sides. One wedge of the planet, a team's share with its base
+        // in the middle, is laid out at random and repeated around the axis, so every team has
+        // the same fields at the same distances.
         let teams = world.bases.len().max(1);
         let share = world.cfg.rock_count.div_ceil(teams);
+        let radius = world.cfg.radius;
+        let home = Vec3::new(1.0, 0.0, 0.0);
+        let half = std::f32::consts::PI / teams as f32;
+        // The kind of farm at a place in the first team's wedge: 0 small, 1 medium, 2 big.
+        let rivals: Vec<Vec3> = world.bases.iter().skip(1).map(|b| b.pos).collect();
+        let kind_at = |cfg: &Config, pos: Vec3| {
+            let mine = geo::chord(radius, home, pos);
+            let theirs = rivals.iter().map(|r| geo::chord(radius, *r, pos)).fold(f32::MAX, f32::min);
+            if mine < cfg.home_zone {
+                0
+            } else if theirs - mine < cfg.contest_margin {
+                2
+            } else {
+                1
+            }
+        };
         let (mut kinds, mut slots): (Vec<usize>, Vec<u16>) = (Vec::new(), Vec::new());
-        while slots.len() < share {
-            let kind = world.cfg.farm_mix[kinds.len() % world.cfg.farm_mix.len()] as usize % world.cfg.farm_kinds.len();
-            slots.extend(std::iter::repeat_n(kinds.len() as u16, world.cfg.farm_kinds[kind].2.max(1) as usize));
-            kinds.push(kind);
-        }
-        if !kinds.is_empty() {
-            let radius = world.cfg.radius;
+        let mut wedge: Vec<Vec3> = Vec::new();
+        if share > 0 {
+            // About how many farms the rocks make, for how far apart to keep them.
+            let typical = world.cfg.farm_kinds.iter().map(|k| k.2).sum::<u32>() as f32 / world.cfg.farm_kinds.len() as f32;
+            let farms = (share as f32 / typical).ceil().max(1.0) * teams as f32;
             let area = 4.0 * std::f32::consts::PI * radius * radius;
-            // No two farms of a wedge closer than a good half of the even spacing.
-            let gap = (area / (kinds.len() * teams) as f32).sqrt() * 0.55;
-            // And none nearer the base than the home farm.
+            // No two farms of a wedge closer than a good half of the even spacing, and none
+            // nearer the base than the home farm.
+            let gap = (area / farms).sqrt() * 0.55;
             let clear = (world.cfg.base_radius + world.cfg.farm_radius).max(world.cfg.home_farm * 1.2).min(gap);
-            let half = std::f32::consts::PI / teams as f32;
-            let home = Vec3::new(1.0, 0.0, 0.0);
-            let mut wedge: Vec<Vec3> = Vec::new();
-            for k in 0..kinds.len() {
-                let mut pos = home;
-                for _ in 0..20 {
-                    if k == 0 {
-                        // The first farm, of small rocks, is the one next to the base.
-                        pos = geo::travel(radius, home, geo::bearing(home, rng.range(0.0, std::f32::consts::TAU)), world.cfg.home_farm.min(radius));
-                        break;
+            // Two farms have their places: the one next to the base, of small rocks, and with
+            // more than one team the lode half-way to the next base, of big ones.
+            let mut fixed = vec![(geo::travel(radius, home, geo::bearing(home, rng.range(0.0, std::f32::consts::TAU)), world.cfg.home_farm.min(radius)), 0)];
+            if teams > 1 {
+                fixed.push((Vec3::new(half.cos(), half.sin(), 0.0), 2));
+            }
+            while slots.len() < share && wedge.len() < 4096 {
+                let (pos, kind) = match fixed.get(wedge.len()) {
+                    Some(place) => *place,
+                    None => {
+                        let mut pos = home;
+                        for _ in 0..20 {
+                            let (lon, z) = (rng.range(-half, half), rng.range(-1.0, 1.0));
+                            let r = (1.0 - z * z).max(0.0).sqrt();
+                            pos = Vec3::new(r * lon.cos(), r * lon.sin(), z);
+                            if geo::chord(radius, home, pos) > clear && wedge.iter().all(|w| geo::chord(radius, *w, pos) > gap) {
+                                break;
+                            }
+                        }
+                        // One farm in six is a straggler, a single rock of any size, wherever it lies.
+                        (pos, if rng.below(6) == 0 { 3 } else { kind_at(&world.cfg, pos) })
                     }
-                    let (lon, z) = (rng.range(-half, half), rng.range(-1.0, 1.0));
-                    let r = (1.0 - z * z).max(0.0).sqrt();
-                    pos = Vec3::new(r * lon.cos(), r * lon.sin(), z);
-                    if geo::chord(radius, home, pos) > clear && wedge.iter().all(|w| geo::chord(radius, *w, pos) > gap) {
-                        break;
-                    }
-                }
+                };
+                let kind = kind % world.cfg.farm_kinds.len();
+                slots.extend(std::iter::repeat_n(wedge.len() as u16, world.cfg.farm_kinds[kind].2.max(1) as usize));
+                kinds.push(kind);
                 wedge.push(pos);
             }
             for t in 0..teams {
@@ -1058,6 +1088,18 @@ impl World {
             let farm = slots.get(i / teams).map(|k| ((i % teams) * kinds.len() + *k as usize) as u16);
             let rock = Self::new_rock(&world.cfg, &world.bases, &world.farms, farm, &mut rng);
             world.rocks.push(rock);
+        }
+        // The poles are as far from every base: a lode of big rocks at each, on top of the count.
+        if teams > 2 && share > 0 {
+            let (lo, hi, count) = world.cfg.farm_kinds[2];
+            for z in [1.0, -1.0] {
+                let farm = world.farms.len() as u16;
+                world.farms.push(Farm { pos: Vec3::new(0.0, 0.0, z), sizes: (lo, hi) });
+                for _ in 0..count {
+                    let rock = Self::new_rock(&world.cfg, &world.bases, &world.farms, Some(farm), &mut rng);
+                    world.rocks.push(rock);
+                }
+            }
         }
         world.index = RockIndex::build(&world.cfg, &world.farms);
         world.reindex();
