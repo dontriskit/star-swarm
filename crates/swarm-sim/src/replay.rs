@@ -5,13 +5,14 @@ use crate::sim::{Action, Buy, Config, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0006";
+const MAGIC: &[u8; 8] = b"SWRP0007";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
 pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len();
 
-/// What to buy as a small number: 0 nothing, 1 to 8 an upgrade, 9 to 11 tier 2 as a Lancer, Twin or Scatter.
+/// What to buy as a small number: 0 nothing, 1 to 8 an upgrade, 9 to 12 the next tier
+/// (as a Lancer, Twin, Scatter or Ram when leaving tier 1).
 pub fn buy_code(buy: Option<Buy>) -> u8 {
     match buy {
         None => 0,

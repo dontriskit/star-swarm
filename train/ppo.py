@@ -20,10 +20,10 @@ from torch import nn
 from swarm_py import OBS_LEN, Env
 
 # Sizes of the six action heads: thrust, turn, fire, boost, buy, vote on the team plan.
-HEADS = (2, 3, 2, 2, 12, 5)
+HEADS = (2, 3, 2, 2, 13, 5)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
 REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt")
-CLASSES = ("basic", "lancer", "twin", "scatter")
+CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
 UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
 
 
@@ -119,10 +119,10 @@ def summarize(stats) -> dict:
         "deaths": float(s[:, 4].mean()),
         # What the ships turned into: share of each class and mean level of each upgrade at the end.
         "classes": {name: round(float(s[:, 9 + i].mean()), 3) for i, name in enumerate(CLASSES)},
-        "upgrades": {name: round(float(s[:, 13 + i].mean()), 2) for i, name in enumerate(UPGRADES)},
-        "tiers": [round(float(s[:, 21 + i].mean()), 3) for i in range(3)],
+        "upgrades": {name: round(float(s[:, 14 + i].mean()), 2) for i, name in enumerate(UPGRADES)},
+        "tiers": [round(float(s[:, 22 + i].mean()), 3) for i in range(3)],
         # How much of a match the team spent under each plan it voted in.
-        "plans": {name: round(float(s[:, 24 + i].mean()), 3) for i, name in enumerate(PLANS)},
+        "plans": {name: round(float(s[:, 25 + i].mean()), 3) for i, name in enumerate(PLANS)},
     }
 
 

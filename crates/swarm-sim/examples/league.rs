@@ -7,7 +7,7 @@ fn main() {
     let cfg = Config::default();
     let mut wins = vec![0u32; cfg.teams];
     let (mut draws, mut minutes, mut levels) = (0u32, 0.0f64, 0.0f64);
-    let mut classes = [0u32; 4];
+    let mut classes = [0u32; 5];
     let mut per_upgrade = [0f64; 8];
     let mut ships = 0u32;
     for seed in 1..=matches {

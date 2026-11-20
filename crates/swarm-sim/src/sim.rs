@@ -76,11 +76,24 @@ pub enum Class {
     Twin,
     /// Tier 2: three lasers in a fan, short reach, fast fire.
     Scatter,
+    /// Tier 2: a heavy hull and a weak gun, built to fly into enemies: it deals a lot of
+    /// ramming damage and takes little.
+    Ram,
 }
 
-pub const CLASSES: [Class; 4] = [Class::Basic, Class::Lancer, Class::Twin, Class::Scatter];
+pub const CLASSES: [Class; 5] = [Class::Basic, Class::Lancer, Class::Twin, Class::Scatter, Class::Ram];
 /// The classes a tier-1 ship can become.
-pub const TIER2: [Class; 3] = [Class::Lancer, Class::Twin, Class::Scatter];
+pub const TIER2: [Class; 4] = [Class::Lancer, Class::Twin, Class::Scatter, Class::Ram];
+
+/// A class's build, as multiples of the basic ship.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Body {
+    pub hull: f32,
+    /// Ramming damage it deals to an enemy it collides with.
+    pub ram_deal: f32,
+    /// Ramming damage it takes.
+    pub ram_take: f32,
+}
 
 /// A class's guns.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -178,7 +191,8 @@ pub struct Config {
     pub ship_radius: f32,
     /// Radius of a ship per tier: bigger ships take up more room and are easier to hit.
     pub ship_radii: [f32; TIERS as usize],
-    /// Share of the closing speed two enemy ships take as damage when they ram each other.
+    /// Share of the closing speed two basic enemy ships each take as damage when they collide;
+    /// a class's [`Body`] scales what it deals and what it takes.
     pub ram_damage: f32,
     /// Ticks between counts of the ships' votes on the team plan.
     pub plan_ticks: u32,
@@ -218,7 +232,9 @@ pub struct Config {
     pub turret_cooldown: u16,
 
     /// Guns per class, indexed by [`Class`].
-    pub weapons: [Weapon; 4],
+    pub weapons: [Weapon; 5],
+    /// Build per class, indexed by [`Class`].
+    pub bodies: [Body; 5],
     /// Share of its damage a shot still does at the end of its range; it fades linearly on the way.
     pub shot_falloff: f32,
     /// Shots carried and shots regained per second, before upgrades.
@@ -264,7 +280,7 @@ impl Default for Config {
             max_ticks: 18000,
             ship_radius: 12.0,
             ship_radii: [12.0, 15.0, 19.0],
-            ram_damage: 0.05,
+            ram_damage: 0.1,
             plan_ticks: 30,
             thrust_accel: 220.0,
             drag: 0.6,
@@ -293,6 +309,15 @@ impl Default for Config {
                 Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 800.0, cooldown: 14, damage: 30.0 },
                 Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 560.0, cooldown: 8, damage: 11.0 },
                 Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 480.0, cooldown: 5, damage: 8.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 480.0, cooldown: 10, damage: 8.0 },
+            ],
+            bodies: [
+                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
+                // The sniper pays for its reach with a thin hull.
+                Body { hull: 0.7, ram_deal: 0.5, ram_take: 1.5 },
+                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
+                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
+                Body { hull: 1.6, ram_deal: 5.0, ram_take: 0.25 },
             ],
             shot_falloff: 0.4,
             ammo: 30.0,
@@ -331,8 +356,11 @@ impl Config {
     pub fn radius_of(&self, s: &Ship) -> f32 {
         self.ship_radii[s.tier as usize - 1]
     }
+    pub fn body(&self, class: Class) -> &Body {
+        &self.bodies[class as usize]
+    }
     pub fn hull_max(&self, s: &Ship) -> f32 {
-        self.hull * self.boost(s, Upgrade::Health)
+        self.hull * self.body(s.class).hull * self.boost(s, Upgrade::Health)
     }
     pub fn shield_max(&self, s: &Ship) -> f32 {
         self.shield * self.boost(s, Upgrade::Shield)
@@ -959,7 +987,10 @@ impl World {
                 let (na, nb) = (geo::tangent(a.pos, a.pos.sub(b.pos)).unit(), geo::tangent(b.pos, b.pos.sub(a.pos)).unit());
                 let closing = a.vel.dot(na) + b.vel.dot(nb);
                 let (enemies, apart) = (a.team != b.team, (reach - dist) / 2.0);
-                for (k, n, other) in [(i, na, j), (j, nb, i)] {
+                // What each takes depends on how the other is built for ramming and how it is built to take it.
+                let (body_a, body_b) = (*self.cfg.body(a.class), *self.cfg.body(b.class));
+                let blows = [body_b.ram_deal * body_a.ram_take, body_a.ram_deal * body_b.ram_take];
+                for ((k, n, other), blow) in [(i, na, j), (j, nb, i)].into_iter().zip(blows) {
                     let ship = &mut self.ships[k];
                     ship.pos = geo::travel(radius, ship.pos, n, apart);
                     ship.vel = geo::tangent(ship.pos, ship.vel);
@@ -967,7 +998,7 @@ impl World {
                     if closing < 0.0 {
                         ship.vel = ship.vel.sub(n.scale(0.75 * closing));
                         if enemies {
-                            let damage = -closing * self.cfg.ram_damage;
+                            let damage = -closing * self.cfg.ram_damage * blow;
                             let dropped = Self::hurt(&self.cfg, ship, damage);
                             spilled.push((ship.pos, dropped));
                             ship.last_hit_by = Some(other as u16);

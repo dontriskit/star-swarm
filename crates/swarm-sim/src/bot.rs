@@ -95,6 +95,13 @@ impl ScriptedBot {
     }
 
     fn shoot(at: &Near, keep: f32, obs: &Observation, cfg: &Config) -> Action {
+        if obs.class == Class::Ram && at.enemy {
+            // A Ram does its damage by flying into the enemy, as fast as it can.
+            let mut act = Self::fly(at.pos, 0.0, obs, cfg);
+            act.boost = act.thrust;
+            act.fire = at.pos.y.atan2(at.pos.x).abs() < AIM && at.dist < cfg.weapon(obs.class).range * 0.9;
+            return act;
+        }
         Self::shoot_at(at.pos, at.dist, at.radius, keep, obs, cfg)
     }
 

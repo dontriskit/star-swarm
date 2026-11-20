@@ -44,7 +44,7 @@ with torch.no_grad():
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0006")
+    f.write(b"SWRP0007")
     f.write(struct.pack("<QfHHII", args.seed, args.radius, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
     f.write(struct.pack("<Q", len(frames) // 2))
     f.write(frames)

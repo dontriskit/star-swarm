@@ -109,7 +109,7 @@ impl Env {
     /// Takes one little-endian uint16 per agent:
     /// thrust | turn << 1 | fire << 3 | boost << 4 | buy << 5 | vote << 9,
     /// with turn in 0..=2 (right, straight, left); buy 0 for nothing, 1..=8 for an upgrade,
-    /// 9..=11 for the next tier (as a Lancer, Twin or Scatter when leaving tier 1); and vote 0 to
+    /// 9..=12 for the next tier (as a Lancer, Twin, Scatter or Ram when leaving tier 1); and vote 0 to
     /// keep the last vote or 1..=4 for farm, defend, attack A, attack B.
     /// Returns (rewards as float32, dones as uint8), one entry per agent.
     fn step<'py>(&mut self, py: Python<'py>, actions: &[u8]) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
@@ -138,7 +138,7 @@ impl Env {
     /// Matches finished since the last call, seen from team 0, one list of floats each:
     /// minutes, crystals, upgrade levels, kills, deaths (per-ship averages), won, lost (0 or 1),
     /// slot, matches that slot had finished before, then the share of ships in each class
-    /// (Basic, Lancer, Twin, Scatter), the mean level of each of the eight upgrades, the share of
+    /// (Basic, Lancer, Twin, Scatter, Ram), the mean level of each of the eight upgrades, the share of
     /// ships at tier 1, 2 and 3, and the share of the match spent under each plan (farm, defend,
     /// attack A, attack B).
     fn take_stats(&mut self) -> Vec<Vec<f32>> {

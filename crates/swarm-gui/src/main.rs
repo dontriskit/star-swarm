@@ -36,6 +36,7 @@ fn class_name(class: Class) -> &'static str {
         Class::Lancer => "Lanca",
         Class::Twin => "Bliźniak",
         Class::Scatter => "Rozrzut",
+        Class::Ram => "Taran",
     }
 }
 

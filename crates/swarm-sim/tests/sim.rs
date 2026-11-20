@@ -392,7 +392,7 @@ fn boosting_is_faster_until_the_tank_is_empty() {
 
 #[test]
 fn each_class_fires_its_own_volley() {
-    for (class, lasers) in [(Class::Basic, 1), (Class::Lancer, 1), (Class::Twin, 2), (Class::Scatter, 3)] {
+    for (class, lasers) in [(Class::Basic, 1), (Class::Lancer, 1), (Class::Twin, 2), (Class::Scatter, 3), (Class::Ram, 1)] {
         let mut world = duel(Config::default(), 150.0);
         world.ships[0].class = class;
         world.step(&[Action { fire: true, ..Action::default() }, Action::default()]);
@@ -522,4 +522,53 @@ fn the_plan_with_the_most_votes_becomes_the_teams_order() {
     world.commanded[0] = true;
     count(&mut world, &vote([Some(Plan::Farm); 5]));
     assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| s.order.kind == OrderKind::Attack));
+}
+
+/// Two enemy ships fly straight at each other from 300 apart; returns what each lost (shield and hull).
+fn ram(first: Class, second: Class) -> (f32, f32) {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 3);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 0.3, 300.0);
+    let (a, b) = (world.ships[0].pos, world.ships[1].pos);
+    world.face(0, b);
+    world.face(1, a);
+    for (i, class) in [first, second].into_iter().enumerate() {
+        world.ships[i].tier = 2;
+        world.ships[i].class = class;
+        world.ships[i].hull = world.cfg.hull_max(&world.ships[i]);
+        world.ships[i].shield = world.cfg.shield_max(&world.ships[i]);
+    }
+    let full: Vec<f32> = world.ships.iter().map(|s| s.hull + s.shield).collect();
+    let go = [Action { thrust: true, ..Action::default() }; 2];
+    for _ in 0..50 {
+        if world.step(&go).iter().any(|e| matches!(e, Event::Crashed { .. })) {
+            break;
+        }
+    }
+    let lost = |i: usize| full[i] - (world.ships[i].hull.max(0.0) + world.ships[i].shield);
+    (lost(0), lost(1))
+}
+
+#[test]
+fn a_ram_wins_a_collision_and_a_lancer_is_fragile() {
+    let (twin_a, twin_b) = ram(Class::Twin, Class::Twin);
+    assert!(twin_a > 10.0 && (twin_a - twin_b).abs() < 1.0, "two alike take the same: {twin_a} and {twin_b}");
+
+    let (rammer, victim) = ram(Class::Ram, Class::Twin);
+    assert!(victim > twin_a * 3.0, "a Ram hits much harder: {victim} against {twin_a}");
+    assert!(rammer < twin_a / 2.0, "and takes much less: {rammer} against {twin_a}");
+
+    let (_, lancer) = ram(Class::Twin, Class::Lancer);
+    assert!(lancer > twin_a * 1.3, "a Lancer takes more from the same blow: {lancer}");
+
+    // Hull by class: the Ram is the toughest, the Lancer the thinnest.
+    let world = World::new(Config { rock_count: 0, ..Config::default() }, 1);
+    let hull = |class: Class| {
+        let mut s = world.ships[0].clone();
+        s.tier = 2;
+        s.class = class;
+        world.cfg.hull_max(&s)
+    };
+    assert!(hull(Class::Ram) > hull(Class::Twin) && hull(Class::Twin) > hull(Class::Lancer));
 }

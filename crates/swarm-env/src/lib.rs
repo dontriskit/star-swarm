@@ -61,7 +61,7 @@ pub struct EpisodeStats {
     /// Team 0's base was destroyed.
     pub lost: bool,
     /// Share of team 0's ships in each class at the end, indexed by [`swarm_sim::Class`].
-    pub classes: [f32; 4],
+    pub classes: [f32; 5],
     /// Team 0's mean level of each upgrade at the end, indexed by [`swarm_sim::Upgrade`].
     pub upgrades: [f32; 8],
     /// Share of team 0's ships at tier 1, 2 and 3 at the end.
