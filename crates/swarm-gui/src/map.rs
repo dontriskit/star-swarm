@@ -211,8 +211,16 @@ fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: b
         window.paint_quad(fill(Bounds::new(bar, size(px(width * health), px(4.0))), team_color(team as u8)));
     }
 
+    let on_screen = |p: Point<Pixels>| {
+        let (x, y) = (f32::from(p.x - area.origin.x), f32::from(p.y - area.origin.y));
+        x > -40.0 && y > -40.0 && x < f32::from(area.size.width) + 40.0 && y < f32::from(area.size.height) + 40.0
+    };
     for (i, rock) in world.rocks.iter().enumerate() {
-        if let Some(p) = view.at(rock.pos) {
+        // A broken rock is gone until it grows back.
+        if rock.hp <= 0.0 {
+            continue;
+        }
+        if let Some(p) = view.at(rock.pos).filter(|p| on_screen(*p)) {
             let radius = (world.cfg.rock_radius_of(rock.size) * scale).max(1.5);
             fill_shape(window, &polygon(p, radius, 7, i as f32 * 0.9), rgb(0x4a5263));
         }
@@ -329,8 +337,12 @@ fn minimap(world: &World, camera: Camera, in_sight: &dyn Fn(Vec3) -> bool, area:
     // The equator, where the bases sit.
     window.paint_quad(fill(Bounds::new(point(px(left), px(top + height / 2.0)), size(px(width), px(1.0))), rgb(0x1c2536)));
 
-    for rock in &world.rocks {
-        dot(window, place(rock.pos), 0.5, rgb(0x3a4252));
+    // Farms, not single rocks: brighter the more rocks stand in them.
+    for (f, farm) in world.farms.iter().enumerate() {
+        let live = world.farm_live.get(f).copied().unwrap_or(0);
+        if live > 0 {
+            dot(window, place(farm.pos), 0.5, if live >= 4 { rgb(0x4a5568) } else { rgb(0x2c3442) });
+        }
     }
     for (team, base) in world.bases.iter().enumerate() {
         let color = if base.alive() { team_color(team as u8) } else { rgb(0x3a4050) };

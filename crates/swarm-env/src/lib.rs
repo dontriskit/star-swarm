@@ -654,7 +654,7 @@ mod tests {
             world.ships[0].pos = pole;
             let spot = world.offset(pole, 0.3, 200.0);
             world.face(0, spot);
-            world.rocks.push(swarm_sim::Rock { pos: spot, vel: swarm_sim::Vec3::default(), size, hp: 500.0, last_hit_by: None, farm: None });
+            world.rocks.push(swarm_sim::Rock { pos: spot, vel: swarm_sim::Vec3::default(), size, hp: 500.0, last_hit_by: None, farm: None, regrow: 0 });
             let fire = replay::encode(&Action { fire: true, ..Action::default() });
             let (mut rewards, mut dones) = (vec![0f32; 1], vec![0u8; 1]);
             (0..60).map(|_| { env.step(&[fire], &mut rewards, &mut dones); rewards[0] }).sum::<f32>()

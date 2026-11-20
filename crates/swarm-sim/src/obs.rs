@@ -20,11 +20,24 @@ pub const CONTACTS: usize = 4;
 /// The long-range radar reports rocks by direction: this many sectors around the ship,
 /// starting dead ahead and going round to the left.
 pub const SECTORS: usize = 8;
+/// How many of the nearest farms with rocks standing a ship knows of.
+pub const FIELDS: usize = 8;
+const FIELD_LEN: usize = 6;
+
+/// A farm as a ship knows it: where it is in the ship's frame, how many rocks stand in it and
+/// how big they are (the middle of the farm's sizes).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FieldObs {
+    pub pos: Vec2,
+    pub dist: f32,
+    pub rocks: f32,
+    pub size: f32,
+}
 const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -143,6 +156,8 @@ pub struct Observation {
     pub rock_radar: [f32; SECTORS],
     /// Nearest first, within the view range: at most [`ROCKS`] rocks, [`NEAR`] of the others.
     pub rocks: List<Near, ROCKS>,
+    /// The nearest farms that still have rocks standing, nearest first, however far they are.
+    pub fields: List<FieldObs, FIELDS>,
     pub crystals: List<Near, NEAR>,
     pub ships: List<Near, NEAR>,
     /// Enemy shots, nearest first, at most [`SHOTS`].
@@ -333,10 +348,7 @@ impl<'a> Scan<'a> {
         // sector comes from which side of the nose and of the left wing the rock is on.
         let left = me.pos.cross(me.fwd);
         let mut rock_radar = [0.0f32; SECTORS];
-        for r in &world.rocks {
-            if !geo::closer(cfg.radius, me.pos, r.pos, cfg.radar_range) {
-                continue;
-            }
+        world.rocks_near(me.pos, cfg.radar_range, |_, r| {
             let (ahead, aside) = (r.pos.dot(me.fwd), r.pos.dot(left));
             // Octants, counter-clockwise from dead ahead: each quadrant split by which axis dominates.
             let sector = match (ahead >= 0.0, aside >= 0.0, ahead.abs() >= aside.abs()) {
@@ -350,13 +362,36 @@ impl<'a> Scan<'a> {
                 (true, false, true) => 7,
             };
             rock_radar[sector] += r.size as f32;
-        }
+        });
 
         let mut rocks = List::default();
-        for r in &world.rocks {
+        world.rocks_near(me.pos, cfg.view_range * 1.01, |_, r| {
             if let Some(seen) = see(self.out_of_sight(me.pos, r.pos), r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(ROCK_SIZES), false, None) {
                 rocks.offer(seen, seen.dist);
             }
+        });
+
+        // The nearest farms with rocks standing: where to go when the rocks here are gone. Found
+        // by straight-line distance first, the cheap way, and only those few put in the ship's frame.
+        let mut nearest = [(f32::MAX, usize::MAX); FIELDS];
+        for (f, farm) in world.farms.iter().enumerate() {
+            if world.farm_live.get(f).is_none_or(|live| *live == 0) {
+                continue;
+            }
+            let d = me.pos.sub(farm.pos);
+            let mut entry = (d.dot(d), f);
+            for slot in &mut nearest {
+                if entry.0 < slot.0 {
+                    std::mem::swap(slot, &mut entry);
+                }
+            }
+        }
+        let mut fields = List::default();
+        for (_, f) in nearest.into_iter().filter(|(_, f)| *f != usize::MAX) {
+            let farm = &world.farms[f];
+            let pos = world.to_frame(me.pos, me.fwd, farm.pos);
+            let field = FieldObs { pos, dist: pos.len(), rocks: world.farm_live[f] as f32, size: (farm.sizes.0 + farm.sizes.1) as f32 / 2.0 };
+            fields.offer(field, field.dist);
         }
         let mut crystals = List::default();
         for c in &world.crystals {
@@ -440,6 +475,7 @@ impl<'a> Scan<'a> {
             contacts,
             rock_radar,
             rocks,
+            fields,
             crystals,
             ships,
             shots,
@@ -594,6 +630,17 @@ impl Observation {
         put(&[(self.streak as f32 / 3.0).min(3.0)]);
         for slot in 0..NEAR {
             put(&[self.ships.get(slot).map_or(0.0, |s| (s.streak / 3.0).min(3.0))]);
+        }
+        // The nearest farms with rocks standing: which way, how far (in views, a far one reads as
+        // 4), how many rocks and how big.
+        for slot in 0..FIELDS {
+            match self.fields.get(slot) {
+                Some(f) => {
+                    let d = f.dist.max(1.0);
+                    put(&[1.0, f.pos.x / d, f.pos.y / d, (f.dist / (4.0 * view)).min(4.0), f.rocks / 10.0, f.size / ROCK_SIZES as f32]);
+                }
+                None => put(&[0.0; FIELD_LEN]),
+            }
         }
         debug_assert_eq!(at, OBS_LEN);
     }

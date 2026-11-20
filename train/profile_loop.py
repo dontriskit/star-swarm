@@ -7,7 +7,7 @@ from swarm_py import Env, OBS_LEN
 
 dev = torch.device("cuda")
 envs, hidden = 2048, 1024
-env = Env(envs, seed=5, frame_skip=3, teams=3, ships_per_team=9, rock_count=270, radius=12000.0, max_ticks=36000)
+env = Env(envs, seed=5, frame_skip=3, teams=3, ships_per_team=9, rock_count=11000, radius=12000.0, max_ticks=36000)
 team = torch.arange(env.agents, device=dev) % env.ships // 9
 ours, theirs = (team == 0).nonzero().squeeze(-1), (team != 0).nonzero().squeeze(-1)
 policy, rival = Policy(hidden).to(dev), Policy(hidden).to(dev)

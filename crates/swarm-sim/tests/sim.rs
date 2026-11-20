@@ -58,46 +58,76 @@ fn bases_are_equally_far_apart() {
 }
 
 #[test]
-fn rocks_lie_in_fields_around_the_bases_and_stay_there() {
-    let mut world = World::new(Config::default(), 4);
-    let field = world.cfg.rock_field;
-    let from_a_base = |world: &World, p: Vec3| world.bases.iter().map(|b| world.dist(b.pos, p)).fold(f32::MAX, f32::min);
-    assert!(world.rocks.iter().all(|r| from_a_base(&world, r.pos) <= field + 1.0));
-    // Every base has its share, and a ship at home has rocks in sight.
-    for b in 0..3 {
-        let near = world.rocks.iter().filter(|r| world.dist(world.bases[b].pos, r.pos) <= field + 1.0).count();
-        assert!(near > 60, "base {b} has {near} rocks");
-    }
-    assert!(!observe(&world, 0).rocks.is_empty());
-
-    // Farms: three rings of three around every base, small rocks nearest, big ones farthest.
-    assert_eq!(world.farms.len(), 27);
+fn rocks_grow_in_farms_all_over_the_planet_the_same_for_every_team() {
+    let world = World::new(Config::default(), 4);
+    assert_eq!(world.rocks.len(), 11000);
+    assert!(world.rocks.iter().all(|r| r.farm.is_some()), "every rock is in a farm, a straggler in one of its own");
+    // Every farm holds rocks of its own sizes, inside its radius.
     for (f, farm) in world.farms.iter().enumerate() {
         let rocks: Vec<&Rock> = world.rocks.iter().filter(|r| r.farm == Some(f as u16)).collect();
-        assert!(rocks.len() >= 5 && rocks.iter().all(|r| (farm.sizes.0..=farm.sizes.1).contains(&r.size)));
+        assert!(!rocks.is_empty() && rocks.iter().all(|r| (farm.sizes.0..=farm.sizes.1).contains(&r.size)));
         assert!(rocks.iter().all(|r| world.dist(farm.pos, r.pos) <= world.cfg.farm_radius + 1.0));
+        assert_eq!(world.farm_live[f] as usize, rocks.len());
     }
+    // The same fields for every team: each farm of the first team's share has a twin a third of
+    // the way around, of the same kind and as far from that team's base.
+    let third = world.farms.len() / 3;
+    for k in 0..third {
+        let (a, b) = (world.farms[k], world.farms[third + k]);
+        assert_eq!(a.sizes, b.sizes);
+        assert!((world.dist(world.bases[0].pos, a.pos) - world.dist(world.bases[1].pos, b.pos)).abs() < 2.0);
+    }
+    // A farm of small rocks next to home, several farms on the radar from there, and farms out
+    // to the far side of the planet.
     let home = world.bases[0].pos;
-    let ring = |sizes: (u8, u8)| world.farms[..9].iter().filter(|f| f.sizes == sizes).map(|f| world.dist(home, f.pos)).fold(0.0, f32::max);
-    assert!(ring((1, 2)) < ring((3, 3)) && ring((3, 3)) < ring((4, 5)));
-    // There is open space between farms, a few stragglers in it, and several farms on a ship's radar from home.
-    let stragglers = world.rocks.iter().filter(|r| r.farm.is_none()).count();
-    assert!((20..=40).contains(&stragglers), "{stragglers} stragglers");
-    assert!(world.farms.iter().filter(|f| world.dist(home, f.pos) < world.cfg.radar_range).count() >= 3);
-    let gap = world.farms[..9].iter().enumerate().flat_map(|(i, a)| world.farms[..i].iter().map(move |b| (a.pos, b.pos))).map(|(a, b)| world.dist(a, b)).fold(f32::MAX, f32::min);
-    assert!(gap > 2.0 * world.cfg.farm_radius + 300.0, "farms are {gap} apart at the closest");
-    // A broken rock grows back in its own farm.
-    let r = world.rocks.iter().position(|r| r.farm == Some(4)).unwrap();
-    world.rocks[r].hp = 0.0;
-    world.step(&vec![Action::default(); world.ships.len()]);
-    assert!(world.rocks[r].farm == Some(4) && world.dist(world.farms[4].pos, world.rocks[r].pos) <= world.cfg.farm_radius + 1.0);
-    // Rocks drift, but none is left to wander off into the empty space between the fields.
+    let nearest = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(f32::MAX, f32::min);
+    assert!((nearest - 600.0).abs() < 2.0 && world.farms[0].sizes == (1, 2));
+    let obs = observe(&world, 0);
+    assert_eq!(obs.fields.len(), 8);
+    assert!(obs.fields[0].dist < obs.fields[7].dist && obs.fields[7].dist < 3000.0, "{:?}", obs.fields[7]);
+    let far = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(0.0, f32::max);
+    assert!(far > 30000.0, "the farthest farm is {far} away");
+    // Away from any farm centre there is open space: farms keep their distance.
+    let gap = (0..third).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| world.dist(world.farms[i].pos, world.farms[j].pos)).fold(f32::MAX, f32::min);
+    assert!(gap > 2.0 * world.cfg.farm_radius + 100.0, "the closest two farms are {gap} apart");
+
+    // The rock index finds exactly the rocks a plain search finds.
+    for ship in [0usize, 9, 18] {
+        let p = world.offset(world.ships[ship].pos, 1.0, 900.0);
+        for reach in [80.0, 1040.0, 1500.0] {
+            let mut found: Vec<usize> = Vec::new();
+            world.rocks_near(p, reach, |i, _| found.push(i));
+            found.sort_unstable();
+            let plain: Vec<usize> = (0..world.rocks.len()).filter(|i| world.rocks[*i].hp > 0.0 && geo::chord(world.cfg.radius, p, world.rocks[*i].pos) < reach).collect();
+            assert_eq!(found, plain, "reach {reach}");
+        }
+    }
+}
+
+#[test]
+fn a_broken_farm_rock_grows_back_after_a_while() {
+    let mut world = World::new(Config { rock_regrow: 50, ..Config::default() }, 4);
     let idle = vec![Action::default(); world.ships.len()];
-    for _ in 0..3000 {
+    let r = world.rocks.iter().position(|r| r.farm == Some(0)).unwrap();
+    let before = world.farm_live[0];
+    world.rocks[r].hp = 0.0;
+    world.step(&idle);
+    let packs = |world: &World| world.crystals.iter().filter(|c| !c.boost_cell).count();
+    assert_eq!(packs(&world), 1, "it leaves its crystals");
+    assert_eq!(world.farm_live[0], before - 1);
+    let mut seen = Vec::new();
+    world.rocks_near(world.farms[0].pos, 400.0, |i, _| seen.push(i));
+    assert!(!seen.contains(&r), "a broken rock is not there to see, shoot or fly into");
+    for _ in 0..48 {
         world.step(&idle);
     }
-    assert!(world.rocks.iter().all(|r| from_a_base(&world, r.pos) <= field * 1.3));
-    assert!(world.rocks.iter().all(|r| r.farm.is_none_or(|f| world.dist(world.farms[f as usize].pos, r.pos) <= world.cfg.farm_radius * 1.7)));
+    assert_eq!(world.farm_live[0], before - 1, "not yet");
+    world.step(&idle);
+    world.step(&idle);
+    assert_eq!(world.farm_live[0], before);
+    assert!(world.rocks[r].hp > 0.0 && world.rocks[r].farm == Some(0));
+    assert!(world.dist(world.farms[0].pos, world.rocks[r].pos) <= world.cfg.farm_radius + 1.0);
+    assert!(packs(&world) <= 1, "and it left its crystals once");
 }
 
 #[test]
@@ -906,7 +936,7 @@ fn an_eco_drone_mines_for_its_owner_and_can_be_taken_when_the_owner_dies() {
     let mut world = with_drone(DroneKind::Eco);
     // A small rock 150 away: the ship does nothing, the drone goes and breaks it and brings the crystals in.
     let spot = world.offset(POLE, 0.3, 150.0);
-    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None, farm: None });
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None, farm: None, regrow: 0 });
     let idle = [Action::default(); 2];
     for _ in 0..600 {
         world.step(&idle);
@@ -932,7 +962,7 @@ fn an_eco_drones_shots_do_nothing_to_ships_but_a_combat_drones_do() {
         let mut world = with_drone(kind);
         // An enemy 150 from the owner, with a rock right behind it for the eco drone to shoot at.
         world.ships[1].pos = world.offset(POLE, 0.3, 150.0);
-        world.rocks.push(Rock { pos: world.offset(POLE, 0.3, 190.0), vel: Vec3::default(), size: 1, hp: 500.0, last_hit_by: None, farm: None });
+        world.rocks.push(Rock { pos: world.offset(POLE, 0.3, 190.0), vel: Vec3::default(), size: 1, hp: 500.0, last_hit_by: None, farm: None, regrow: 0 });
         let idle = [Action::default(); 2];
         let mut hit = false;
         for _ in 0..300 {
@@ -970,7 +1000,7 @@ fn flying_into_a_rock_damages_it_and_costs_shield() {
     world.ships[0].pos = POLE;
     let spot = world.offset(POLE, 0.3, 250.0);
     world.face(0, spot);
-    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 2, hp: 40.0, last_hit_by: None, farm: None });
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 2, hp: 40.0, last_hit_by: None, farm: None, regrow: 0 });
     let go = [Action { thrust: true, ..Action::default() }];
     let mut blow = 0.0;
     for _ in 0..120 {
@@ -996,7 +1026,7 @@ fn flying_into_a_rock_damages_it_and_costs_shield() {
     world.ships[0].pos = POLE;
     let spot = world.offset(POLE, 0.3, 250.0);
     world.face(0, spot);
-    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: 250.0, last_hit_by: None, farm: None });
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: 250.0, last_hit_by: None, farm: None, regrow: 0 });
     world.ships[0].shield = 0.0;
     world.ships[0].shield_wait = u16::MAX;
     world.ships[0].cargo = 40;
@@ -1060,7 +1090,7 @@ fn a_broken_rock_leaves_one_pack_and_a_ship_takes_what_fits() {
     world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
     // An XXL rock about to break, 300 away so the ship is not standing on it.
     let spot = world.offset(POLE, 0.3, 300.0);
-    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: 0.0, last_hit_by: Some(0), farm: None });
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: 0.0, last_hit_by: Some(0), farm: None, regrow: 0 });
     world.step(&[Action::default(); 2]);
     assert_eq!(world.crystals.len(), 1);
     let pack = world.crystals[0].value;
@@ -1111,9 +1141,9 @@ fn long_range_radar_shows_far_enemies_and_which_way_the_rocks_are() {
     assert!(observe(&world, 0).contacts.is_empty());
 
     // Rocks: a big one far ahead and a small one to the left show up as weight in those directions.
-    world.rocks.push(Rock { pos: world.offset(POLE, 0.3, 1350.0), vel: Vec3::default(), size: 5, hp: 250.0, last_hit_by: None, farm: None });
+    world.rocks.push(Rock { pos: world.offset(POLE, 0.3, 1350.0), vel: Vec3::default(), size: 5, hp: 250.0, last_hit_by: None, farm: None, regrow: 0 });
     let to_the_left = world.offset(POLE, 0.3 + std::f32::consts::FRAC_PI_2, 1200.0);
-    world.rocks.push(Rock { pos: to_the_left, vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None, farm: None });
+    world.rocks.push(Rock { pos: to_the_left, vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None, farm: None, regrow: 0 });
     let radar = observe(&world, 0).rock_radar;
     assert_eq!(radar[0] + radar[7], 5.0, "the big rock is dead ahead: {radar:?}");
     assert_eq!(radar[1] + radar[2], 1.0, "the small rock is to the left: {radar:?}");
@@ -1238,7 +1268,7 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     world.ships[0].fwd = geo::bearing(POLE, 0.0);
     // Fifteen rocks in a line, 70 apart from 100 out: the last one in view is at 1010.
     for k in 0..15 {
-        world.rocks.push(Rock { pos: world.offset(POLE, 0.0, 100.0 + 70.0 * k as f32), vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None, farm: None });
+        world.rocks.push(Rock { pos: world.offset(POLE, 0.0, 100.0 + 70.0 * k as f32), vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None, farm: None, regrow: 0 });
     }
     let seen = observe(&world, 0);
     assert_eq!(seen.rocks.len(), 12);
@@ -1246,6 +1276,6 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     assert!(world.cfg.view_range > 1000.0 && world.cfg.view_range < world.cfg.radar_range);
     // All twelve are in the vector a policy gets: the last six have their rows near the end.
     let v = seen.to_vec(&world.cfg);
-    let present = v[OBS_LEN - 73..OBS_LEN - 13].chunks(10).filter(|row| row[0] == 1.0).count();
+    let present = v[OBS_LEN - 121..OBS_LEN - 61].chunks(10).filter(|row| row[0] == 1.0).count();
     assert_eq!(present, 6);
 }

@@ -329,16 +329,16 @@ pub struct Config {
     pub drone_cooldown: u16,
     pub drone_damage: f32,
     pub rock_speed: f32,
-    /// Rocks lie in a field around every base, out to this far from it; the space between the
-    /// fields is empty. 0 scatters them over the whole planet.
-    pub rock_field: f32,
-    /// Farms: clusters of rocks of one kind, in rings around every base. For each ring: how far
-    /// from the base, the smallest and biggest rock size, and how many rocks to a farm. Small
-    /// rocks are close to home, the big ones farther out. Rocks beyond what the farms take are
-    /// stragglers, scattered over the field.
-    pub farm_rings: [(f32, u8, u8, u32); 3],
-    /// Farms in every ring, evenly around the base.
-    pub farms_per_ring: u32,
+    /// Rocks grow in farms: clusters of one kind, scattered over the whole planet with open space
+    /// between them. The kinds of farm: smallest and biggest rock size, and rocks to a farm.
+    /// The last kind is the straggler, one rock of any size on its own.
+    pub farm_kinds: [(u8, u8, u32); 4],
+    /// The kinds in the order they are handed out, over and over, until the rocks are used up.
+    pub farm_mix: [u8; 8],
+    /// How far from its base each team's nearest farm is: one of small rocks, to start on.
+    pub home_farm: f32,
+    /// Ticks until a broken rock grows back in its farm. 0 replaces it at once.
+    pub rock_regrow: u32,
     pub farm_radius: f32,
     pub crash_damage: f32,
 
@@ -377,14 +377,15 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             radius: 12000.0,
-            rock_field: 2600.0,
-            farm_rings: [(750.0, 1, 2, 13), (1500.0, 3, 3, 9), (2300.0, 4, 5, 5)],
-            farms_per_ring: 3,
-            farm_radius: 260.0,
+            farm_kinds: [(1, 2, 10), (3, 3, 7), (4, 5, 4), (1, 5, 1)],
+            farm_mix: [0, 0, 1, 0, 1, 2, 3, 3],
+            home_farm: 600.0,
+            rock_regrow: 18000,
+            farm_radius: 200.0,
             dt: 1.0 / 30.0,
             teams: 3,
             ships_per_team: 9,
-            rock_count: 270,
+            rock_count: 11000,
             max_ticks: 36000,
             ship_radius: 12.0,
             ship_radii: [12.0, 15.0, 19.0],
@@ -642,6 +643,105 @@ pub struct Rock {
     /// The farm it belongs to, as an index into [`World::farms`]; None for a straggler.
     /// A broken rock is replaced in the same farm.
     pub farm: Option<u16>,
+    /// Broken, and this many ticks from growing back. 0 for a rock that stands.
+    pub regrow: u32,
+}
+
+/// Finds the rocks near a point without looking at all of them. Farms do not move and their
+/// rocks stay inside them, so the planet is cut into cells (a cube's faces, each a grid) and
+/// every cell knows the farms that could matter to a point inside it.
+#[derive(Clone, Debug, Default)]
+struct RockIndex {
+    cells: Vec<Vec<u16>>,
+    /// The longest reach the cells can answer for; anything longer looks at every rock.
+    reach: f32,
+    /// The rocks of each farm, and the rocks of no farm, as indices into the rocks.
+    farm_rocks: Vec<Vec<u32>>,
+    loose: Vec<u32>,
+    /// How many rocks there were when the lists were made; a different number means stale lists.
+    indexed: usize,
+}
+
+impl RockIndex {
+    const SIDE: usize = 16;
+
+    fn cell(p: Vec3) -> usize {
+        let (ax, ay, az) = (p.x.abs(), p.y.abs(), p.z.abs());
+        let (face, u, v) = if ax >= ay && ax >= az {
+            (if p.x > 0.0 { 0 } else { 1 }, p.y / ax, p.z / ax)
+        } else if ay >= az {
+            (if p.y > 0.0 { 2 } else { 3 }, p.x / ay, p.z / ay)
+        } else {
+            (if p.z > 0.0 { 4 } else { 5 }, p.x / az, p.y / az)
+        };
+        let at = |t: f32| (((t + 1.0) * 0.5 * Self::SIDE as f32) as usize).min(Self::SIDE - 1);
+        (face * Self::SIDE + at(v)) * Self::SIDE + at(u)
+    }
+
+    fn build(cfg: &Config, farms: &[Farm]) -> Self {
+        let reach = cfg.radar_range.max(cfg.view_range) * 1.05;
+        let extent = cfg.farm_radius + cfg.rock_radius * ROCK_SIZES as f32;
+        let mut cells = vec![Vec::new(); 6 * Self::SIDE * Self::SIDE];
+        if farms.is_empty() {
+            return RockIndex { cells, reach, ..Default::default() };
+        }
+        let side = Self::SIDE as f32;
+        for face in 0..6 {
+            let at = |a: f32, b: f32| {
+                let (a, b) = (2.0 * a / side - 1.0, 2.0 * b / side - 1.0);
+                match face {
+                    0 => Vec3::new(1.0, a, b),
+                    1 => Vec3::new(-1.0, a, b),
+                    2 => Vec3::new(a, 1.0, b),
+                    3 => Vec3::new(a, -1.0, b),
+                    4 => Vec3::new(a, b, 1.0),
+                    _ => Vec3::new(a, b, -1.0),
+                }
+                .unit()
+            };
+            for v in 0..Self::SIDE {
+                for u in 0..Self::SIDE {
+                    let (u0, v0) = (u as f32, v as f32);
+                    let mid = at(u0 + 0.5, v0 + 0.5);
+                    let corners = [at(u0, v0), at(u0 + 1.0, v0), at(u0, v0 + 1.0), at(u0 + 1.0, v0 + 1.0)];
+                    let bound = corners.iter().map(|c| geo::chord(cfg.radius, mid, *c)).fold(0.0, f32::max);
+                    let limit = bound * 1.05 + reach + extent;
+                    let cell = &mut cells[(face * Self::SIDE + v) * Self::SIDE + u];
+                    cell.extend(farms.iter().enumerate().filter(|(_, f)| geo::closer(cfg.radius, mid, f.pos, limit)).map(|(f, _)| f as u16));
+                }
+            }
+        }
+        RockIndex { cells, reach, ..Default::default() }
+    }
+
+    fn near(&self, cfg: &Config, farms: &[Farm], rocks: &[Rock], p: Vec3, reach: f32, mut each: impl FnMut(usize, &Rock)) {
+        let radius = cfg.radius;
+        if self.indexed != rocks.len() || reach > self.reach || self.cells.is_empty() {
+            for (i, r) in rocks.iter().enumerate() {
+                if r.hp > 0.0 && geo::closer(radius, p, r.pos, reach) {
+                    each(i, r);
+                }
+            }
+            return;
+        }
+        for &f in &self.cells[Self::cell(p)] {
+            if !geo::closer(radius, p, farms[f as usize].pos, reach + cfg.farm_radius + 1.0) {
+                continue;
+            }
+            for &i in &self.farm_rocks[f as usize] {
+                let r = &rocks[i as usize];
+                if r.hp > 0.0 && geo::closer(radius, p, r.pos, reach) {
+                    each(i as usize, r);
+                }
+            }
+        }
+        for &i in &self.loose {
+            let r = &rocks[i as usize];
+            if r.hp > 0.0 && geo::closer(radius, p, r.pos, reach) {
+                each(i as usize, r);
+            }
+        }
+    }
 }
 
 /// A cluster of rocks of about one size. Every base has the same farms around it.
@@ -764,6 +864,8 @@ pub struct World {
     pub bases: Vec<Base>,
     /// The rock farms; see [`Config::farm_rings`].
     pub farms: Vec<Farm>,
+    /// Rocks standing in each farm.
+    pub farm_live: Vec<u16>,
     /// The mode most of each team's ships are in, indexed by team; None until one picks a mode.
     pub plans: Vec<Option<Plan>>,
     /// Fog of war: the health each team last saw each base at, indexed by team, then by base.
@@ -778,7 +880,8 @@ pub struct World {
     pub events: Vec<Event>,
     rng: Rng,
     /// Scratch space reused every tick: where the rocks and the ships are, laid out for fast first-pass tests.
-    rock_field: geo::Field,
+    /// Which rocks are near a point, without looking at all of them.
+    index: RockIndex,
     ship_field: geo::Field,
 }
 
@@ -799,13 +902,14 @@ impl World {
             shots: Vec::new(),
             drones: Vec::new(),
             farms: Vec::new(),
+            farm_live: Vec::new(),
+            index: RockIndex::default(),
             plans: vec![None; bases.len()],
             seen_base_hp: vec![vec![cfg.base_hp; bases.len()]; bases.len()],
             commanded: vec![false; bases.len()],
             felt_damage: vec![vec![0.0; cfg.teams * cfg.ships_per_team]; bases.len()],
             bases,
             events: Vec::new(),
-            rock_field: geo::Field::default(),
             ship_field: geo::Field::default(),
             rng: Rng::new(0),
             cfg,
@@ -848,31 +952,59 @@ impl World {
                 world.ships.push(ship);
             }
         }
-        // The same farms around every base, turned by the same random angle ring by ring, so no
-        // team has the better field. Rocks are dealt to the farms base by base, so a match with
-        // few rocks is still even; what is left over is scattered.
-        let mut deal: Vec<u16> = Vec::new();
-        if world.cfg.rock_field > 0.0 {
-            let per_ring = world.cfg.farms_per_ring.max(1);
-            let turns: Vec<f32> = world.cfg.farm_rings.iter().map(|_| rng.range(0.0, std::f32::consts::TAU)).collect();
-            let mut slots: Vec<Vec<u16>> = vec![Vec::new(); world.bases.len()];
-            for (b, base) in world.bases.iter().enumerate() {
-                for (ring, turn) in world.cfg.farm_rings.iter().zip(&turns) {
-                    for k in 0..per_ring {
-                        let way = geo::bearing(base.pos, turn + std::f32::consts::TAU * k as f32 / per_ring as f32);
-                        let farm = world.farms.len() as u16;
-                        world.farms.push(Farm { pos: geo::travel(world.cfg.radius, base.pos, way, ring.0), sizes: (ring.1, ring.2) });
-                        slots[b].extend(std::iter::repeat_n(farm, ring.3 as usize));
+        // Farms cover the whole planet. One wedge of it, a team's share with its base in the
+        // middle, is laid out at random and repeated around the axis, so every team has the same
+        // fields at the same distances.
+        let teams = world.bases.len().max(1);
+        let share = world.cfg.rock_count.div_ceil(teams);
+        let (mut kinds, mut slots): (Vec<usize>, Vec<u16>) = (Vec::new(), Vec::new());
+        while slots.len() < share {
+            let kind = world.cfg.farm_mix[kinds.len() % world.cfg.farm_mix.len()] as usize % world.cfg.farm_kinds.len();
+            slots.extend(std::iter::repeat_n(kinds.len() as u16, world.cfg.farm_kinds[kind].2.max(1) as usize));
+            kinds.push(kind);
+        }
+        if !kinds.is_empty() {
+            let radius = world.cfg.radius;
+            let area = 4.0 * std::f32::consts::PI * radius * radius;
+            // No two farms of a wedge closer than a good half of the even spacing.
+            let gap = (area / (kinds.len() * teams) as f32).sqrt() * 0.55;
+            // And none nearer the base than the home farm.
+            let clear = (world.cfg.base_radius + world.cfg.farm_radius).max(world.cfg.home_farm * 1.2).min(gap);
+            let half = std::f32::consts::PI / teams as f32;
+            let home = Vec3::new(1.0, 0.0, 0.0);
+            let mut wedge: Vec<Vec3> = Vec::new();
+            for k in 0..kinds.len() {
+                let mut pos = home;
+                for _ in 0..20 {
+                    if k == 0 {
+                        // The first farm, of small rocks, is the one next to the base.
+                        pos = geo::travel(radius, home, geo::bearing(home, rng.range(0.0, std::f32::consts::TAU)), world.cfg.home_farm.min(radius));
+                        break;
+                    }
+                    let (lon, z) = (rng.range(-half, half), rng.range(-1.0, 1.0));
+                    let r = (1.0 - z * z).max(0.0).sqrt();
+                    pos = Vec3::new(r * lon.cos(), r * lon.sin(), z);
+                    if geo::chord(radius, home, pos) > clear && wedge.iter().all(|w| geo::chord(radius, *w, pos) > gap) {
+                        break;
                     }
                 }
+                wedge.push(pos);
             }
-            let most = slots.iter().map(Vec::len).max().unwrap_or(0);
-            deal = (0..most).flat_map(|k| slots.iter().filter_map(move |s| s.get(k).copied())).collect();
+            for t in 0..teams {
+                let (s, c) = (std::f32::consts::TAU * t as f32 / teams as f32).sin_cos();
+                for (k, p) in wedge.iter().enumerate() {
+                    let (lo, hi, _) = world.cfg.farm_kinds[kinds[k]];
+                    world.farms.push(Farm { pos: Vec3::new(p.x * c - p.y * s, p.x * s + p.y * c, p.z), sizes: (lo, hi) });
+                }
+            }
         }
         for i in 0..world.cfg.rock_count {
-            let rock = Self::new_rock(&world.cfg, &world.bases, &world.farms, deal.get(i).copied(), &mut rng);
+            let farm = slots.get(i / teams).map(|k| ((i % teams) * kinds.len() + *k as usize) as u16);
+            let rock = Self::new_rock(&world.cfg, &world.bases, &world.farms, farm, &mut rng);
             world.rocks.push(rock);
         }
+        world.index = RockIndex::build(&world.cfg, &world.farms);
+        world.reindex();
         world.rng = rng;
         world
     }
@@ -1020,27 +1152,19 @@ impl World {
 
     fn new_rock(cfg: &Config, bases: &[Base], farms: &[Farm], farm: Option<u16>, rng: &mut Rng) -> Rock {
         if let Some(home) = farm.and_then(|f| farms.get(f as usize)) {
-            // Somewhere in its farm, of one of the farm's sizes, and barely drifting.
+            // Somewhere in its farm, of one of the farm's sizes. Farm rocks stay where they grow.
             let away = geo::bearing(home.pos, rng.range(0.0, std::f32::consts::TAU));
             let pos = geo::travel(cfg.radius, home.pos, away, cfg.farm_radius * rng.range(0.0f32, 1.0).sqrt());
             let size = home.sizes.0 + rng.below((home.sizes.1 - home.sizes.0) as u32 + 1) as u8;
-            let vel = geo::bearing(pos, rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed * 0.25));
-            return Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None, farm };
+            return Rock { pos, vel: Vec3::default(), size, hp: cfg.rock_hp_of(size), last_hit_by: None, farm, regrow: 0 };
         }
         let mut pos = Vec3::new(1.0, 0.0, 0.0);
         for _ in 0..10 {
-            if cfg.rock_field > 0.0 && !bases.is_empty() {
-                // Somewhere in the field of one of the bases, evenly over its area.
-                let home = bases[rng.below(bases.len() as u32) as usize].pos;
-                let away = geo::bearing(home, rng.range(0.0, std::f32::consts::TAU));
-                pos = geo::travel(cfg.radius, home, away, cfg.rock_field * rng.range(0.0f32, 1.0).sqrt());
-            } else {
-                // Uniform over the sphere: uniform height, uniform angle around the axis.
-                let z = rng.range(-1.0, 1.0);
-                let around = rng.range(0.0, std::f32::consts::TAU);
-                let r = (1.0 - z * z).max(0.0).sqrt();
-                pos = Vec3::new(r * around.cos(), r * around.sin(), z);
-            }
+            // Uniform over the sphere: uniform height, uniform angle around the axis.
+            let z = rng.range(-1.0, 1.0);
+            let around = rng.range(0.0, std::f32::consts::TAU);
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            pos = Vec3::new(r * around.cos(), r * around.sin(), z);
             if bases.iter().all(|b| geo::chord(cfg.radius, b.pos, pos) > 200.0) {
                 break;
             }
@@ -1049,7 +1173,29 @@ impl World {
         let mut pick = rng.below(cfg.rock_weights.iter().sum());
         let size = 1 + cfg.rock_weights.iter().position(|w| if pick < *w { true } else { pick -= *w; false }).unwrap_or(0) as u8;
         let vel = geo::bearing(pos, rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed));
-        Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None, farm: None }
+        Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None, farm: None, regrow: 0 }
+    }
+
+    /// Calls `each` with every standing rock whose centre is within `reach` of `p`.
+    pub fn rocks_near(&self, p: Vec3, reach: f32, each: impl FnMut(usize, &Rock)) {
+        self.index.near(&self.cfg, &self.farms, &self.rocks, p, reach, each);
+    }
+
+    /// Rebuilds the lists of which rock is in which farm, after rocks were added from outside.
+    fn reindex(&mut self) {
+        self.index.farm_rocks = vec![Vec::new(); self.farms.len()];
+        self.index.loose.clear();
+        self.farm_live = vec![0; self.farms.len()];
+        for (i, rock) in self.rocks.iter().enumerate() {
+            match rock.farm.map(|f| f as usize).filter(|f| *f < self.farms.len()) {
+                Some(f) => {
+                    self.index.farm_rocks[f].push(i as u32);
+                    self.farm_live[f] += (rock.hp > 0.0 && rock.regrow == 0) as u16;
+                }
+                None => self.index.loose.push(i as u32),
+            }
+        }
+        self.index.indexed = self.rocks.len();
     }
 
     /// Drops one pack of crystals between `near` and `far` from a point. Nothing for an empty pack.
@@ -1066,6 +1212,10 @@ impl World {
     pub fn step(&mut self, actions: &[Action]) -> &[Event] {
         assert_eq!(actions.len(), self.ships.len(), "one action per ship");
         self.events.clear();
+        if self.index.indexed != self.rocks.len() {
+            self.reindex();
+        }
+        let biggest_rock = self.cfg.rock_radius * ROCK_SIZES as f32;
         self.tick += 1;
         let dt = self.cfg.dt;
         let radius = self.cfg.radius;
@@ -1266,12 +1416,15 @@ impl World {
             // Where to go and how far to stay from it, and what to shoot at, if anything.
             let (goal, keep, target) = match kind {
                 DroneKind::Eco => {
-                    let rock = self
-                        .rocks
-                        .iter()
-                        .filter(|r| r.hp > 0.0 && geo::closer(radius, ship.pos, r.pos, self.cfg.drone_reach))
-                        .min_by(|a, b| nearest_to_drone(&a.pos, &b.pos))
-                        .map(|r| (r.pos, self.cfg.rock_radius * r.size as f32));
+                    let mut rock: Option<(Vec3, f32)> = None;
+                    let mut nearest = f32::MAX;
+                    self.index.near(&self.cfg, &self.farms, &self.rocks, ship.pos, self.cfg.drone_reach, |_, r| {
+                        let away = geo::chord(radius, pos, r.pos);
+                        if away < nearest {
+                            nearest = away;
+                            rock = Some((r.pos, self.cfg.rock_radius * r.size as f32));
+                        }
+                    });
                     // Crystals lying about come first, while the owner has room for them; then rocks.
                     let crystal = (ship.cargo < self.cfg.cargo_max(ship))
                         .then(|| {
@@ -1363,9 +1516,6 @@ impl World {
         let mut spilled: Vec<(Vec3, u32)> = Vec::new();
         let mut shed: Vec<Vec3> = Vec::new();
 
-        // Nearly every shot touches no rock; a flat first pass says so without the exact search.
-        self.rock_field.fill(radius, self.rocks.iter().map(|r| (r.pos, self.cfg.rock_radius * r.size as f32)));
-        let rock_field = &self.rock_field;
 
         // Shots: move, then hit the first rock or enemy ship they touch.
         let full = self.cfg.shot_full;
@@ -1373,12 +1523,13 @@ impl World {
             (shot.pos, shot.vel) = geo::advance(radius, shot.pos, shot.vel, dt);
             shot.ticks -= 1;
             let damage = shot.damage_now(full);
-            let touched = if rock_field.any_near(radius, shot.pos, 0.0) {
-                self.rocks.iter_mut().find(|r| r.hp > 0.0 && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32)
-            } else {
-                None
-            };
-            if let Some(rock) = touched {
+            let mut touched = None;
+            self.index.near(&self.cfg, &self.farms, &self.rocks, shot.pos, biggest_rock, |i, r| {
+                if touched.is_none() && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32 {
+                    touched = Some(i);
+                }
+            });
+            if let Some(rock) = touched.map(|i| &mut self.rocks[i]) {
                 rock.hp -= damage;
                 rock.last_hit_by = shot.owner;
                 if let Some(by) = shot.owner {
@@ -1452,24 +1603,28 @@ impl World {
         // pushed this tick the flat positions are stale, and every rock is checked properly.
         let biggest_ship = self.cfg.ship_radii.iter().copied().fold(0.0, f32::max);
         self.ship_field.fill(radius, self.ships.iter().filter(|s| s.alive).map(|s| (s.pos, biggest_ship)));
-        let mut pushed = false;
-        for r in 0..self.rocks.len() {
-            let rock = &mut self.rocks[r];
-            (rock.pos, rock.vel) = geo::advance(radius, rock.pos, rock.vel, dt);
-            if !pushed && !self.ship_field.any_near(radius, rock.pos, self.cfg.rock_radius * rock.size as f32) {
+        // Loose rocks drift; the ones in farms stay where they grew.
+        for rock in &mut self.rocks {
+            if rock.vel.dot(rock.vel) > 0.0 {
+                (rock.pos, rock.vel) = geo::advance(radius, rock.pos, rock.vel, dt);
+            }
+        }
+        let mut touching: Vec<usize> = Vec::new();
+        for i in 0..self.ships.len() {
+            if !self.ships[i].alive {
                 continue;
             }
-            for (i, ship) in self.ships.iter_mut().enumerate() {
-                if !ship.alive {
-                    continue;
-                }
+            touching.clear();
+            let reach = biggest_rock + self.cfg.radius_of(&self.ships[i]);
+            self.index.near(&self.cfg, &self.farms, &self.rocks, self.ships[i].pos, reach, |r, _| touching.push(r));
+            for &r in &touching {
+                let (rock, ship) = (&mut self.rocks[r], &mut self.ships[i]);
                 let reach = self.cfg.rock_radius * rock.size as f32 + self.cfg.radius_of(ship);
                 let dist = geo::chord(radius, rock.pos, ship.pos);
                 if dist >= reach || dist < 1e-3 {
                     continue;
                 }
                 // Push the ship out along the way from the rock to it, and bounce it off.
-                pushed = true;
                 let out = geo::tangent(rock.pos, ship.pos).unit();
                 ship.pos = geo::travel(radius, rock.pos, out, reach);
                 ship.vel = geo::tangent(ship.pos, ship.vel);
@@ -1547,24 +1702,20 @@ impl World {
             self.drop_pack(at, self.cfg.base_pack, self.cfg.base_radius + 20.0, self.cfg.base_radius + 120.0);
         }
 
-        // A rock that has drifted out of its farm, or a straggler well out of every field, is
-        // replaced by one where it belongs.
-        if self.cfg.rock_field > 0.0 && self.tick % 128 == 0 {
-            let leash = self.cfg.rock_field * 1.25;
-            for r in 0..self.rocks.len() {
-                let (at, farm) = (self.rocks[r].pos, self.rocks[r].farm);
-                let strayed = match farm.and_then(|f| self.farms.get(f as usize)) {
-                    Some(home) => geo::chord(radius, home.pos, at) > self.cfg.farm_radius * 1.6,
-                    None => self.bases.iter().all(|b| geo::chord(radius, b.pos, at) > leash),
-                };
-                if strayed {
-                    self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &self.farms, farm, &mut self.rng);
-                }
-            }
-        }
-
-        // Broken rocks leave crystals and are replaced elsewhere.
+        // Broken rocks leave crystals. In a farm a new rock grows after a while, somewhere in the
+        // same farm; a loose rock is replaced at once.
         for r in 0..self.rocks.len() {
+            if self.rocks[r].regrow > 0 {
+                self.rocks[r].regrow -= 1;
+                if self.rocks[r].regrow == 0 {
+                    let farm = self.rocks[r].farm;
+                    self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &self.farms, farm, &mut self.rng);
+                    if let Some(live) = farm.and_then(|f| self.farm_live.get_mut(f as usize)) {
+                        *live += 1;
+                    }
+                }
+                continue;
+            }
             if self.rocks[r].hp > 0.0 {
                 continue;
             }
@@ -1579,7 +1730,14 @@ impl World {
                 self.crystals.push(Crystal { pos: at, ticks: self.cfg.cell_ticks, value: 0, full: 0, boost_cell: true });
             }
             let farm = self.rocks[r].farm;
-            self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &self.farms, farm, &mut self.rng);
+            match farm.filter(|f| self.cfg.rock_regrow > 0 && (*f as usize) < self.farm_live.len()) {
+                Some(f) => {
+                    self.rocks[r].regrow = self.cfg.rock_regrow;
+                    self.rocks[r].hp = 0.0;
+                    self.farm_live[f as usize] = self.farm_live[f as usize].saturating_sub(1);
+                }
+                None => self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &self.farms, farm, &mut self.rng),
+            }
         }
 
         // Crystals go to the nearest ship in reach that still has room.
@@ -1734,6 +1892,7 @@ impl World {
         for r in &self.rocks {
             spot(r.pos).into_iter().for_each(&mut put);
             put(r.hp.to_bits());
+            put(r.regrow);
         }
         for b in &self.bases {
             put(b.hp.to_bits());

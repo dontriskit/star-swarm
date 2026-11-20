@@ -615,17 +615,33 @@ impl Game {
         });
 
         let column = |width: f32, text: String| div().w(px(width)).child(text);
+        // A value with its share of the maximum, coloured by how good that is: green, amber, red.
+        // For the hold it runs the other way: a full hold is crystals not handed over.
+        let (good, fair, bad) = (rgb(0x5ad67d), rgb(0xf0c24a), rgb(0xf06a5a));
+        let gauge = move |width: f32, value: f32, max: f32, full_is_bad: bool| {
+            let share = if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
+            let color = match (full_is_bad, share) {
+                (false, s) if s >= 0.66 => good,
+                (false, s) if s >= 0.33 => fair,
+                (false, _) => bad,
+                (true, s) if s >= 0.95 => bad,
+                (true, s) if s >= 0.6 => fair,
+                (true, _) => good,
+            };
+            div().w(px(width)).text_color(color).child(format!("{value:.0}/{max:.0} {:.0}%", share * 100.0))
+        };
         let header = div()
             .flex()
             .px_2()
+            .text_xs()
             .text_color(muted)
-            .child(column(72., "Statek".into()))
-            .child(column(72., "Kadłub".into()))
-            .child(column(64., "Tarcza".into()))
-            .child(column(68., "Ładunek".into()))
-            .child(column(60., "Punkty".into()))
-            .child(column(56., "Amun.".into()))
-            .child(column(64., "Dopalacz".into()))
+            .child(column(62., "Statek".into()))
+            .child(column(98., "Kadłub".into()))
+            .child(column(98., "Tarcza".into()))
+            .child(column(98., "Ładunek".into()))
+            .child(column(48., "Punkty".into()))
+            .child(column(82., "Amun.".into()))
+            .child(column(56., "Dopalacz".into()))
             .child("Rozkaz");
         let fleet = self.my_ships().enumerate().map(|(n, i)| {
             let ship = &self.world.ships[i];
@@ -637,22 +653,23 @@ impl Game {
                 .py_1()
                 .rounded_md()
                 .cursor_pointer()
+                .text_xs()
                 .bg(if picked { rgb(0x25467a) } else { rgb(0x19202e) })
                 .hover(|style| style.bg(rgb(0x2b3b58)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle(i);
                     cx.notify();
                 }))
-                .child(column(72., format!("Statek {}", n + 1)));
+                .child(column(62., format!("Statek {}", n + 1)));
             #[cfg(test)]
             let row = row.debug_selector(move || format!("ship-{n}"));
             if ship.alive {
-                row.child(column(72., format!("{:.0}/{:.0}", ship.hull.max(0.0), cfg.hull_max(ship))))
-                    .child(column(64., format!("{:.0}/{:.0}", ship.shield, cfg.shield_max(ship))))
-                    .child(column(68., format!("{}/{}", ship.cargo, cfg.cargo_max(ship))))
-                    .child(column(60., ship.points.to_string()))
-                    .child(column(56., format!("{:.0}/{:.0}", ship.ammo, cfg.ammo_max(ship))))
-                    .child(column(64., format!("{:.0}%", ship.boost * 100.0)))
+                row.child(gauge(98., ship.hull.max(0.0), cfg.hull_max(ship), false))
+                    .child(gauge(98., ship.shield, cfg.shield_max(ship), false))
+                    .child(gauge(98., ship.cargo as f32, cfg.cargo_max(ship) as f32, true))
+                    .child(div().w(px(48.)).text_color(if ship.points > 0 { good } else { muted }).child(ship.points.to_string()))
+                    .child(gauge(82., ship.ammo, cfg.ammo_max(ship), false))
+                    .child(div().w(px(56.)).text_color(if ship.boost >= 0.66 { good } else if ship.boost >= 0.33 { fair } else { bad }).child(format!("{:.0}%", ship.boost * 100.0)))
                     .child(if ship.docked { "w bazie" } else { order_name(ship.order.kind) })
             } else if self.world.bases[MY_TEAM as usize].alive() {
                 row.child(div().text_color(muted).child("odradza się"))

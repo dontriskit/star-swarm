@@ -337,7 +337,7 @@ if __name__ == "__main__":
     p.add_argument("--frame-skip", type=int, default=3)
     p.add_argument("--teams", type=int, default=3)
     p.add_argument("--ships-per-team", type=int, default=9)
-    p.add_argument("--rocks", type=int, default=270)
+    p.add_argument("--rocks", type=int, default=11000)
     p.add_argument("--radius", type=float, default=12000.0, help="radius of the planet the match is played around")
     p.add_argument("--max-ticks", type=int, default=36000)
     p.add_argument("--base-hp", type=float, default=1000.0)

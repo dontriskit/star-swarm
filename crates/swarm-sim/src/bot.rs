@@ -127,7 +127,9 @@ impl ScriptedBot {
                 act
             }
             Some(rock) => Self::shoot(rock, 140.0, obs, cfg),
-            // Nothing in sight: head for the side the long-range radar shows the most rock on.
+            // Nothing in sight: fly to the nearest farm that still has rocks.
+            None if !obs.fields.is_empty() => Self::fly(obs.fields[0].pos, 0.0, obs, cfg),
+            // No farm known: head for the side the long-range radar shows the most rock on.
             None => {
                 let best = (0..obs.rock_radar.len()).max_by(|a, b| obs.rock_radar[*a].total_cmp(&obs.rock_radar[*b])).unwrap_or(0);
                 let angle = (best as f32 + 0.5) * std::f32::consts::TAU / obs.rock_radar.len() as f32;
