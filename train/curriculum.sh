@@ -32,9 +32,10 @@ for i in "${!stages[@]}"; do
   # Hull is precious: every point lost costs 0.3 (shields are free to spend), so flying into
   # rocks pays only while the shields hold. A pack fades to nothing in 10 s, so the 0.2 a
   # crystal is paid on what is left of it.
-  # Fighting: dying costs 10; damage to an enemy ship pays 0.25 a point, more than shooting
-  # a rock ever does, so an enemy in the line of fire is the better target, and twice
-  # that once its shields are down, when its crystals start to fall out; 0.3 more while the
+  # Fighting: dying costs 10; damage to an enemy ship pays 0.1 a point, the same as shooting
+  # a small rock, and twice that once its shields are down, when its crystals start to fall out.
+  # No more than that: with three teams, a fight is time not spent mining and raising the base,
+  # and the team that stays out of it gains. So fighting has to pay for itself; 0.3 more while the
   # team is attacking and the attacker has the upper hand; a kill pays 8.
   $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
     --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
@@ -42,7 +43,7 @@ for i in "${!stages[@]}"; do
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
     --reward time=0.00083 --reward draw=30 \
     --reward deposit=0.1 --reward base_level=25 \
-    --reward death=10 --reward hit=0.25 --reward bare=0.25 --reward edge=0.3 --reward kill=8 \
+    --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
     --reward collect="$(scale 0.2)" --reward rock="$(scale 0.1)" --reward buy="$(scale 1)" --reward rock_hit="$(scale 0.1)"
   init="runs/$run/policy.pt"
