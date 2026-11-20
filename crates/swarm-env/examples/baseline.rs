@@ -7,7 +7,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let frame_skip: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(3);
     let matches: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(256);
-    let cfg = Config { teams: 1, ships_per_team: 4, rock_count: 40, world_size: 1400.0, max_ticks: 5400, ..Config::default() };
+    let cfg = Config { teams: 1, ships_per_team: 4, rock_count: 40, radius: 400.0, max_ticks: 5400, ..Config::default() };
     let mut env = VecEnv::new(cfg, matches, 1_000_000, frame_skip, Rewards::default());
     let agents = env.agents();
     let (mut actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);

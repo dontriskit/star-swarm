@@ -7,6 +7,7 @@
 import argparse
 import struct
 
+import numpy as np
 import torch
 
 from ppo import Policy, observe, pack
@@ -19,16 +20,16 @@ p.add_argument("--seed", type=int, default=7)
 p.add_argument("--frame-skip", type=int, default=3)
 p.add_argument("--teams", type=int, default=3)
 p.add_argument("--ships-per-team", type=int, default=5)
-p.add_argument("--rocks", type=int, default=90)
-p.add_argument("--world-size", type=float, default=2400.0)
-p.add_argument("--max-ticks", type=int, default=9000)
+p.add_argument("--rocks", type=int, default=420)
+p.add_argument("--radius", type=float, default=1500.0)
+p.add_argument("--max-ticks", type=int, default=18000)
 args = p.parse_args()
 
 saved = torch.load(args.policy, map_location="cpu")
 policy = Policy(saved["hidden"])
 policy.load_state_dict(saved["model"])
 env = Env(1, seed=args.seed, frame_skip=args.frame_skip, teams=args.teams, ships_per_team=args.ships_per_team,
-          rock_count=args.rocks, world_size=args.world_size, max_ticks=args.max_ticks)
+          rock_count=args.rocks, radius=args.radius, max_ticks=args.max_ticks)
 
 frames = bytearray()
 stats = []
@@ -36,15 +37,16 @@ with torch.no_grad():
     while not stats:
         actions = pack(policy.act(observe(env, "cpu"), greedy=True)[0])
         env.step(actions)
-        # The environment holds an action for frame_skip ticks and buys only on the first.
-        held = bytes(b & 0x0F for b in actions)
+        # The environment holds an action for frame_skip ticks and buys only on the first:
+        # clear the four buy bits (5 to 8) of every 16-bit action for the held ticks.
+        held = (np.frombuffer(actions, dtype="<u2") & 0x1F).astype("<u2").tobytes()
         frames += actions + held * (args.frame_skip - 1)
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0003")
-    f.write(struct.pack("<QfHHII", args.seed, args.world_size, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
-    f.write(struct.pack("<Q", len(frames)))
+    f.write(b"SWRP0005")
+    f.write(struct.pack("<QfHHII", args.seed, args.radius, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
+    f.write(struct.pack("<Q", len(frames) // 2))
     f.write(frames)
     f.write(struct.pack("<I", 0))  # no state hashes: playback is not verified
 

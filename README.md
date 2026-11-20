@@ -4,6 +4,7 @@ A team space game where a human commands a fleet of AI-flown ships. Ships break 
 
 ## Rules
 
+- The match is played around a planet: ships, rocks and bases sit on a sphere of radius 1500, about five times the area of the old flat map, and distances are measured along its surface. Bases are spaced evenly around the equator, a third of the way around from each other with three teams. The game window shows the planet as a globe; turn it with the arrow buttons or by dragging with the right mouse button.
 - Every team has a base (1000 HP) with a turret that shoots the nearest enemy ship in range. A team wins when every other base is destroyed; a team without a base gets no new ships. A match lasts at most 10 minutes.
 - Crystals from broken rocks buy eight upgrades: attack, health, fire rate, shields, speed, shield regeneration, agility, ammo. Shields take damage first and grow back on their own; the hull is repaired only next to the team's own base.
 - Ships start as tier 1. Tier 2 costs 60 crystals and means picking a class: Lancer (one fast, long-range laser), Twin (two lasers) or Scatter (three lasers in a fan, short range, fast fire). Tier 2 has 1.5 times the hull and shields and raises the upgrade cap from level 3 to 5.

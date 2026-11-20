@@ -1,3 +1,4 @@
+use crate::geo::{self, Vec3};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -27,12 +28,6 @@ impl Vec2 {
     }
     pub fn dot(self, o: Vec2) -> f32 {
         self.x * o.x + self.y * o.y
-    }
-    /// Rotates a world-space vector into the frame of a ship facing `heading`
-    /// (x forward, y to the left).
-    pub fn into_frame(self, heading: f32) -> Vec2 {
-        let (s, c) = heading.sin_cos();
-        Vec2::new(self.x * c + self.y * s, -self.x * s + self.y * c)
     }
 }
 
@@ -134,7 +129,8 @@ pub const ORDER_KINDS: usize = 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Order {
     pub kind: OrderKind,
-    pub target: Vec2,
+    /// A position on the planet; the zero vector when the order has no target.
+    pub target: Vec3,
 }
 
 /// One ship's input for one tick. The same for humans, bots and models.
@@ -151,7 +147,8 @@ pub struct Action {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub world_size: f32,
+    /// Radius of the planet the match is played around. Distances are measured along its surface.
+    pub radius: f32,
     pub dt: f32,
     pub teams: usize,
     pub ships_per_team: usize,
@@ -228,11 +225,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            world_size: 2400.0,
+            radius: 1500.0,
             dt: 1.0 / 30.0,
             teams: 3,
             ships_per_team: 5,
-            rock_count: 90,
+            rock_count: 420,
             max_ticks: 18000,
             ship_radius: 12.0,
             thrust_accel: 220.0,
@@ -352,9 +349,12 @@ impl Config {
 #[derive(Clone, Debug)]
 pub struct Ship {
     pub team: u8,
-    pub pos: Vec2,
-    pub vel: Vec2,
-    pub heading: f32,
+    /// Where the ship is: a unit vector from the planet's centre.
+    pub pos: Vec3,
+    /// Tangent to the surface at `pos`, world units per second.
+    pub vel: Vec3,
+    /// The way the nose points: a unit vector tangent to the surface at `pos`.
+    pub fwd: Vec3,
     pub hull: f32,
     pub shield: f32,
     /// Ticks left before shields start growing back.
@@ -383,8 +383,8 @@ pub struct Ship {
 
 #[derive(Clone, Debug)]
 pub struct Rock {
-    pub pos: Vec2,
-    pub vel: Vec2,
+    pub pos: Vec3,
+    pub vel: Vec3,
     pub size: u8,
     pub hp: f32,
     pub last_hit_by: Option<u16>,
@@ -392,7 +392,7 @@ pub struct Rock {
 
 #[derive(Clone, Debug)]
 pub struct Crystal {
-    pub pos: Vec2,
+    pub pos: Vec3,
     pub ticks: u16,
     /// A boost cell refills the boost tank instead of going into the cargo hold.
     pub boost_cell: bool,
@@ -400,8 +400,8 @@ pub struct Crystal {
 
 #[derive(Clone, Debug)]
 pub struct Shot {
-    pub pos: Vec2,
-    pub vel: Vec2,
+    pub pos: Vec3,
+    pub vel: Vec3,
     /// Ticks left, and the ticks it started with.
     pub ticks: u16,
     pub life: u16,
@@ -423,7 +423,7 @@ impl Shot {
 /// A team's home: where its ships appear and get repaired. Losing it loses the match.
 #[derive(Clone, Debug)]
 pub struct Base {
-    pub pos: Vec2,
+    pub pos: Vec3,
     pub hp: f32,
     /// Ticks until the turret can fire again.
     pub cooldown: u16,
@@ -471,13 +471,10 @@ const MAX_DROPPED: u32 = 8;
 impl World {
     pub fn new(cfg: Config, seed: u64) -> Self {
         let mut rng = Rng::new(seed);
-        // Evenly spaced along the diagonal. The map wraps, so every team sees the
-        // same layout from its own base and none starts closer to its enemies.
+        // Evenly spaced around the equator, so every team sees the same layout
+        // from its own base and none starts closer to its enemies.
         let bases: Vec<Base> = (0..cfg.teams)
-            .map(|t| {
-                let along = (t as f32 + 0.5) / cfg.teams as f32 * cfg.world_size;
-                Base { pos: Vec2::new(along, along), hp: cfg.base_hp, cooldown: 0 }
-            })
+            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0 })
             .collect();
         let mut world = World {
             tick: 0,
@@ -494,9 +491,9 @@ impl World {
             for _ in 0..world.cfg.ships_per_team {
                 let mut ship = Ship {
                     team: team as u8,
-                    pos: Vec2::default(),
-                    vel: Vec2::default(),
-                    heading: 0.0,
+                    pos: Vec3::new(1.0, 0.0, 0.0),
+                    vel: Vec3::default(),
+                    fwd: Vec3::new(0.0, 1.0, 0.0),
                     hull: 0.0,
                     shield: 0.0,
                     shield_wait: 0,
@@ -547,21 +544,35 @@ impl World {
         self.ships[ship].order = order;
     }
 
-    pub fn wrap(&self, p: Vec2) -> Vec2 {
-        wrap(self.cfg.world_size, p)
+    /// Distance between two positions along the surface.
+    pub fn dist(&self, a: Vec3, b: Vec3) -> f32 {
+        geo::dist(self.cfg.radius, a, b)
     }
 
-    /// Shortest vector from `a` to `b` on the wrapping map.
-    pub fn delta(&self, a: Vec2, b: Vec2) -> Vec2 {
-        delta(self.cfg.world_size, a, b)
+    /// The position `dist` away from `from` in the direction `angle` (radians, in the
+    /// arbitrary but fixed local compass of [`geo::basis`]).
+    pub fn offset(&self, from: Vec3, angle: f32, dist: f32) -> Vec3 {
+        geo::travel(self.cfg.radius, from, geo::bearing(from, angle), dist)
+    }
+
+    /// Points a ship's nose at a position.
+    pub fn face(&mut self, ship: usize, at: Vec3) {
+        let s = &mut self.ships[ship];
+        s.fwd = geo::tangent(s.pos, at).unit();
+    }
+
+    /// Where `to` lies as seen from a ship at `from` facing `fwd`: x forward, y to the left,
+    /// as far away as the way there along the surface.
+    pub fn to_frame(&self, from: Vec3, fwd: Vec3, to: Vec3) -> Vec2 {
+        geo::frame(from, fwd, geo::toward(self.cfg.radius, from, to))
     }
 
     fn place(cfg: &Config, bases: &[Base], rng: &mut Rng, ship: &mut Ship) {
         let base = bases[ship.team as usize].pos;
-        let offset = Vec2::from_angle(rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(20.0, 90.0));
-        ship.pos = wrap(cfg.world_size, base.add(offset));
-        ship.vel = Vec2::default();
-        ship.heading = rng.range(0.0, std::f32::consts::TAU);
+        let away = geo::bearing(base, rng.range(0.0, std::f32::consts::TAU));
+        ship.pos = geo::travel(cfg.radius, base, away, rng.range(20.0, 90.0));
+        ship.vel = Vec3::default();
+        ship.fwd = geo::bearing(ship.pos, rng.range(0.0, std::f32::consts::TAU));
         ship.hull = cfg.hull_max(ship);
         ship.shield = cfg.shield_max(ship);
         ship.shield_wait = 0;
@@ -581,24 +592,29 @@ impl World {
     }
 
     fn new_rock(cfg: &Config, bases: &[Base], rng: &mut Rng) -> Rock {
-        let mut pos = Vec2::default();
+        let mut pos = Vec3::new(1.0, 0.0, 0.0);
         for _ in 0..10 {
-            pos = Vec2::new(rng.range(0.0, cfg.world_size), rng.range(0.0, cfg.world_size));
-            if bases.iter().all(|b| delta(cfg.world_size, b.pos, pos).len() > 200.0) {
+            // Uniform over the sphere: uniform height, uniform angle around the axis.
+            let z = rng.range(-1.0, 1.0);
+            let around = rng.range(0.0, std::f32::consts::TAU);
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            pos = Vec3::new(r * around.cos(), r * around.sin(), z);
+            if bases.iter().all(|b| geo::chord(cfg.radius, b.pos, pos) > 200.0) {
                 break;
             }
         }
         let size = 1 + rng.below(3) as u8;
-        let vel = Vec2::from_angle(rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed));
+        let vel = geo::bearing(pos, rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed));
         Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None }
     }
 
     /// Drops crystals around a point; `cells` lets some of them be boost cells.
-    fn scatter(&mut self, at: Vec2, count: u32, spread: f32, cells: bool) {
+    fn scatter(&mut self, at: Vec3, count: u32, spread: f32, cells: bool) {
         for _ in 0..count {
-            let offset = Vec2::from_angle(self.rng.range(0.0, std::f32::consts::TAU)).scale(self.rng.range(0.0, spread));
+            let away = geo::bearing(at, self.rng.range(0.0, std::f32::consts::TAU));
+            let pos = geo::travel(self.cfg.radius, at, away, self.rng.range(0.0, spread));
             let boost_cell = cells && self.rng.unit() < self.cfg.boost_cell_chance;
-            self.crystals.push(Crystal { pos: wrap(self.cfg.world_size, at.add(offset)), ticks: self.cfg.crystal_ticks, boost_cell });
+            self.crystals.push(Crystal { pos, ticks: self.cfg.crystal_ticks, boost_cell });
         }
     }
 
@@ -608,7 +624,7 @@ impl World {
         self.events.clear();
         self.tick += 1;
         let dt = self.cfg.dt;
-        let size = self.cfg.world_size;
+        let radius = self.cfg.radius;
 
         // Ships: buy, steer, move, shoot, respawn.
         for i in 0..self.ships.len() {
@@ -641,28 +657,29 @@ impl World {
                     self.events.push(Event::Bought { ship: i as u16, what });
                 }
             }
-            ship.heading += act.turn.clamp(-1, 1) as f32 * cfg.turn_rate_of(ship) * dt;
-            ship.heading = ship.heading.rem_euclid(std::f32::consts::TAU);
+            ship.fwd = geo::turn(ship.pos, ship.fwd, act.turn.clamp(-1, 1) as f32 * cfg.turn_rate_of(ship) * dt);
             let speed_boost = cfg.boost(ship, Upgrade::Speed);
             // Boosting burns the tank and needs the engine on; otherwise the tank slowly refills.
             let boosting = act.boost && act.thrust && ship.boost > 0.0;
             ship.boost = if boosting { (ship.boost - cfg.boost_drain * dt).max(0.0) } else { (ship.boost + cfg.boost_regen * dt).min(1.0) };
             let (push, top) = if boosting { (cfg.boost_thrust, cfg.boost_speed) } else { (1.0, 1.0) };
             if act.thrust {
-                ship.vel = ship.vel.add(Vec2::from_angle(ship.heading).scale(cfg.thrust_accel * speed_boost * push * dt));
+                ship.vel = ship.vel.add(ship.fwd.scale(cfg.thrust_accel * speed_boost * push * dt));
             }
             ship.vel = ship.vel.scale(1.0 - cfg.drag * dt);
             let (speed, cap) = (ship.vel.len(), cfg.max_speed * speed_boost * top);
             if speed > cap {
                 ship.vel = ship.vel.scale(cap / speed);
             }
-            ship.pos = wrap(size, ship.pos.add(ship.vel.scale(dt)));
+            (ship.pos, ship.vel) = geo::advance(radius, ship.pos, ship.vel, dt);
+            // Carry the nose along: it has to stay tangent to the surface where the ship now is.
+            ship.fwd = geo::tangent(ship.pos, ship.fwd).unit();
             if ship.shield_wait > 0 {
                 ship.shield_wait -= 1;
             } else {
                 ship.shield = (ship.shield + cfg.shield_regen * cfg.boost(ship, Upgrade::Regen) * dt).min(cfg.shield_max(ship));
             }
-            if home.alive() && delta(size, home.pos, ship.pos).len() < cfg.base_heal_radius {
+            if home.alive() && geo::chord(radius, home.pos, ship.pos) < cfg.base_heal_radius {
                 ship.hull = (ship.hull + cfg.base_heal * dt).min(cfg.hull_max(ship));
             }
             ship.ammo = (ship.ammo + cfg.ammo_regen * cfg.boost(ship, Upgrade::Ammo) * dt).min(cfg.ammo_max(ship));
@@ -672,14 +689,14 @@ impl World {
                 ship.cooldown = cfg.cooldown(ship);
                 ship.ammo -= weapon.lasers as f32;
                 let life = cfg.shot_ticks(ship.class);
-                let side = Vec2::from_angle(ship.heading + std::f32::consts::FRAC_PI_2);
+                let left = ship.pos.cross(ship.fwd);
                 for laser in 0..weapon.lasers {
                     // Lasers sit symmetrically around the nose: fanned out, or side by side.
                     let slot = laser as f32 - (weapon.lasers - 1) as f32 / 2.0;
-                    let dir = Vec2::from_angle(ship.heading + slot * weapon.fan);
-                    let offset = if weapon.fan == 0.0 { side.scale(slot * 14.0) } else { Vec2::default() };
+                    let dir = geo::turn(ship.pos, ship.fwd, slot * weapon.fan);
+                    let aside = if weapon.fan == 0.0 { left.scale(slot * 14.0) } else { Vec3::default() };
                     self.shots.push(Shot {
-                        pos: wrap(size, ship.pos.add(dir.scale(cfg.ship_radius)).add(offset)),
+                        pos: geo::nudge(radius, ship.pos, dir.scale(cfg.ship_radius).add(aside)),
                         vel: ship.vel.add(dir.scale(weapon.speed)),
                         ticks: life,
                         life,
@@ -701,18 +718,16 @@ impl World {
                 let target = self
                     .ships
                     .iter()
-                    .filter(|s| s.alive && s.team as usize != team)
-                    .map(|s| (delta(size, base.pos, s.pos), s.vel))
-                    .filter(|(d, _)| d.len() < self.cfg.turret_range)
+                    .filter(|s| s.alive && s.team as usize != team && geo::chord(radius, base.pos, s.pos) < self.cfg.turret_range)
+                    .map(|s| (geo::toward(radius, base.pos, s.pos), geo::tangent(base.pos, s.vel)))
                     .min_by(|a, b| a.0.len().total_cmp(&b.0.len()));
                 if let Some((to, vel)) = target {
                     let gun = self.cfg.weapon(Class::Basic);
-                    let lead = to.add(vel.scale(to.len() / gun.speed));
-                    let dir = lead.scale(1.0 / lead.len().max(1e-3));
+                    let dir = to.add(vel.scale(to.len() / gun.speed)).unit();
                     let life = self.cfg.shot_ticks(Class::Basic);
                     base.cooldown = self.cfg.turret_cooldown;
                     self.shots.push(Shot {
-                        pos: wrap(size, base.pos.add(dir.scale(self.cfg.base_radius))),
+                        pos: geo::nudge(radius, base.pos, dir.scale(self.cfg.base_radius)),
                         vel: dir.scale(gun.speed),
                         ticks: life,
                         life,
@@ -727,13 +742,13 @@ impl World {
         // Shots: move, then hit the first rock or enemy ship they touch.
         let falloff = self.cfg.shot_falloff;
         for shot in &mut self.shots {
-            shot.pos = wrap(size, shot.pos.add(shot.vel.scale(dt)));
+            (shot.pos, shot.vel) = geo::advance(radius, shot.pos, shot.vel, dt);
             shot.ticks -= 1;
             let damage = shot.damage_now(falloff);
             if let Some(rock) = self
                 .rocks
                 .iter_mut()
-                .find(|r| r.hp > 0.0 && delta(size, r.pos, shot.pos).len() < self.cfg.rock_radius * r.size as f32)
+                .find(|r| r.hp > 0.0 && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32)
             {
                 rock.hp -= damage;
                 rock.last_hit_by = shot.owner;
@@ -741,7 +756,7 @@ impl World {
                 continue;
             }
             let hit = self.ships.iter().position(|s| {
-                s.alive && s.team != shot.team && delta(size, s.pos, shot.pos).len() < self.cfg.ship_radius
+                s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.ship_radius
             });
             if let Some(v) = hit {
                 Self::hurt(&self.cfg, &mut self.ships[v], damage);
@@ -752,7 +767,7 @@ impl World {
             }
             // Only ships' shots damage bases; turret shots pass over them.
             let Some(owner) = shot.owner else { continue };
-            let base = self.bases.iter().position(|b| b.alive() && delta(size, b.pos, shot.pos).len() < self.cfg.base_radius);
+            let base = self.bases.iter().position(|b| b.alive() && geo::chord(radius, b.pos, shot.pos) < self.cfg.base_radius);
             if let Some(team) = base.filter(|team| *team as u8 != shot.team) {
                 let dealt = damage.min(self.bases[team].hp);
                 self.bases[team].hp -= damage;
@@ -769,19 +784,22 @@ impl World {
         // Rocks drift; ships bounce off them and take damage by impact speed.
         for r in 0..self.rocks.len() {
             let rock = &mut self.rocks[r];
-            rock.pos = wrap(size, rock.pos.add(rock.vel.scale(dt)));
+            (rock.pos, rock.vel) = geo::advance(radius, rock.pos, rock.vel, dt);
             let reach = self.cfg.rock_radius * rock.size as f32 + self.cfg.ship_radius;
             for (i, ship) in self.ships.iter_mut().enumerate() {
                 if !ship.alive {
                     continue;
                 }
-                let d = delta(size, rock.pos, ship.pos);
-                let dist = d.len();
+                let dist = geo::chord(radius, rock.pos, ship.pos);
                 if dist >= reach || dist < 1e-3 {
                     continue;
                 }
-                let n = d.scale(1.0 / dist);
-                ship.pos = wrap(size, rock.pos.add(n.scale(reach)));
+                // Push the ship out along the way from the rock to it, and bounce it off.
+                let out = geo::tangent(rock.pos, ship.pos).unit();
+                ship.pos = geo::travel(radius, rock.pos, out, reach);
+                ship.vel = geo::tangent(ship.pos, ship.vel);
+                ship.fwd = geo::tangent(ship.pos, ship.fwd).unit();
+                let n = geo::tangent(ship.pos, ship.pos.sub(rock.pos)).unit();
                 let closing = ship.vel.sub(rock.vel).dot(n);
                 if closing < 0.0 {
                     ship.vel = ship.vel.sub(n.scale(1.5 * closing));
@@ -817,7 +835,7 @@ impl World {
                 if !s.alive || !wanted {
                     continue;
                 }
-                let dist = delta(size, s.pos, c.pos).len();
+                let dist = geo::chord(radius, s.pos, c.pos);
                 if dist < cfg.pickup_radius && best.is_none_or(|(_, b)| dist < b) {
                     best = Some((i, dist));
                 }
@@ -880,11 +898,14 @@ impl World {
                 h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
             }
         };
+        let spot = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
         put(self.tick);
         for s in &self.ships {
-            for f in [s.pos.x, s.pos.y, s.vel.x, s.vel.y, s.heading, s.hull, s.shield] {
-                put(f.to_bits());
+            for bits in [spot(s.pos), spot(s.vel), spot(s.fwd)].concat() {
+                put(bits);
             }
+            put(s.hull.to_bits());
+            put(s.shield.to_bits());
             put(s.tier as u32);
             put(s.class as u32);
             put(s.lives as u32);
@@ -899,40 +920,20 @@ impl World {
             }
         }
         for r in &self.rocks {
-            for f in [r.pos.x, r.pos.y, r.hp] {
-                put(f.to_bits());
-            }
+            spot(r.pos).into_iter().for_each(&mut put);
+            put(r.hp.to_bits());
         }
         for b in &self.bases {
             put(b.hp.to_bits());
         }
         put(self.crystals.len() as u32);
         for c in &self.crystals {
-            put(c.pos.x.to_bits());
-            put(c.pos.y.to_bits());
+            spot(c.pos).into_iter().for_each(&mut put);
         }
         put(self.shots.len() as u32);
         for s in &self.shots {
-            put(s.pos.x.to_bits());
-            put(s.pos.y.to_bits());
+            spot(s.pos).into_iter().for_each(&mut put);
         }
         h
     }
-}
-
-fn wrap(size: f32, p: Vec2) -> Vec2 {
-    Vec2::new(p.x.rem_euclid(size), p.y.rem_euclid(size))
-}
-
-fn delta(size: f32, a: Vec2, b: Vec2) -> Vec2 {
-    let fold = |d: f32| {
-        if d > size / 2.0 {
-            d - size
-        } else if d < -size / 2.0 {
-            d + size
-        } else {
-            d
-        }
-    };
-    Vec2::new(fold(b.x - a.x), fold(b.y - a.y))
 }

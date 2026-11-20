@@ -34,7 +34,7 @@ impl Env {
     /// base_hit, base_lost, win, lose, hurt. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
-    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=1, ships_per_team=4, rock_count=40, world_size=1400.0, max_ticks=1800, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
+    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=5, rock_count=420, radius=1500.0, max_ticks=18000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         envs: usize,
@@ -43,7 +43,7 @@ impl Env {
         teams: usize,
         ships_per_team: usize,
         rock_count: usize,
-        world_size: f32,
+        radius: f32,
         max_ticks: u32,
         rewards: Option<HashMap<String, f32>>,
         learners: Option<usize>,
@@ -54,8 +54,8 @@ impl Env {
         if learners > teams || !(base_hp > 0.0) {
             return Err(PyValueError::new_err("learners cannot exceed teams; base_hp must be positive"));
         }
-        if envs == 0 || frame_skip == 0 || teams == 0 || ships_per_team == 0 || max_ticks == 0 || !(world_size >= 400.0) {
-            return Err(PyValueError::new_err("envs, frame_skip, teams, ships_per_team and max_ticks must be positive; world_size at least 400"));
+        if envs == 0 || frame_skip == 0 || teams == 0 || ships_per_team == 0 || max_ticks == 0 || !(radius >= 100.0) {
+            return Err(PyValueError::new_err("envs, frame_skip, teams, ships_per_team and max_ticks must be positive; radius at least 100"));
         }
         let mut pay = Rewards::default();
         for (name, value) in rewards.unwrap_or_default() {
@@ -76,7 +76,7 @@ impl Env {
             };
             *slot = value;
         }
-        let cfg = Config { teams, ships_per_team, rock_count, world_size, max_ticks, base_hp, turret_damage: turret_damage.max(0.0), ..Config::default() };
+        let cfg = Config { teams, ships_per_team, rock_count, radius, max_ticks, base_hp, turret_damage: turret_damage.max(0.0), ..Config::default() };
         let inner = VecEnv::with_learners(cfg, envs, seed, frame_skip, pay, learners);
         let agents = inner.agents();
         let mut controlled = vec![0; agents];

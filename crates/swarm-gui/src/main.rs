@@ -12,9 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Icon, Selectable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
+use map::Camera;
 use swarm_sim::{Class, Config, Controller, HybridBot, ModelBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, UPGRADES, Upgrade, World, observe};
-#[cfg(test)]
-use swarm_sim::Vec2;
 
 /// The team the human commands.
 pub const MY_TEAM: u8 = 0;
@@ -23,6 +22,10 @@ const COMMAND_EVERY: u32 = 450;
 /// A click this close to one of your ships (world units) selects it.
 const PICK_RADIUS: f32 = 45.0;
 const SPEEDS: [u32; 4] = [1, 2, 4, 8];
+/// How fast the globe turns by itself, radians per second.
+const SPIN: f32 = 0.12;
+/// How far one press of an arrow button turns the globe, radians.
+const NUDGE: f32 = 0.45;
 
 pub const TEAM_COLORS: [u32; 6] = [0x4c9aff, 0xff8a3d, 0x5fd38d, 0xd67bff, 0xf2d04b, 0xff6b81];
 const TEAM_NAMES: [&str; 6] = ["Niebiescy", "Pomarańczowi", "Zieloni", "Fioletowi", "Żółci", "Czerwoni"];
@@ -134,6 +137,12 @@ struct Game {
     backlog: f32,
     /// Where the map was last painted, for turning clicks into world positions.
     map_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The side of the planet on screen.
+    camera: Camera,
+    /// Whether the globe turns by itself.
+    spin: bool,
+    /// Where a right-button drag that turns the globe was last seen.
+    drag: Option<Point<Pixels>>,
     status: String,
 }
 
@@ -154,6 +163,7 @@ impl Game {
     fn new(seed: u64, playback: Option<Replay>) -> Self {
         let seed = playback.as_ref().map_or(seed, |r| r.seed);
         let world = playback.as_ref().map_or_else(|| World::new(Config::default(), seed), Replay::world);
+        let camera = Camera::looking_at(world.bases[MY_TEAM as usize].pos);
         Game {
             recording: Replay::new(seed, &world.cfg),
             status: match &playback {
@@ -174,6 +184,9 @@ impl Game {
             last_frame: Instant::now(),
             backlog: 0.0,
             map_bounds: Rc::new(Cell::new(Bounds::default())),
+            camera,
+            spin: false,
+            drag: None,
         }
     }
 
@@ -187,6 +200,8 @@ impl Game {
         let mut game = Game::new(seed, None);
         game.watch = Some(Watch { dir, loaded: None, checked: Instant::now(), ended: None });
         game.status = "Czekam na pierwszy zapisany model (uruchom train/live.sh obok treningu).".into();
+        // Nobody is steering, so let the planet turn and show every side in time.
+        game.spin = true;
         game.reload();
         game
     }
@@ -203,7 +218,7 @@ impl Game {
         fresh.pilots = (0..fresh.world.ships.len()).map(|_| Box::new(ModelBot::new(net.clone(), ModelBot::HOLD)) as Box<dyn Controller>).collect();
         fresh.status = Watch::report(&path);
         fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None });
-        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, paused: self.paused, ..fresh };
+        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, paused: self.paused, camera: self.camera, spin: self.spin, ..fresh };
     }
 
     /// While watching training: move on to a newer policy once the match in progress has had its time.
@@ -239,6 +254,9 @@ impl Game {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        if self.spin {
+            self.camera.turn(elapsed * SPIN, 0.0);
+        }
         self.follow_training();
         if !self.running() {
             return;
@@ -316,12 +334,12 @@ impl Game {
     }
 
     fn click_map(&mut self, position: Point<Pixels>) {
-        let view = map::View::new(self.map_bounds.get(), self.world.cfg.world_size);
+        let view = map::View::new(self.map_bounds.get(), self.camera);
         let Some(at) = view.to_world(position) else { return };
         let near = self
             .my_ships()
             .filter(|i| self.world.ships[*i].alive)
-            .map(|i| (i, self.world.delta(self.world.ships[i].pos, at).len()))
+            .map(|i| (i, self.world.dist(self.world.ships[i].pos, at)))
             .filter(|(_, d)| *d < PICK_RADIUS)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((ship, _)) = near {
@@ -346,7 +364,7 @@ impl Game {
             Some(net) => Game::with_model(seed, net),
             None => Game::new(seed, None),
         };
-        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, ..fresh };
+        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, camera: self.camera, spin: self.spin, ..fresh };
     }
 
     fn save(&mut self) {
@@ -527,6 +545,33 @@ impl Game {
                         cx.notify();
                     }))),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_color(muted).child("Glob"))
+                    .children([("left", "◀", -NUDGE, 0.0), ("right", "▶", NUDGE, 0.0), ("up", "▲", 0.0, NUDGE), ("down", "▼", 0.0, -NUDGE)].map(
+                        |(id, label, yaw, pitch)| {
+                            Button::new(id).small().label(label).on_click(cx.listener(move |this, _, _, cx| {
+                                this.camera.turn(yaw, pitch);
+                                cx.notify();
+                            }))
+                        },
+                    ))
+                    .child(Button::new("home").small().label("Moja baza").on_click(cx.listener(|this, _, _, cx| {
+                        this.camera = Camera::looking_at(this.world.bases[MY_TEAM as usize].pos);
+                        cx.notify();
+                    })))
+                    .child(Button::new("spin").small().label(if self.spin { "Obrót: wł." } else { "Obrót: wył." }).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.spin = !this.spin;
+                            cx.notify();
+                        },
+                    )))
+                    .child(div().text_xs().text_color(muted).child("albo przeciągnij prawym przyciskiem myszy")),
+            )
             .child(div().text_color(muted).child(if self.watch.is_some() {
                 "Podgląd treningu: wszystkie drużyny lecą na najnowszym modelu (rozkazy wyłączone)"
             } else if self.playback.is_some() {
@@ -562,12 +607,13 @@ impl Game {
 impl Render for Game {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.advance();
-        if self.running() || self.watch.is_some() {
+        if self.running() || self.watch.is_some() || self.spin {
             window.request_animation_frame();
         }
         let world = self.world.clone();
         let selected = self.selected.clone();
         let bounds = self.map_bounds.clone();
+        let camera = self.camera;
         div()
             .size_full()
             .flex()
@@ -584,13 +630,27 @@ impl Render for Game {
                             cx.notify();
                         }),
                     )
+                    // Dragging with the right button turns the globe.
+                    .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, _, _| this.drag = Some(event.position)))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        let (Some(from), Some(MouseButton::Right)) = (this.drag, event.pressed_button) else {
+                            this.drag = None;
+                            return;
+                        };
+                        let globe = map::View::new(this.map_bounds.get(), this.camera).radius;
+                        let (dx, dy) = (f32::from(event.position.x - from.x), f32::from(event.position.y - from.y));
+                        // Grab-and-pull: the surface follows the pointer.
+                        this.camera.turn(-dx / globe, dy / globe);
+                        this.drag = Some(event.position);
+                        cx.notify();
+                    }))
                     .child(
                         canvas(
                             move |area, _, _| {
                                 bounds.set(area);
                                 area
                             },
-                            move |area, _, window, _| map::paint(&world, &selected, area, window),
+                            move |area, _, window, _| map::paint(&world, &selected, camera, area, window),
                         )
                         .size_full(),
                     ),
@@ -641,6 +701,7 @@ fn fail(message: &str) -> ! {
 mod tests {
     // `use super::*` brings in gpui's own `test` macro, so the standard one is named in full.
     use super::*;
+    use swarm_sim::Vec3;
 
     /// A game whose map was painted into a 600 px square at the window origin.
     fn game() -> Game {
@@ -649,22 +710,56 @@ mod tests {
         game
     }
 
-    fn on_screen(game: &Game, at: Vec2) -> Point<Pixels> {
-        let scale = 600.0 / game.world.cfg.world_size;
-        point(px(at.x * scale), px(at.y * scale))
+    fn on_screen(game: &Game, at: Vec3) -> Point<Pixels> {
+        map::View::new(game.map_bounds.get(), game.camera).at(at).expect("the position is on the visible side")
+    }
+
+    /// A spot on the visible side, away from the ships gathered at the base.
+    fn spot(game: &Game) -> Vec3 {
+        game.world.offset(game.world.bases[MY_TEAM as usize].pos, 0.5, 400.0)
+    }
+
+    #[core::prelude::v1::test]
+    fn the_view_opens_on_your_own_base_and_clicks_map_back_to_the_planet() {
+        let game = game();
+        let base = game.world.bases[MY_TEAM as usize].pos;
+        let middle = on_screen(&game, base);
+        assert!((f32::from(middle.x) - 300.0).abs() < 0.5 && (f32::from(middle.y) - 300.0).abs() < 0.5);
+        let view = map::View::new(game.map_bounds.get(), game.camera);
+        let there = spot(&game);
+        let back = view.to_world(view.at(there).unwrap()).unwrap();
+        assert!(game.world.dist(there, back) < 1.0);
+        // The far side of the planet is not drawn, and the corner of the canvas is not on the globe.
+        assert!(view.at(base.scale(-1.0)).is_none());
+        assert!(view.to_world(point(px(2.), px(2.))).is_none());
+    }
+
+    #[core::prelude::v1::test]
+    fn turning_the_globe_brings_the_far_side_into_view() {
+        let mut game = game();
+        let other = game.world.bases[1].pos;
+        // Half a turn in steps; the second base is a third of the way around.
+        let mut seen = false;
+        for _ in 0..7 {
+            game.camera.turn(NUDGE, 0.0);
+            let view = map::View::new(game.map_bounds.get(), game.camera);
+            seen |= view.at(other).is_some_and(|p| (f32::from(p.x) - 300.0).abs() < 120.0);
+            assert!((game.camera.center.len() - 1.0).abs() < 1e-4 && game.camera.up.dot(game.camera.center).abs() < 1e-4);
+        }
+        assert!(seen, "the second base never came near the middle of the view");
     }
 
     #[core::prelude::v1::test]
     fn clicking_the_map_sends_the_whole_fleet_when_nothing_is_selected() {
         let mut game = game();
         game.choose_order(OrderKind::Attack);
-        let target = Vec2::new(400.0, 400.0);
+        let target = spot(&game);
         game.click_map(on_screen(&game, target));
         for ship in &game.world.ships {
             let expected = if ship.team == MY_TEAM { OrderKind::Attack } else { OrderKind::Mine };
             assert_eq!(ship.order.kind, expected);
             if ship.team == MY_TEAM {
-                assert!(game.world.delta(ship.order.target, target).len() < 1.0);
+                assert!(game.world.dist(ship.order.target, target) < 1.0);
             }
         }
     }
@@ -678,7 +773,7 @@ mod tests {
         let picked = *game.selected.iter().next().unwrap();
 
         game.choose_order(OrderKind::Regroup);
-        game.click_map(on_screen(&game, Vec2::new(1200.0, 1200.0)));
+        game.click_map(on_screen(&game, spot(&game)));
         for &i in &mine {
             let expected = if i == picked { OrderKind::Regroup } else { OrderKind::Mine };
             assert_eq!(game.world.ships[i].order.kind, expected);
@@ -686,12 +781,12 @@ mod tests {
     }
 
     #[core::prelude::v1::test]
-    fn mine_applies_at_once_and_clicks_outside_the_map_do_nothing() {
+    fn mine_applies_at_once_and_clicks_off_the_globe_do_nothing() {
         let mut game = game();
         game.choose_order(OrderKind::Defend);
-        game.click_map(point(px(900.), px(100.)));
+        game.click_map(point(px(2.), px(2.)));
         assert!(game.world.ships.iter().all(|s| s.order.kind == OrderKind::Mine));
-        game.click_map(on_screen(&game, Vec2::new(300.0, 300.0)));
+        game.click_map(on_screen(&game, spot(&game)));
         game.choose_order(OrderKind::Mine);
         assert!(game.world.ships.iter().all(|s| s.order.kind == OrderKind::Mine));
     }
@@ -700,7 +795,7 @@ mod tests {
     fn a_played_match_saves_as_a_replay_that_plays_back_identically() {
         let mut game = game();
         game.choose_order(OrderKind::Attack);
-        game.click_map(on_screen(&game, Vec2::new(500.0, 1900.0)));
+        game.click_map(on_screen(&game, spot(&game)));
         for _ in 0..900 {
             game.tick();
         }
@@ -717,9 +812,9 @@ mod tests {
 /// glob import of gpui would resolve back to the macro itself.
 #[cfg(test)]
 mod window_tests {
-    use crate::Game;
-    use gpui_kit::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, init, point, px, size};
-    use swarm_sim::{OrderKind, Vec2};
+    use crate::{Game, map};
+    use gpui_kit::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, init, px, size};
+    use swarm_sim::OrderKind;
 
     /// Drives the real window: events go through gpui's hit testing and the
     /// handlers wired up in `render`, not straight into `Game`.
@@ -739,24 +834,26 @@ mod window_tests {
         let picked = game.read_with(cx, |g, _| g.selected.iter().copied().collect::<Vec<_>>());
         assert_eq!(picked.len(), 1);
 
-        // Choose "Zbiórka", then click a point on the map.
+        // Choose "Zbiórka", then click a point on the globe, away from the ships at the base.
         let regroup = centre(cx, "order-3");
         cx.simulate_click(regroup, Modifiers::default());
         cx.run_until_parked();
         assert_eq!(game.read_with(cx, |g, _| g.order), OrderKind::Regroup);
 
-        cx.simulate_click(point(px(300.), px(400.)), Modifiers::default());
+        let (click, expected) = game.read_with(cx, |g, _| {
+            let view = map::View::new(g.map_bounds.get(), g.camera);
+            let target = g.world.offset(g.world.bases[0].pos, 0.5, 400.0);
+            (view.at(target).unwrap(), target)
+        });
+        cx.simulate_click(click, Modifiers::default());
         cx.run_until_parked();
         game.read_with(cx, |g, _| {
             for (i, ship) in g.world.ships.iter().enumerate() {
                 let expected = if i == picked[0] { OrderKind::Regroup } else { OrderKind::Mine };
                 assert_eq!(ship.order.kind, expected, "ship {i}");
             }
-            // The map is the 660 px square in the 660 x 800 area left of the 540 px panel.
-            let scale = g.world.cfg.world_size / 660.0;
-            let expected = Vec2::new(300.0 * scale, (400.0 - 70.0) * scale);
             let target = g.world.ships[picked[0]].order.target;
-            assert!(g.world.delta(target, expected).len() < 2.0, "target {target:?}");
+            assert!(g.world.dist(target, expected) < 10.0, "target {target:?}");
         });
     }
 

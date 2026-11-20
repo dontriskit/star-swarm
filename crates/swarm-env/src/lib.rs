@@ -275,7 +275,7 @@ mod tests {
     use super::*;
 
     fn mining() -> Config {
-        Config { teams: 1, ships_per_team: 4, rock_count: 40, world_size: 1400.0, max_ticks: 900, ..Config::default() }
+        Config { teams: 1, ships_per_team: 4, rock_count: 40, radius: 400.0, max_ticks: 900, ..Config::default() }
     }
 
     fn run(env: &mut VecEnv, steps: usize) -> (f32, Vec<EpisodeStats>, Vec<f32>) {

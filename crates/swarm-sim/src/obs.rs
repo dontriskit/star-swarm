@@ -1,3 +1,4 @@
+use crate::geo::{self, Vec3};
 use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, TIERS, UPGRADES, Vec2, World};
 
 /// How many of each kind of nearby object a ship sees.
@@ -84,23 +85,29 @@ fn nearest(mut all: Vec<Near>, keep: usize) -> Vec<Near> {
 pub fn observe(world: &World, ship: usize) -> Observation {
     let cfg = &world.cfg;
     let me = &world.ships[ship];
-    let see = |pos: Vec2, vel: Vec2, radius: f32, hp: f32, enemy: bool, heading: Option<f32>| {
-        let d = world.delta(me.pos, pos);
-        let dist = d.len();
+    // Everything is expressed in this ship's own frame: x forward, y to the left.
+    let local = |v: Vec3| geo::frame(me.pos, me.fwd, geo::tangent(me.pos, v));
+    let see = |pos: Vec3, vel: Vec3, radius: f32, hp: f32, enemy: bool, fwd: Option<Vec3>| {
+        // The straight-line distance is cheap and never longer than the way along the surface.
+        if geo::chord(cfg.radius, me.pos, pos) > cfg.view_range {
+            return None;
+        }
+        let at = world.to_frame(me.pos, me.fwd, pos);
+        let dist = at.len();
         (dist <= cfg.view_range).then(|| Near {
-            pos: d.into_frame(me.heading),
-            vel: vel.sub(me.vel).into_frame(me.heading),
+            pos: at,
+            vel: local(vel.sub(me.vel)),
             dist,
             radius,
             hp,
             enemy,
-            facing: heading.map_or(Vec2::default(), |h| Vec2::from_angle(h - me.heading)),
+            facing: fwd.map_or(Vec2::default(), local),
         })
     };
     let base = |team: usize| {
         let b = &world.bases[team];
-        let d = world.delta(me.pos, b.pos);
-        BaseObs { pos: d.into_frame(me.heading), dist: d.len(), hp: b.hp.max(0.0) / cfg.base_hp }
+        let at = world.to_frame(me.pos, me.fwd, b.pos);
+        BaseObs { pos: at, dist: at.len(), hp: b.hp.max(0.0) / cfg.base_hp }
     };
     let mut enemy_bases: Vec<BaseObs> =
         (0..world.bases.len()).filter(|t| *t != me.team as usize && world.bases[*t].alive()).map(base).collect();
@@ -114,7 +121,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         shield_max: cfg.shield_max(me),
         cargo: me.cargo,
         cargo_max: cfg.cargo_max(me),
-        vel: me.vel.into_frame(me.heading),
+        vel: local(me.vel),
         ready: me.cooldown == 0 && me.ammo >= cfg.weapon(me.class).lasers as f32,
         tier: me.tier,
         class: me.class,
@@ -125,7 +132,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         levels: me.levels,
         base: base(me.team as usize),
         order: me.order.kind,
-        target: world.delta(me.pos, me.order.target).into_frame(me.heading),
+        target: world.to_frame(me.pos, me.fwd, me.order.target),
         enemy_bases,
         rocks: nearest(
             world
@@ -136,7 +143,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
             NEAR,
         ),
         crystals: nearest(
-            world.crystals.iter().filter_map(|c| see(c.pos, Vec2::default(), 0.0, c.boost_cell as u8 as f32, false, None)).collect(),
+            world.crystals.iter().filter_map(|c| see(c.pos, Vec3::default(), 0.0, c.boost_cell as u8 as f32, false, None)).collect(),
             NEAR,
         ),
         ships: nearest(
@@ -145,7 +152,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
                 .iter()
                 .enumerate()
                 .filter(|(i, s)| *i != ship && s.alive)
-                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.ship_radius, s.hull / cfg.hull_max(s), s.team != me.team, Some(s.heading)))
+                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.ship_radius, s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)))
                 .collect(),
             NEAR,
         ),
@@ -173,7 +180,8 @@ impl Observation {
     /// Writes the same vector as [`Observation::to_vec`] into `out`, which must be [`OBS_LEN`] long.
     pub fn fill(&self, cfg: &Config, out: &mut [f32]) {
         assert_eq!(out.len(), OBS_LEN);
-        let (view, half, speed) = (cfg.view_range, cfg.world_size / 2.0, cfg.max_speed);
+        // Nothing is farther away than half-way around the planet.
+        let (view, half, speed) = (cfg.view_range, cfg.radius * std::f32::consts::PI, cfg.max_speed);
         let mut at = 0;
         let mut put = |values: &[f32]| {
             out[at..at + values.len()].copy_from_slice(values);

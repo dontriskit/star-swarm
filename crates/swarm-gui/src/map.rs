@@ -1,41 +1,84 @@
-//! Draws the whole world on a canvas and maps clicks back to world positions.
+//! Draws the planet as a globe seen from space and maps clicks back to positions on it.
+//!
+//! The view is orthographic: the half of the planet facing the camera is visible, the
+//! other half is hidden until the globe is turned.
 
 use std::collections::BTreeSet;
 
 use gpui_kit::*;
-use swarm_sim::{OrderKind, Vec2, World};
+use swarm_sim::{OrderKind, Vec3, World, geo};
 
 use crate::{MY_TEAM, TEAM_COLORS};
 
-/// The square the world is drawn into, centred in the canvas.
+/// Where the globe is looked at from: the position at the centre of the view, and which way is up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera {
+    pub center: Vec3,
+    pub up: Vec3,
+}
+
+impl Camera {
+    /// Centred on a position, with north up where that means something.
+    pub fn looking_at(center: Vec3) -> Self {
+        let north = geo::tangent(center, Vec3::new(0.0, 0.0, 1.0));
+        let up = if north.len() > 1e-3 { north.unit() } else { geo::basis(center).0 };
+        Camera { center, up }
+    }
+
+    fn right(&self) -> Vec3 {
+        self.up.cross(self.center)
+    }
+
+    /// Turns the view: `yaw` brings what is to the right into the centre, `pitch` what is above.
+    pub fn turn(&mut self, yaw: f32, pitch: f32) {
+        let right = self.right();
+        self.center = self.center.scale(yaw.cos()).add(right.scale(yaw.sin())).unit();
+        let (center, up) = (self.center, self.up);
+        self.center = center.scale(pitch.cos()).add(up.scale(pitch.sin())).unit();
+        self.up = geo::tangent(self.center, up.scale(pitch.cos()).sub(center.scale(pitch.sin()))).unit();
+    }
+}
+
+/// The globe as it sits in the canvas.
 pub struct View {
-    left: f32,
-    top: f32,
-    scale: f32,
-    world_size: f32,
+    cx: f32,
+    cy: f32,
+    /// Radius of the globe on screen, pixels.
+    pub radius: f32,
+    camera: Camera,
+    right: Vec3,
 }
 
 impl View {
-    pub fn new(area: Bounds<Pixels>, world_size: f32) -> Self {
+    pub fn new(area: Bounds<Pixels>, camera: Camera) -> Self {
         let (w, h) = (f32::from(area.size.width), f32::from(area.size.height));
-        let side = w.min(h).max(1.0);
         View {
-            left: f32::from(area.origin.x) + (w - side) / 2.0,
-            top: f32::from(area.origin.y) + (h - side) / 2.0,
-            scale: side / world_size,
-            world_size,
+            cx: f32::from(area.origin.x) + w / 2.0,
+            cy: f32::from(area.origin.y) + h / 2.0,
+            radius: (w.min(h) / 2.0 * 0.94).max(1.0),
+            camera,
+            right: camera.right(),
         }
     }
 
-    fn at(&self, p: Vec2) -> Point<Pixels> {
-        point(px(self.left + p.x * self.scale), px(self.top + p.y * self.scale))
+    /// Where a position on the planet is drawn, or None when it is on the far side.
+    pub fn at(&self, p: Vec3) -> Option<Point<Pixels>> {
+        (p.dot(self.camera.center) > 0.03)
+            .then(|| point(px(self.cx + p.dot(self.right) * self.radius), px(self.cy - p.dot(self.camera.up) * self.radius)))
     }
 
-    /// The world position under a window position, or None outside the map.
-    pub fn to_world(&self, p: Point<Pixels>) -> Option<Vec2> {
-        let at = Vec2::new((f32::from(p.x) - self.left) / self.scale, (f32::from(p.y) - self.top) / self.scale);
-        let inside = |v: f32| (0.0..self.world_size).contains(&v);
-        (inside(at.x) && inside(at.y)).then_some(at)
+    /// A direction along the surface at `p` as a unit direction on screen (x right, y down).
+    fn heading(&self, dir: Vec3) -> (f32, f32) {
+        let (x, y) = (dir.dot(self.right), -dir.dot(self.camera.up));
+        let len = (x * x + y * y).sqrt().max(1e-6);
+        (x / len, y / len)
+    }
+
+    /// The position on the planet under a window position, or None outside the globe.
+    pub fn to_world(&self, p: Point<Pixels>) -> Option<Vec3> {
+        let (x, y) = ((f32::from(p.x) - self.cx) / self.radius, (self.cy - f32::from(p.y)) / self.radius);
+        let flat = x * x + y * y;
+        (flat < 1.0).then(|| self.right.scale(x).add(self.camera.up.scale(y)).add(self.camera.center.scale((1.0 - flat).sqrt())).unit())
     }
 }
 
@@ -73,63 +116,102 @@ fn team_color(team: u8) -> Rgba {
     rgb(TEAM_COLORS[team as usize % TEAM_COLORS.len()])
 }
 
-pub fn paint(world: &World, selected: &BTreeSet<usize>, area: Bounds<Pixels>, window: &mut Window) {
-    let view = View::new(area, world.cfg.world_size);
-    let side = world.cfg.world_size * view.scale;
-    window.paint_quad(fill(Bounds::new(point(px(view.left), px(view.top)), size(px(side), px(side))), rgb(0x0d111a)));
+/// A circle on the planet's surface, as the screen points of its visible part.
+fn ring(world: &World, view: &View, around: Vec3, radius: f32, sides: usize) -> Vec<Point<Pixels>> {
+    (0..sides).filter_map(|i| view.at(world.offset(around, std::f32::consts::TAU * i as f32 / sides as f32, radius))).collect()
+}
+
+pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bounds<Pixels>, window: &mut Window) {
+    let view = View::new(area, camera);
+    // Pixels per world unit at the centre of the view.
+    let scale = view.radius / world.cfg.radius;
+    let middle = point(px(view.cx), px(view.cy));
+    fill_shape(window, &polygon(middle, view.radius, 96, 0.0), rgb(0x0d111a));
+    stroke_shape(window, &polygon(middle, view.radius, 96, 0.0), 1.0, rgb(0x263046));
+
+    // A faint grid of meridians and parallels, so turning the globe reads as turning.
+    for step in 0..12 {
+        let lon = std::f32::consts::TAU * step as f32 / 12.0;
+        for k in -14..=14 {
+            if let Some(p) = view.at(Vec3::from_lon_lat(lon, k as f32 * 0.1)) {
+                dot(window, p, 0.6, rgb(0x1c2536));
+            }
+        }
+    }
+    for lat in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
+        for k in 0..90 {
+            if let Some(p) = view.at(Vec3::from_lon_lat(std::f32::consts::TAU * k as f32 / 90.0, lat)) {
+                dot(window, p, 0.6, rgb(0x1c2536));
+            }
+        }
+    }
 
     for (team, base) in world.bases.iter().enumerate() {
-        let center = view.at(base.pos);
-        let radius = world.cfg.base_radius * view.scale;
+        let Some(center) = view.at(base.pos) else { continue };
+        let body = ring(world, &view, base.pos, world.cfg.base_radius, 6);
         if !base.alive() {
-            stroke_shape(window, &polygon(center, radius, 6, 0.0), 1.0, rgb(0x3a4050));
+            if body.len() >= 3 {
+                stroke_shape(window, &body, 1.0, rgb(0x3a4050));
+            }
             continue;
         }
         let mut color = team_color(team as u8);
         color.a = 0.3;
-        // The repair zone, then the base itself with its health bar underneath.
-        stroke_shape(window, &polygon(center, world.cfg.base_heal_radius * view.scale, 40, 0.0), 1.0, color);
-        color.a = 0.55;
-        fill_shape(window, &polygon(center, radius, 6, 0.0), color);
-        let (width, health) = (radius * 2.4, (base.hp / world.cfg.base_hp).clamp(0.0, 1.0));
-        let bar = point(center.x - px(width / 2.0), center.y + px(radius + 5.0));
+        // The turret's reach, then the base itself with its health bar underneath.
+        let reach = ring(world, &view, base.pos, world.cfg.turret_range, 48);
+        if reach.len() >= 3 {
+            stroke_shape(window, &reach, 1.0, color);
+        }
+        color.a = 0.6;
+        if body.len() >= 3 {
+            fill_shape(window, &body, color);
+        }
+        let (width, health) = (36.0, (base.hp / world.cfg.base_hp).clamp(0.0, 1.0));
+        let bar = point(center.x - px(width / 2.0), center.y + px(world.cfg.base_radius * scale + 6.0));
         window.paint_quad(fill(Bounds::new(bar, size(px(width), px(4.0))), rgb(0x2a3040)));
         window.paint_quad(fill(Bounds::new(bar, size(px(width * health), px(4.0))), team_color(team as u8)));
     }
 
     for (i, rock) in world.rocks.iter().enumerate() {
-        let radius = world.cfg.rock_radius_of(rock.size) * view.scale;
-        fill_shape(window, &polygon(view.at(rock.pos), radius.max(2.0), 7, i as f32 * 0.9), rgb(0x4a5263));
+        if let Some(p) = view.at(rock.pos) {
+            let radius = (world.cfg.rock_radius_of(rock.size) * scale).max(1.5);
+            fill_shape(window, &polygon(p, radius, 7, i as f32 * 0.9), rgb(0x4a5263));
+        }
     }
 
     for crystal in &world.crystals {
-        // Boost cells are larger and orange.
-        let (half, color) = if crystal.boost_cell { (2.5, rgb(0xff9f43)) } else { (1.5, rgb(0x8ef0c8)) };
-        dot(window, view.at(crystal.pos), half, color);
+        if let Some(p) = view.at(crystal.pos) {
+            // Boost cells are larger and orange.
+            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.2, rgb(0x8ef0c8)) };
+            dot(window, p, half, color);
+        }
     }
 
     for shot in &world.shots {
-        dot(window, view.at(shot.pos), 1.5, team_color(shot.team));
+        if let Some(p) = view.at(shot.pos) {
+            dot(window, p, 1.2, team_color(shot.team));
+        }
     }
 
     // Where your ships have been sent.
     for ship in world.ships.iter().filter(|s| s.team == MY_TEAM && s.order.kind != OrderKind::Mine) {
-        let mut color = team_color(MY_TEAM);
-        color.a = 0.8;
-        stroke_shape(window, &polygon(view.at(ship.order.target), 9.0, 4, 0.0), 1.5, color);
+        if let Some(p) = view.at(ship.order.target) {
+            let mut color = team_color(MY_TEAM);
+            color.a = 0.8;
+            stroke_shape(window, &polygon(p, 9.0, 4, 0.0), 1.5, color);
+        }
     }
 
     for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive) {
-        let center = view.at(ship.pos);
-        // Tier 2 ships are drawn larger.
-        let radius = (world.cfg.ship_radius * view.scale * 1.8).max(9.0) * if ship.tier > 1 { 1.4 } else { 1.0 };
-        let nose = Vec2::from_angle(ship.heading);
+        let Some(center) = view.at(ship.pos) else { continue };
+        // Ships are drawn larger than life so they stay readable; tier 2 larger still.
+        let radius = (world.cfg.ship_radius * scale * 1.8).max(7.0) * if ship.tier > 1 { 1.4 } else { 1.0 };
+        let (fx, fy) = view.heading(ship.fwd);
         let corner = |turn: f32, reach: f32| {
-            let dir = Vec2::from_angle(ship.heading + turn);
-            point(center.x + px(dir.x * radius * reach), center.y + px(dir.y * radius * reach))
+            let (s, c) = turn.sin_cos();
+            point(center.x + px((fx * c - fy * s) * radius * reach), center.y + px((fx * s + fy * c) * radius * reach))
         };
-        let hull = [point(center.x + px(nose.x * radius), center.y + px(nose.y * radius)), corner(2.5, 0.9), corner(-2.5, 0.9)];
-        fill_shape(window, &hull, team_color(ship.team));
+        fill_shape(window, &[corner(0.0, 1.0), corner(2.5, 0.9), corner(-2.5, 0.9)], team_color(ship.team));
         if selected.contains(&i) {
             stroke_shape(window, &polygon(center, radius + 5.0, 24, 0.0), 1.5, rgb(0xffffff));
         }

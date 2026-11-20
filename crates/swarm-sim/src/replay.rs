@@ -5,7 +5,7 @@ use crate::sim::{Action, Buy, Config, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0004";
+const MAGIC: &[u8; 8] = b"SWRP0005";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
@@ -50,7 +50,8 @@ pub fn decode(b: u16) -> Action {
 /// The parts of [`Config`] that differ between matches; everything else is the default.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Setup {
-    pub world_size: f32,
+    /// Radius of the planet.
+    pub radius: f32,
     pub teams: u16,
     pub ships_per_team: u16,
     pub rock_count: u32,
@@ -60,7 +61,7 @@ pub struct Setup {
 impl Setup {
     pub fn of(cfg: &Config) -> Self {
         Setup {
-            world_size: cfg.world_size,
+            radius: cfg.radius,
             teams: cfg.teams as u16,
             ships_per_team: cfg.ships_per_team as u16,
             rock_count: cfg.rock_count as u32,
@@ -70,7 +71,7 @@ impl Setup {
 
     pub fn config(&self) -> Config {
         Config {
-            world_size: self.world_size,
+            radius: self.radius,
             teams: self.teams as usize,
             ships_per_team: self.ships_per_team as usize,
             rock_count: self.rock_count as usize,
@@ -131,7 +132,7 @@ impl Replay {
         let mut f = io::BufWriter::new(std::fs::File::create(path)?);
         f.write_all(MAGIC)?;
         f.write_all(&self.seed.to_le_bytes())?;
-        f.write_all(&self.setup.world_size.to_le_bytes())?;
+        f.write_all(&self.setup.radius.to_le_bytes())?;
         f.write_all(&self.setup.teams.to_le_bytes())?;
         f.write_all(&self.setup.ships_per_team.to_le_bytes())?;
         f.write_all(&self.setup.rock_count.to_le_bytes())?;
@@ -161,7 +162,7 @@ impl Replay {
         f.read_exact(&mut b8)?;
         let seed = u64::from_le_bytes(b8);
         f.read_exact(&mut b4)?;
-        let world_size = f32::from_le_bytes(b4);
+        let radius = f32::from_le_bytes(b4);
         f.read_exact(&mut b2)?;
         let teams = u16::from_le_bytes(b2);
         f.read_exact(&mut b2)?;
@@ -170,10 +171,10 @@ impl Replay {
         let rock_count = u32::from_le_bytes(b4);
         f.read_exact(&mut b4)?;
         let max_ticks = u32::from_le_bytes(b4);
-        let setup = Setup { world_size, teams, ships_per_team, rock_count, max_ticks };
+        let setup = Setup { radius, teams, ships_per_team, rock_count, max_ticks };
         f.read_exact(&mut b8)?;
         let len = u64::from_le_bytes(b8) as usize;
-        let sane = world_size.is_finite() && world_size >= 100.0 && teams > 0 && teams <= 64 && ships_per_team > 0 && rock_count <= 100_000;
+        let sane = radius.is_finite() && radius >= 100.0 && teams > 0 && teams <= 64 && ships_per_team > 0 && rock_count <= 100_000;
         if !sane || len % setup.ships() != 0 || len > 1 << 30 {
             return Err(bad("corrupt replay header"));
         }

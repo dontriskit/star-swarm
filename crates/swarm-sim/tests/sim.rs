@@ -8,6 +8,9 @@ fn run(world: &mut World, ticks: u32) {
     }
 }
 
+/// A point far from every base of a two- or three-team match: the north pole.
+const POLE: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+
 #[test]
 fn same_seed_same_match() {
     let mut a = World::new(Config::default(), 7);
@@ -26,6 +29,54 @@ fn different_seed_different_match() {
     run(&mut a, 100);
     run(&mut b, 100);
     assert_ne!(a.state_hash(), b.state_hash());
+}
+
+#[test]
+fn everything_stays_on_the_planet() {
+    let mut world = World::new(Config::default(), 3);
+    run(&mut world, 1500);
+    let on_surface = |p: Vec3| (p.len() - 1.0).abs() < 1e-4;
+    assert!(world.ships.iter().all(|s| on_surface(s.pos)));
+    assert!(world.rocks.iter().all(|r| on_surface(r.pos)));
+    assert!(world.shots.iter().all(|s| on_surface(s.pos)));
+    // Velocities and headings stay tangent to the surface, and the heading stays a unit vector.
+    for s in &world.ships {
+        assert!(s.vel.dot(s.pos).abs() < 0.05, "velocity leaves the surface: {:?}", s.vel);
+        assert!(s.fwd.dot(s.pos).abs() < 1e-3 && (s.fwd.len() - 1.0).abs() < 1e-3, "heading {:?}", s.fwd);
+    }
+}
+
+#[test]
+fn bases_are_equally_far_apart() {
+    let world = World::new(Config::default(), 1);
+    let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
+    let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
+    let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
+    // A third of the way around a planet of radius 1500.
+    assert!((d01 - 3141.6).abs() < 1.0, "{d01}");
+    assert!((d01 - d12).abs() < 1.0 && (d12 - d20).abs() < 1.0);
+}
+
+#[test]
+fn a_ship_flying_straight_comes_back_around_the_planet() {
+    let cfg = Config { teams: 1, ships_per_team: 1, rock_count: 0, radius: 300.0, ..Config::default() };
+    let mut world = World::new(cfg, 1);
+    let start = world.ships[0].pos;
+    let go = [Action { thrust: true, ..Action::default() }];
+    let mut farthest = 0.0f32;
+    let mut back = None;
+    for tick in 0..600 {
+        world.step(&go);
+        let away = world.dist(start, world.ships[0].pos);
+        farthest = farthest.max(away);
+        if tick > 100 && away < 30.0 {
+            back = Some(tick);
+            break;
+        }
+    }
+    // Once around is 1885 units; at about 240 a second that is roughly 8 s after getting up to speed.
+    assert!(farthest > 900.0, "only got {farthest} away, half-way around is 942");
+    assert!(back.is_some_and(|t| (220..330).contains(&t)), "back at the start after {back:?} ticks");
 }
 
 #[test]
@@ -50,16 +101,33 @@ fn observation_vector_has_fixed_length_and_is_finite() {
 }
 
 #[test]
+fn what_a_ship_sees_is_in_its_own_frame() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 1);
+    world.ships[0].pos = POLE;
+    // The other ship sits 200 away; the observer first faces it, then turns a quarter to the left.
+    world.ships[1].pos = world.offset(POLE, 0.7, 200.0);
+    world.face(0, world.ships[1].pos);
+    let ahead = observe(&world, 0).ships[0];
+    assert!((ahead.pos.x - 200.0).abs() < 0.5 && ahead.pos.y.abs() < 0.5, "{:?}", ahead.pos);
+    assert!((ahead.dist - 200.0).abs() < 0.5);
+
+    world.step(&[Action { turn: 1, ..Action::default() }, Action::default()]);
+    let after = observe(&world, 0).ships[0];
+    assert!(after.pos.y < -10.0, "after turning left the target is on the right: {:?}", after.pos);
+}
+
+#[test]
 fn regroup_order_gathers_the_team() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 5);
-    // Away from every base: turrets shoot ships that gather next to an enemy base.
-    let target = Vec2::new(1800.0, 600.0);
+    // 700 from the team's base, far from every other base.
+    let target = world.offset(world.bases[0].pos, 1.6, 700.0);
     let team: Vec<usize> = (0..world.ships.len()).filter(|i| world.ships[*i].team == 0).collect();
     for &i in &team {
         world.set_order(i, Order { kind: OrderKind::Regroup, target });
     }
-    let spread = |w: &World| team.iter().map(|&i| w.delta(w.ships[i].pos, target).len()).sum::<f32>() / team.len() as f32;
+    let spread = |w: &World| team.iter().map(|&i| w.dist(w.ships[i].pos, target)).sum::<f32>() / team.len() as f32;
     let before = spread(&world);
     run(&mut world, 600);
     let after = spread(&world);
@@ -98,15 +166,15 @@ fn buying_spends_cargo_and_stops_at_the_tier_cap() {
     assert_eq!(world.ships[0].cargo, 1000 - 60 - 60 - 90);
 }
 
-/// Two teams, no rocks; ship 0 (team 0) sits in front of team 1's base, pointing at it.
+/// Two teams, no rocks; ship 0 (team 0) sits 200 in front of team 1's base, pointing at it.
 fn siege(cfg: Config) -> World {
     let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, ..cfg };
     let mut world = World::new(cfg, 4);
     let target = world.bases[1].pos;
-    world.ships[0].pos = world.wrap(Vec2::new(target.x - 200.0, target.y));
-    world.ships[0].heading = 0.0;
+    world.ships[0].pos = world.offset(target, 0.0, 200.0);
+    world.face(0, target);
     // Park the defender far away so it neither blocks shots nor respawns into them.
-    world.ships[1].pos = world.wrap(Vec2::new(target.x, target.y + 900.0));
+    world.ships[1].pos = POLE;
     world
 }
 
@@ -129,7 +197,7 @@ fn destroying_every_other_base_wins_the_match() {
 fn a_team_without_a_base_gets_no_new_ships() {
     let mut world = siege(Config::default());
     // A third team keeps the match going after team 1 loses its base.
-    world.bases.push(Base { pos: Vec2::new(100.0, 100.0), hp: 100.0, cooldown: 0 });
+    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0 });
     world.bases[1].hp = 0.0;
     world.ships[1].alive = false;
     world.ships[1].respawn = 1;
@@ -157,15 +225,21 @@ fn a_turret_destroys_a_lone_basic_ship_before_the_base_falls() {
     assert_eq!(world.winner(), None);
 }
 
+/// Two ships of opposing teams near the north pole, `gap` apart, ship 0 pointing at ship 1;
+/// no rocks, no turrets, no base anywhere near.
+fn duel(cfg: Config, gap: f32) -> World {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..cfg };
+    let mut world = World::new(cfg, 6);
+    world.ships[1].pos = POLE;
+    world.ships[0].pos = world.offset(POLE, 0.3, gap);
+    world.face(0, POLE);
+    world
+}
+
 #[test]
 fn shields_take_the_damage_first_and_grow_back() {
-    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
-    let mut world = World::new(cfg, 6);
-    let at = world.ships[1].pos;
-    world.ships[0].pos = world.wrap(Vec2::new(at.x - 150.0, at.y));
-    world.ships[0].heading = 0.0;
+    let mut world = duel(Config::default(), 150.0);
     let mut actions = [Action { fire: true, ..Action::default() }, Action::default()];
-    // One shot of 10 against 40 shield.
     while !world.step(&actions).iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })) {}
     actions[0].fire = false;
     assert_eq!(world.ships[1].hull, 100.0);
@@ -182,21 +256,9 @@ fn shields_take_the_damage_first_and_grow_back() {
     assert_eq!(world.ships[1].shield, world.cfg.shield_max(&world.ships[1]));
 }
 
-/// Two ships of opposing teams, 150 apart, ship 0 pointing at ship 1; no rocks, no turrets.
-fn duel(cfg: Config) -> World {
-    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..cfg };
-    let mut world = World::new(cfg, 6);
-    // Far from both bases, so no shot meant for the ship lands on a base instead.
-    let at = Vec2::new(600.0, 1800.0);
-    world.ships[1].pos = at;
-    world.ships[0].pos = world.wrap(Vec2::new(at.x - 150.0, at.y));
-    world.ships[0].heading = 0.0;
-    world
-}
-
 #[test]
 fn three_deaths_demote_a_ship() {
-    let mut world = duel(Config::default());
+    let mut world = duel(Config::default(), 150.0);
     let idle = [Action::default(); 2];
     let kill = |world: &mut World| {
         world.ships[1].hull = -1.0;
@@ -230,9 +292,7 @@ fn three_deaths_demote_a_ship() {
 #[test]
 fn shots_weaken_with_distance_and_stop_at_their_range() {
     let hit_from = |gap: f32| {
-        let mut world = duel(Config::default());
-        let at = world.ships[1].pos;
-        world.ships[0].pos = world.wrap(Vec2::new(at.x - gap, at.y));
+        let mut world = duel(Config::default(), gap);
         let mut actions = [Action { fire: true, ..Action::default() }, Action::default()];
         for _ in 0..120 {
             let hit = world.step(&actions).iter().find_map(|e| match e {
@@ -254,7 +314,7 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
 
 #[test]
 fn ammo_runs_out_and_comes_back() {
-    let mut world = duel(Config::default());
+    let mut world = duel(Config::default(), 150.0);
     world.ships[0].class = Class::Scatter;
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
     let mut volleys = 0;
@@ -276,13 +336,13 @@ fn ammo_runs_out_and_comes_back() {
 #[test]
 fn boosting_is_faster_until_the_tank_is_empty() {
     let top_speed = |boost: bool| {
-        let mut world = duel(Config::default());
+        let mut world = duel(Config::default(), 900.0);
         let go = [Action { thrust: true, boost, ..Action::default() }, Action::default()];
         (0..45).map(|_| { world.step(&go); world.ships[0].vel.len() }).fold(0.0, f32::max)
     };
     assert!(top_speed(true) > top_speed(false) * 1.3);
 
-    let mut world = duel(Config::default());
+    let mut world = duel(Config::default(), 900.0);
     let go = [Action { thrust: true, boost: true, ..Action::default() }, Action::default()];
     for _ in 0..90 {
         world.step(&go);
@@ -297,7 +357,7 @@ fn boosting_is_faster_until_the_tank_is_empty() {
 #[test]
 fn each_class_fires_its_own_volley() {
     for (class, lasers) in [(Class::Basic, 1), (Class::Lancer, 1), (Class::Twin, 2), (Class::Scatter, 3)] {
-        let mut world = duel(Config::default());
+        let mut world = duel(Config::default(), 150.0);
         world.ships[0].class = class;
         world.step(&[Action { fire: true, ..Action::default() }, Action::default()]);
         assert_eq!(world.shots.len(), lasers, "{class:?}");

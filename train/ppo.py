@@ -88,7 +88,7 @@ def make_env(args, envs: int, seed: int, learners: int | None = None) -> Env:
         teams=args.teams,
         ships_per_team=args.ships_per_team,
         rock_count=args.rocks,
-        world_size=args.world_size,
+        radius=args.radius,
         max_ticks=args.max_ticks,
         # Nothing is rewarded unless asked for with --reward.
         rewards={**dict.fromkeys(REWARDS, 0.0), **{name: float(weight) for name, weight in (pair.split("=") for pair in args.reward)}},
@@ -287,8 +287,8 @@ if __name__ == "__main__":
     p.add_argument("--frame-skip", type=int, default=3)
     p.add_argument("--teams", type=int, default=3)
     p.add_argument("--ships-per-team", type=int, default=5)
-    p.add_argument("--rocks", type=int, default=90)
-    p.add_argument("--world-size", type=float, default=2400.0)
+    p.add_argument("--rocks", type=int, default=420)
+    p.add_argument("--radius", type=float, default=1500.0, help="radius of the planet the match is played around")
     p.add_argument("--max-ticks", type=int, default=18000)
     p.add_argument("--base-hp", type=float, default=1000.0)
     p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")
