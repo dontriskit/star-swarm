@@ -5,7 +5,7 @@
 
 use rayon::prelude::*;
 use swarm_sim::replay::decode;
-use swarm_sim::{Action, Config, Controller, Event, OBS_LEN, ScriptedBot, ScriptedCommander, World, observe, replay};
+use swarm_sim::{Action, Config, Controller, Event, OBS_LEN, Scan, ScriptedBot, ScriptedCommander, World, replay};
 
 /// Scripted teams get fresh orders from their scripted commander this often.
 const COMMAND_EVERY: u32 = 450;
@@ -264,8 +264,10 @@ impl VecEnv {
         let ships = self.ships();
         assert_eq!(out.len(), self.agents() * OBS_LEN);
         self.slots.par_iter().zip(out.par_chunks_mut(ships * OBS_LEN)).for_each(|(slot, out)| {
+            // One scan per match: what the ships' observations share is worked out once.
+            let scan = Scan::new(&slot.world);
             for (ship, row) in out.chunks_mut(OBS_LEN).enumerate() {
-                observe(&slot.world, ship).fill(&slot.world.cfg, row);
+                scan.observe(ship).fill(&slot.world.cfg, row);
             }
         });
     }
@@ -275,9 +277,10 @@ impl VecEnv {
         let ships = self.ships();
         assert_eq!(out.len(), self.agents());
         self.slots.par_iter().zip(out.par_chunks_mut(ships)).for_each(|(slot, out)| {
+            let scan = Scan::new(&slot.world);
             for (ship, action) in out.iter_mut().enumerate() {
                 let mut bot = ScriptedBot::for_ship(ship);
-                *action = replay::encode(&bot.act(&observe(&slot.world, ship), &slot.world.cfg));
+                *action = replay::encode(&bot.act(&scan.observe(ship), &slot.world.cfg));
             }
         });
     }
@@ -311,8 +314,9 @@ impl VecEnv {
                                 slot.commander.command(&mut slot.world, team as u8);
                             }
                         }
+                        let scan = Scan::new(&slot.world);
                         for ship in learners * per_team..held.len() {
-                            held[ship] = ScriptedBot::for_ship(ship).act(&observe(&slot.world, ship), &slot.world.cfg);
+                            held[ship] = ScriptedBot::for_ship(ship).act(&scan.observe(ship), &slot.world.cfg);
                         }
                     }
                     // Only a match seen from its first tick is on the tape.

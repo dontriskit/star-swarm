@@ -655,6 +655,9 @@ pub struct World {
     pub commanded: Vec<bool>,
     pub events: Vec<Event>,
     rng: Rng,
+    /// Scratch space reused every tick: where the rocks and the ships are, laid out for fast first-pass tests.
+    rock_field: geo::Field,
+    ship_field: geo::Field,
 }
 
 
@@ -678,6 +681,8 @@ impl World {
             commanded: vec![false; bases.len()],
             bases,
             events: Vec::new(),
+            rock_field: geo::Field::default(),
+            ship_field: geo::Field::default(),
             rng: Rng::new(0),
             cfg,
         };
@@ -1049,7 +1054,7 @@ impl World {
             let rock = self
                 .rocks
                 .iter()
-                .filter(|r| r.hp > 0.0 && geo::chord(radius, ship.pos, r.pos) < self.cfg.drone_reach)
+                .filter(|r| r.hp > 0.0 && geo::closer(radius, ship.pos, r.pos, self.cfg.drone_reach))
                 .min_by(|a, b| geo::chord(radius, drone.pos, a.pos).total_cmp(&geo::chord(radius, drone.pos, b.pos)))
                 .map(|r| (r.pos, self.cfg.rock_radius * r.size as f32));
             // Crystals lying about come first, while the owner has room for them; then rocks; else trail the owner.
@@ -1057,7 +1062,7 @@ impl World {
                 .then(|| {
                     self.crystals
                         .iter()
-                        .filter(|c| !c.boost_cell && geo::chord(radius, ship.pos, c.pos) < self.cfg.drone_reach)
+                        .filter(|c| !c.boost_cell && geo::closer(radius, ship.pos, c.pos, self.cfg.drone_reach))
                         .min_by(|a, b| geo::chord(radius, drone.pos, a.pos).total_cmp(&geo::chord(radius, drone.pos, b.pos)))
                         .map(|c| c.pos)
                 })
@@ -1120,17 +1125,22 @@ impl World {
         // Crystals knocked out of holds this tick: where, and how many.
         let mut spilled: Vec<(Vec3, u32)> = Vec::new();
 
+        // Nearly every shot touches no rock; a flat first pass says so without the exact search.
+        self.rock_field.fill(radius, self.rocks.iter().map(|r| (r.pos, self.cfg.rock_radius * r.size as f32)));
+        let rock_field = &self.rock_field;
+
         // Shots: move, then hit the first rock or enemy ship they touch.
         let falloff = self.cfg.shot_falloff;
         for shot in &mut self.shots {
             (shot.pos, shot.vel) = geo::advance(radius, shot.pos, shot.vel, dt);
             shot.ticks -= 1;
             let damage = shot.damage_now(falloff);
-            if let Some(rock) = self
-                .rocks
-                .iter_mut()
-                .find(|r| r.hp > 0.0 && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32)
-            {
+            let touched = if rock_field.any_near(radius, shot.pos, 0.0) {
+                self.rocks.iter_mut().find(|r| r.hp > 0.0 && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32)
+            } else {
+                None
+            };
+            if let Some(rock) = touched {
                 rock.hp -= damage;
                 rock.last_hit_by = shot.owner;
                 if let Some(by) = shot.owner {
@@ -1166,10 +1176,18 @@ impl World {
         }
         self.shots.retain(|s| s.ticks > 0);
 
-        // Rocks drift; ships bounce off them and take damage by impact speed.
+        // Rocks drift; ships bounce off them and take damage by impact speed. Most rocks have no
+        // ship anywhere near: a flat first pass over the ships says so. Once a ship has been
+        // pushed this tick the flat positions are stale, and every rock is checked properly.
+        let biggest_ship = self.cfg.ship_radii.iter().copied().fold(0.0, f32::max);
+        self.ship_field.fill(radius, self.ships.iter().filter(|s| s.alive).map(|s| (s.pos, biggest_ship)));
+        let mut pushed = false;
         for r in 0..self.rocks.len() {
             let rock = &mut self.rocks[r];
             (rock.pos, rock.vel) = geo::advance(radius, rock.pos, rock.vel, dt);
+            if !pushed && !self.ship_field.any_near(radius, rock.pos, self.cfg.rock_radius * rock.size as f32) {
+                continue;
+            }
             for (i, ship) in self.ships.iter_mut().enumerate() {
                 if !ship.alive {
                     continue;
@@ -1180,6 +1198,7 @@ impl World {
                     continue;
                 }
                 // Push the ship out along the way from the rock to it, and bounce it off.
+                pushed = true;
                 let out = geo::tangent(rock.pos, ship.pos).unit();
                 ship.pos = geo::travel(radius, rock.pos, out, reach);
                 ship.vel = geo::tangent(ship.pos, ship.vel);

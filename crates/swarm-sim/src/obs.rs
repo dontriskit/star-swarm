@@ -104,158 +104,271 @@ pub struct Observation {
     /// The middle of the ship's living teammates, in its own frame; zero when it has none.
     pub team: Vec2,
     /// Enemy bases the team believes are still standing, nearest first, at most [`BASES`].
-    pub enemy_bases: Vec<BaseObs>,
+    pub enemy_bases: List<BaseObs, BASES>,
     /// Team radar: living teammates, nearest first, at most [`MATES`].
-    pub mates: Vec<MateObs>,
+    pub mates: List<MateObs, MATES>,
     /// Team radar: enemies some teammate can see but this ship cannot, in its own frame,
     /// nearest first, at most [`CONTACTS`].
-    pub contacts: Vec<Vec2>,
+    pub contacts: List<Vec2, CONTACTS>,
     /// Nearest first, at most [`NEAR`] each, within the view range.
-    pub rocks: Vec<Near>,
-    pub crystals: Vec<Near>,
-    pub ships: Vec<Near>,
+    pub rocks: List<Near, NEAR>,
+    pub crystals: List<Near, NEAR>,
+    pub ships: List<Near, NEAR>,
     /// Enemy shots, nearest first, at most [`SHOTS`].
-    pub shots: Vec<Near>,
+    pub shots: List<Near, SHOTS>,
 }
 
-fn nearest(mut all: Vec<Near>, keep: usize) -> Vec<Near> {
-    all.sort_by(|a, b| a.dist.total_cmp(&b.dist));
-    all.truncate(keep);
-    all
+/// Up to `N` items kept in order of a key, smallest first, without allocating. Reads like a slice.
+#[derive(Clone, Copy, Debug)]
+pub struct List<T: Copy + Default, const N: usize> {
+    items: [T; N],
+    keys: [f32; N],
+    len: usize,
 }
 
-pub fn observe(world: &World, ship: usize) -> Observation {
-    let cfg = &world.cfg;
-    let me = &world.ships[ship];
-    let home = &world.bases[me.team as usize];
-    // Everything is expressed in this ship's own frame: x forward, y to the left.
-    let local = |v: Vec3| geo::frame(me.pos, me.fwd, geo::tangent(me.pos, v));
-    let see = |pos: Vec3, vel: Vec3, radius: f32, hp: f32, enemy: bool, fwd: Option<Vec3>| {
-        // The straight-line distance is cheap and never longer than the way along the surface.
-        if geo::chord(cfg.radius, me.pos, pos) > cfg.view_range {
-            return None;
-        }
-        let at = world.to_frame(me.pos, me.fwd, pos);
-        let dist = at.len();
-        (dist <= cfg.view_range).then(|| Near {
-            pos: at,
-            vel: local(vel.sub(me.vel)),
-            dist,
-            radius,
-            hp,
-            enemy,
-            facing: fwd.map_or(Vec2::default(), local),
-        })
-    };
-    // What the team last saw of each base, not necessarily how it is now.
-    let known = &world.seen_base_hp[me.team as usize];
-    let base = |team: usize| {
-        let at = world.to_frame(me.pos, me.fwd, world.bases[team].pos);
-        // Against the hit points of a new base, so a levelled-up base reads above 1.
-        BaseObs { pos: at, dist: at.len(), hp: known[team] / cfg.base_hp }
-    };
-    let mut enemy_bases: Vec<BaseObs> = (0..world.bases.len()).filter(|t| *t != me.team as usize && known[*t] > 0.0).map(base).collect();
-    enemy_bases.sort_by(|a, b| a.dist.total_cmp(&b.dist));
-    enemy_bases.truncate(BASES);
-    let biggest_pack = cfg.rock_packs[ROCK_SIZES as usize - 1].1 as f32;
-    let mates = || world.ships.iter().enumerate().filter(|(i, s)| s.team == me.team && s.alive && *i != ship).map(|(_, s)| s);
-    let voters = mates().count() + me.alive as usize;
-    let middle = mates().fold(Vec3::default(), |sum, s| sum.add(s.pos));
-    let mut radar: Vec<MateObs> = mates()
-        .map(|s| {
-            let at = world.to_frame(me.pos, me.fwd, s.pos);
-            MateObs { pos: at, dist: at.len(), hull: s.hull.max(0.0) / cfg.hull_max(s), mode: s.vote }
-        })
-        .collect();
-    radar.sort_by(|a, b| a.dist.total_cmp(&b.dist));
-    radar.truncate(MATES);
-    // Enemies in a teammate's sight but not in this ship's own.
-    let mut contacts: Vec<Vec2> = world
-        .ships
-        .iter()
-        .filter(|e| e.alive && e.team != me.team && geo::chord(cfg.radius, me.pos, e.pos) > cfg.view_range)
-        .filter(|e| mates().any(|m| geo::chord(cfg.radius, m.pos, e.pos) < cfg.view_range))
-        .map(|e| world.to_frame(me.pos, me.fwd, e.pos))
-        .collect();
-    contacts.sort_by(|a, b| a.len().total_cmp(&b.len()));
-    contacts.truncate(CONTACTS);
-    Observation {
-        alive: me.alive,
-        hull: me.hull.max(0.0),
-        hull_max: cfg.hull_max(me),
-        shield: me.shield,
-        shield_max: cfg.shield_max(me),
-        cargo: me.cargo,
-        cargo_max: cfg.cargo_max(me),
-        vel: local(me.vel),
-        ready: me.cooldown == 0 && me.ammo >= cfg.volley_cost(me),
-        tier: me.tier,
-        class: me.class,
-        lives: me.lives,
-        ammo: me.ammo,
-        ammo_max: cfg.ammo_max(me),
-        boost: me.boost,
-        points: me.points,
-        drones: world.drones.iter().filter(|d| d.owner == Some(ship as u16)).count() as u8,
-        base_level: home.level,
-        base_progress: match cfg.next_base_level_at(home.level) {
-            Some(next) => {
-                let from = if home.level > 1 { cfg.base_level_at[home.level as usize - 2] } else { 0 };
-                (home.deposited.saturating_sub(from) as f32 / (next - from).max(1) as f32).min(1.0)
-            }
-            None => 1.0,
-        },
-        free_drone: world
-            .drones
-            .iter()
-            .filter(|d| d.owner.is_none() && geo::chord(cfg.radius, me.pos, d.pos) < cfg.view_range)
-            .map(|d| world.to_frame(me.pos, me.fwd, d.pos))
-            .min_by(|a, b| a.len().total_cmp(&b.len())),
-        levels: me.levels,
-        base: base(me.team as usize),
-        order: me.order.kind,
-        target: world.to_frame(me.pos, me.fwd, me.order.target),
-        vote: me.vote,
-        votes: PLANS.map(|p| {
-            let n = mates().filter(|s| s.vote == Some(p)).count() + (me.alive && me.vote == Some(p)) as usize;
-            if voters > 0 { n as f32 / voters as f32 } else { 0.0 }
-        }),
-        team: if middle.len() > 1e-3 { world.to_frame(me.pos, me.fwd, middle.unit()) } else { Vec2::default() },
-        enemy_bases,
-        mates: radar,
-        contacts,
-        rocks: nearest(
-            world
-                .rocks
-                .iter()
-                .filter_map(|r| see(r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(ROCK_SIZES), false, None))
-                .collect(),
-            NEAR,
-        ),
-        crystals: nearest(
-            world.crystals.iter().filter_map(|c| see(c.pos, Vec3::default(), 0.0, c.value as f32 / biggest_pack, c.boost_cell, None)).collect(),
-            NEAR,
-        ),
-        ships: nearest(
-            world
-                .ships
-                .iter()
-                .enumerate()
-                .filter(|(i, s)| *i != ship && s.alive)
-                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)))
-                .collect(),
-            NEAR,
-        ),
-        shots: nearest(
-            world
-                .shots
-                .iter()
-                .filter(|s| s.team != me.team)
-                .filter_map(|s| see(s.pos, s.vel, 0.0, s.damage_now(cfg.shot_falloff) / cfg.hull, true, None))
-                .collect(),
-            SHOTS,
-        ),
+impl<T: Copy + Default, const N: usize> Default for List<T, N> {
+    fn default() -> Self {
+        List { items: [T::default(); N], keys: [0.0; N], len: 0 }
     }
+}
+
+impl<T: Copy + Default, const N: usize> std::ops::Deref for List<T, N> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        &self.items[..self.len]
+    }
+}
+
+impl<T: Copy + Default, const N: usize> List<T, N> {
+    /// Adds an item if it is among the `N` smallest keys seen so far. Items with equal keys
+    /// stay in the order they were offered, as a stable sort would leave them.
+    fn offer(&mut self, item: T, key: f32) {
+        let at = self.keys[..self.len].iter().take_while(|k| k.total_cmp(&key).is_le()).count();
+        if at >= N {
+            return;
+        }
+        let last = self.len.min(N - 1);
+        self.items.copy_within(at..last, at + 1);
+        self.keys.copy_within(at..last, at + 1);
+        self.items[at] = item;
+        self.keys[at] = key;
+        self.len = (self.len + 1).min(N);
+    }
+}
+
+/// What can be worked out once for a whole world and shared by every ship's observation:
+/// how far apart the ships are, who is alive on each team and what they voted, who has drones.
+pub struct Scan<'a> {
+    world: &'a World,
+    /// Straight-line distance between every pair of ships, row by row.
+    apart: Vec<f32>,
+    /// Living ships of each team, in ship order.
+    living: Vec<Vec<usize>>,
+    /// How many living ships of each team are in each mode.
+    tally: Vec<[u32; 4]>,
+    /// Drones each ship owns.
+    drones: Vec<u8>,
+    /// Where the ownerless drones are.
+    adrift: Vec<Vec3>,
+    /// Squared straight-line view range on the unit sphere, with a little slack either way,
+    /// for telling near from far without a square root in all but borderline cases.
+    surely_far: f32,
+    surely_near: f32,
+}
+
+impl<'a> Scan<'a> {
+    pub fn new(world: &'a World) -> Self {
+        let cfg = &world.cfg;
+        let n = world.ships.len();
+        let mut apart = vec![0.0; n * n];
+        for i in 0..n {
+            for j in i + 1..n {
+                let d = geo::chord(cfg.radius, world.ships[i].pos, world.ships[j].pos);
+                apart[i * n + j] = d;
+                apart[j * n + i] = d;
+            }
+        }
+        let teams = world.bases.len();
+        let mut living = vec![Vec::new(); teams];
+        let mut tally = vec![[0u32; 4]; teams];
+        for (i, s) in world.ships.iter().enumerate().filter(|(_, s)| s.alive) {
+            living[s.team as usize].push(i);
+            if let Some(mode) = s.vote {
+                tally[s.team as usize][mode as usize] += 1;
+            }
+        }
+        let mut drones = vec![0u8; n];
+        let mut adrift = Vec::new();
+        for d in &world.drones {
+            match d.owner {
+                Some(owner) => drones[owner as usize] += 1,
+                None => adrift.push(d.pos),
+            }
+        }
+        let unit_view = cfg.view_range / cfg.radius;
+        Scan { world, apart, living, tally, drones, adrift, surely_far: unit_view * unit_view * 1.001, surely_near: unit_view * unit_view * 0.999 }
+    }
+
+    /// Whether `pos` is farther from `from` than the view range, in a straight line. The same
+    /// answer as comparing [`geo::chord`] with the view range, usually without the square root.
+    fn out_of_sight(&self, from: Vec3, pos: Vec3) -> bool {
+        let d = from.sub(pos);
+        let squared = d.dot(d);
+        if squared > self.surely_far {
+            true
+        } else if squared < self.surely_near {
+            false
+        } else {
+            geo::chord(self.world.cfg.radius, from, pos) > self.world.cfg.view_range
+        }
+    }
+
+    pub fn observe(&self, ship: usize) -> Observation {
+        let world = self.world;
+        let cfg = &world.cfg;
+        let n = world.ships.len();
+        let me = &world.ships[ship];
+        let home = &world.bases[me.team as usize];
+        // Everything is expressed in this ship's own frame: x forward, y to the left.
+        let local = |v: Vec3| geo::frame(me.pos, me.fwd, geo::tangent(me.pos, v));
+        // `far` says the object is beyond the view range in a straight line, which is cheap to
+        // tell and never longer than the way along the surface.
+        let see = |far: bool, pos: Vec3, vel: Vec3, radius: f32, hp: f32, enemy: bool, fwd: Option<Vec3>| {
+            if far {
+                return None;
+            }
+            let at = world.to_frame(me.pos, me.fwd, pos);
+            let dist = at.len();
+            (dist <= cfg.view_range).then(|| Near {
+                pos: at,
+                vel: local(vel.sub(me.vel)),
+                dist,
+                radius,
+                hp,
+                enemy,
+                facing: fwd.map_or(Vec2::default(), local),
+            })
+        };
+        // What the team last saw of each base, not necessarily how it is now.
+        let known = &world.seen_base_hp[me.team as usize];
+        let base = |team: usize| {
+            let at = world.to_frame(me.pos, me.fwd, world.bases[team].pos);
+            // Against the hit points of a new base, so a levelled-up base reads above 1.
+            BaseObs { pos: at, dist: at.len(), hp: known[team] / cfg.base_hp }
+        };
+        let mut enemy_bases = List::default();
+        for b in (0..world.bases.len()).filter(|t| *t != me.team as usize && known[*t] > 0.0).map(base) {
+            enemy_bases.offer(b, b.dist);
+        }
+        let biggest_pack = cfg.rock_packs[ROCK_SIZES as usize - 1].1 as f32;
+
+        // Teammates: the living ships of this team other than this one, in ship order.
+        let team = &self.living[me.team as usize];
+        let mates = || team.iter().copied().filter(|i| *i != ship);
+        let voters = team.len();
+        let tally = &self.tally[me.team as usize];
+        let middle = mates().fold(Vec3::default(), |sum, i| sum.add(world.ships[i].pos));
+        let mut radar = List::default();
+        for i in mates() {
+            let s = &world.ships[i];
+            let at = world.to_frame(me.pos, me.fwd, s.pos);
+            radar.offer(MateObs { pos: at, dist: at.len(), hull: s.hull.max(0.0) / cfg.hull_max(s), mode: s.vote }, at.len());
+        }
+        // Enemies in a teammate's sight but not in this ship's own.
+        let mut contacts = List::default();
+        for (e, enemy) in world.ships.iter().enumerate() {
+            if !enemy.alive || enemy.team == me.team || !(self.apart[ship * n + e] > cfg.view_range) {
+                continue;
+            }
+            if mates().any(|m| self.apart[m * n + e] < cfg.view_range) {
+                let at = world.to_frame(me.pos, me.fwd, enemy.pos);
+                contacts.offer(at, at.len());
+            }
+        }
+
+        let mut rocks = List::default();
+        for r in &world.rocks {
+            if let Some(seen) = see(self.out_of_sight(me.pos, r.pos), r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(ROCK_SIZES), false, None) {
+                rocks.offer(seen, seen.dist);
+            }
+        }
+        let mut crystals = List::default();
+        for c in &world.crystals {
+            if let Some(seen) = see(self.out_of_sight(me.pos, c.pos), c.pos, Vec3::default(), 0.0, c.value as f32 / biggest_pack, c.boost_cell, None) {
+                crystals.offer(seen, seen.dist);
+            }
+        }
+        let mut ships = List::default();
+        for (i, s) in world.ships.iter().enumerate() {
+            if i == ship || !s.alive {
+                continue;
+            }
+            let far = self.apart[ship * n + i] > cfg.view_range;
+            if let Some(seen) = see(far, s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)) {
+                ships.offer(seen, seen.dist);
+            }
+        }
+        let mut shots = List::default();
+        for s in world.shots.iter().filter(|s| s.team != me.team) {
+            if let Some(seen) = see(self.out_of_sight(me.pos, s.pos), s.pos, s.vel, 0.0, s.damage_now(cfg.shot_falloff) / cfg.hull, true, None) {
+                shots.offer(seen, seen.dist);
+            }
+        }
+
+        Observation {
+            alive: me.alive,
+            hull: me.hull.max(0.0),
+            hull_max: cfg.hull_max(me),
+            shield: me.shield,
+            shield_max: cfg.shield_max(me),
+            cargo: me.cargo,
+            cargo_max: cfg.cargo_max(me),
+            vel: local(me.vel),
+            ready: me.cooldown == 0 && me.ammo >= cfg.volley_cost(me),
+            tier: me.tier,
+            class: me.class,
+            lives: me.lives,
+            ammo: me.ammo,
+            ammo_max: cfg.ammo_max(me),
+            boost: me.boost,
+            points: me.points,
+            drones: self.drones[ship],
+            base_level: home.level,
+            base_progress: match cfg.next_base_level_at(home.level) {
+                Some(next) => {
+                    let from = if home.level > 1 { cfg.base_level_at[home.level as usize - 2] } else { 0 };
+                    (home.deposited.saturating_sub(from) as f32 / (next - from).max(1) as f32).min(1.0)
+                }
+                None => 1.0,
+            },
+            free_drone: self
+                .adrift
+                .iter()
+                .filter(|d| geo::chord(cfg.radius, me.pos, **d) < cfg.view_range)
+                .map(|d| world.to_frame(me.pos, me.fwd, *d))
+                .min_by(|a, b| a.len().total_cmp(&b.len())),
+            levels: me.levels,
+            base: base(me.team as usize),
+            order: me.order.kind,
+            target: world.to_frame(me.pos, me.fwd, me.order.target),
+            vote: me.vote,
+            votes: PLANS.map(|p| if voters > 0 { tally[p as usize] as f32 / voters as f32 } else { 0.0 }),
+            team: if middle.len() > 1e-3 { world.to_frame(me.pos, me.fwd, middle.unit()) } else { Vec2::default() },
+            enemy_bases,
+            mates: radar,
+            contacts,
+            rocks,
+            crystals,
+            ships,
+            shots,
+        }
+    }
+}
+
+/// One ship's observation. To observe many ships of the same world, build one [`Scan`] and
+/// ask it for each: the work they share is then done once.
+pub fn observe(world: &World, ship: usize) -> Observation {
+    Scan::new(world).observe(ship)
 }
 
 impl Observation {
@@ -337,7 +450,7 @@ impl Observation {
                 None => put(&[0.0; CONTACT_LEN]),
             }
         }
-        for (group, slots) in [(&self.rocks, NEAR), (&self.crystals, NEAR), (&self.ships, NEAR), (&self.shots, SHOTS)] {
+        for (group, slots) in [(&self.rocks[..], NEAR), (&self.crystals[..], NEAR), (&self.ships[..], NEAR), (&self.shots[..], SHOTS)] {
             for slot in 0..slots {
                 match group.get(slot) {
                     Some(n) => put(&[

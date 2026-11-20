@@ -32,6 +32,8 @@ pub struct Stream {
     started: bool,
     /// Matches whose header has been read so far.
     pub episodes: usize,
+    /// Ticks read so far.
+    pub ticks: usize,
     pub queue: VecDeque<Item>,
 }
 
@@ -39,7 +41,7 @@ impl Stream {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(0))?;
-        Ok(Stream { path: path.to_path_buf(), file, pending: Vec::new(), ships: 0, started: false, episodes: 0, queue: VecDeque::new() })
+        Ok(Stream { path: path.to_path_buf(), file, pending: Vec::new(), ships: 0, started: false, episodes: 0, ticks: 0, queue: VecDeque::new() })
     }
 
     /// Ticks waiting to be played.
@@ -92,6 +94,7 @@ impl Stream {
                 b'T' if self.ships > 0 && bytes.len() >= body + self.ships * 2 => {
                     let actions = (0..self.ships).map(|i| replay::decode(word(body + i * 2, 2) as u16)).collect();
                     self.queue.push_back(Item::Tick(actions));
+                    self.ticks += 1;
                     at = body + self.ships * 2;
                 }
                 b'H' if bytes.len() >= body + 8 => {

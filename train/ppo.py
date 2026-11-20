@@ -77,8 +77,25 @@ def pack(actions: torch.Tensor) -> bytes:
     return code.cpu().numpy().astype("<u2").tobytes()
 
 
+_staging = {}
+
+
 def observe(env: Env, device) -> torch.Tensor:
-    return torch.tensor(np.frombuffer(env.observe(), dtype=np.float32), device=device).view(env.agents, OBS_LEN)
+    """Every agent's observation as a tensor on `device`.
+
+    The environment writes straight into one reusable page-locked tensor per environment, which
+    is then copied to the GPU: one copy in all, where going through bytes took three.
+    """
+    held = _staging.get(id(env))
+    if held is None:
+        staged = torch.empty(env.agents, OBS_LEN)
+        if torch.device(device).type == "cuda":
+            staged = staged.pin_memory()
+        held = _staging[id(env)] = (env, staged, staged.numpy())
+    _, staged, view = held
+    env.observe_into(view)
+    # A blocking copy: the staging tensor is overwritten by the next call. On the CPU, hand out a copy.
+    return staged.to(device) if torch.device(device).type == "cuda" else staged.clone()
 
 
 def make_env(args, envs: int, seed: int, learners: int | None = None) -> Env:

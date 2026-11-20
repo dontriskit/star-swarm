@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -106,7 +107,24 @@ impl Env {
         self.inner.config().dt
     }
 
-    /// float32 observations, shape (agents, OBS_LEN).
+    /// Writes the float32 observations, shape (agents, OBS_LEN), straight into a buffer the
+    /// caller owns (a numpy array, or the numpy view of a torch tensor), with no copy in between.
+    fn observe_into(&mut self, out: &Bound<'_, PyAny>) -> PyResult<()> {
+        let buffer = PyBuffer::<f32>::get(out)?;
+        let wanted = self.inner.agents() * OBS_LEN;
+        if buffer.readonly() || !buffer.is_c_contiguous() || buffer.item_count() != wanted {
+            return Err(PyValueError::new_err(format!("observe_into needs a writable, contiguous float32 buffer of {wanted} values")));
+        }
+        // SAFETY: the buffer is float32 (checked by PyBuffer::<f32>::get), writable, contiguous and
+        // exactly `wanted` items long (checked above); the GIL is held for the whole call, so no
+        // Python code reads or resizes it while we write; and `buffer` keeps it alive until we return.
+        let slice = unsafe { std::slice::from_raw_parts_mut(buffer.buf_ptr().cast::<f32>(), wanted) };
+        self.inner.observe(slice);
+        Ok(())
+    }
+
+    /// float32 observations, shape (agents, OBS_LEN), as a new bytes object. Simple, but it
+    /// copies everything; [`Env::observe_into`] does not.
     fn observe<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
         self.inner.observe(&mut self.obs);
         PyBytes::new(py, bytes_of(&self.obs))

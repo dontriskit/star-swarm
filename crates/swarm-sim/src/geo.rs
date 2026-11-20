@@ -93,6 +93,68 @@ pub fn chord(radius: f32, a: Vec3, b: Vec3) -> f32 {
     a.sub(b).len() * radius
 }
 
+/// Whether two positions are less than `limit` apart in a straight line: the same answer as
+/// `chord(radius, a, b) < limit`, but without the square root in all but borderline cases.
+pub fn closer(radius: f32, a: Vec3, b: Vec3, limit: f32) -> bool {
+    let d = a.sub(b);
+    let squared = d.dot(d);
+    let unit = limit / radius;
+    let bound = unit * unit;
+    if squared > bound * 1.001 {
+        false
+    } else if squared < bound * 0.999 {
+        true
+    } else {
+        chord(radius, a, b) < limit
+    }
+}
+
+/// Positions laid out flat, each with a squared reach on the unit sphere, for one question
+/// asked very often: is this point within reach of any of them? The reach is taken a little
+/// generous, so "no" is certain and "yes" means "look properly".
+#[derive(Clone, Debug, Default)]
+pub struct Field {
+    xs: Vec<f32>,
+    ys: Vec<f32>,
+    zs: Vec<f32>,
+    reach: Vec<f32>,
+    /// The largest reach, on the unit sphere and not squared.
+    widest: f32,
+}
+
+impl Field {
+    /// Refills the field from positions and their reach in world units.
+    pub fn fill(&mut self, radius: f32, items: impl Iterator<Item = (Vec3, f32)>) {
+        self.xs.clear();
+        self.ys.clear();
+        self.zs.clear();
+        self.reach.clear();
+        self.widest = 0.0;
+        for (p, reach) in items {
+            let unit = reach / radius;
+            self.widest = self.widest.max(unit);
+            self.xs.push(p.x);
+            self.ys.push(p.y);
+            self.zs.push(p.z);
+            self.reach.push(unit * unit * 1.01);
+        }
+    }
+
+    /// False only when `p` is certainly out of reach of every item; `extra` (in world units,
+    /// small against the reaches) widens every reach, for items that have moved a little since.
+    pub fn any_near(&self, radius: f32, p: Vec3, extra: f32) -> bool {
+        // (r + e)^2 = r^2 + e^2 + 2 r e, and r is at most the widest reach.
+        let e = extra / radius;
+        let slack = (e * e + 2.0 * self.widest * e) * 1.01;
+        let mut near = false;
+        for (((x, y), z), reach) in self.xs.iter().zip(&self.ys).zip(&self.zs).zip(&self.reach) {
+            let (dx, dy, dz) = (x - p.x, y - p.y, z - p.z);
+            near |= dx * dx + dy * dy + dz * dz < reach + slack;
+        }
+        near
+    }
+}
+
 /// Distance along the surface.
 pub fn dist(radius: f32, a: Vec3, b: Vec3) -> f32 {
     radius * a.dot(b).clamp(-1.0, 1.0).acos()

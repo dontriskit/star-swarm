@@ -71,7 +71,7 @@ impl ScriptedBot {
     /// If the ship is on course to hit a rock before drag stops it, thrusts
     /// sideways, away from the point of closest approach.
     fn dodge(obs: &Observation, cfg: &Config) -> Option<Action> {
-        for rock in &obs.rocks {
+        for rock in obs.rocks.iter() {
             let speed = rock.vel.len();
             if speed < 1.0 {
                 continue;

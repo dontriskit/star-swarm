@@ -112,6 +112,9 @@ struct Watch {
     drifted: bool,
     /// The latest lines of the run's metrics, newest last, for the progress table.
     progress: Vec<[String; 5]>,
+    /// When the stream was opened and, every few seconds since, how many ticks had arrived:
+    /// the trainer's pace, for playing its bursts back at an even speed.
+    arrivals: std::collections::VecDeque<(Instant, usize)>,
 }
 
 impl Watch {
@@ -274,10 +277,12 @@ impl Game {
     /// Shows training live: every ship of every team flies on the newest policy under `dir`.
     fn watching(seed: u64, dir: PathBuf) -> Self {
         let mut game = Game::new(seed, None);
-        game.watch = Some(Watch { dir, loaded: None, checked: Instant::now(), ended: None, stream: None, drifted: false, progress: Vec::new() });
+        game.watch = Some(Watch { dir, loaded: None, checked: Instant::now(), ended: None, stream: None, drifted: false, progress: Vec::new(), arrivals: Default::default() });
         game.status = "Czekam na pierwszy zapisany model (uruchom train/live.sh obok treningu).".into();
         // Nobody is steering, so let the planet turn and show every side in time.
         game.spin = true;
+        // Follow the trainer at its own even pace.
+        game.speed = 0;
         game.reload();
         game
     }
@@ -295,7 +300,7 @@ impl Game {
         // Nobody commands here: every team follows its own ships' votes.
         fresh.world.commanded.iter_mut().for_each(|c| *c = false);
         fresh.status = Watch::report(&path);
-        fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None, stream: None, drifted: false, progress: Vec::new() });
+        fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None, stream: None, drifted: false, progress: Vec::new(), arrivals: Default::default() });
         *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, paused: self.paused, camera: self.camera, spin: self.spin, ..fresh };
     }
 
@@ -310,6 +315,7 @@ impl Game {
                 if watch.stream.as_ref().is_none_or(|s| s.path != path) {
                     watch.stream = live::Stream::open(&path).ok();
                     watch.drifted = false;
+                    watch.arrivals.clear();
                 }
                 watch.progress = Watch::progress(&path);
             }
@@ -320,12 +326,33 @@ impl Game {
         if stream.episodes == 0 {
             return false;
         }
+        // The trainer plays in bursts: a stretch of the match, then a pause while it learns. Its
+        // pace over the last minute is how fast the match can be shown without running dry.
+        let now = Instant::now();
+        if watch.arrivals.back().is_none_or(|(at, _)| now.duration_since(*at) >= Duration::from_secs(2)) {
+            watch.arrivals.push_back((now, stream.ticks));
+            while watch.arrivals.front().is_some_and(|(at, _)| now.duration_since(*at) > Duration::from_secs(60)) {
+                watch.arrivals.pop_front();
+            }
+        }
+        let pace = match (watch.arrivals.front(), watch.arrivals.back()) {
+            (Some((t0, n0)), Some((t1, n1))) if t1.duration_since(*t0) >= Duration::from_secs(10) => Some((n1 - n0) as f32 / t1.duration_since(*t0).as_secs_f32()),
+            _ => None,
+        };
         // At a fixed speed the trainer may run ahead; past a minute's worth, skip forward to stay current.
         let backlog = stream.backlog();
         let budget = if self.paused {
             0
-        } else if self.speed == 0 || backlog > 1800 {
+        } else if backlog > 1800 {
             usize::MAX
+        } else if self.speed == 0 {
+            // Even playback at the trainer's own pace, a little faster with a lot waiting and a
+            // little slower with almost nothing left, so the picture neither lags nor stalls.
+            let rate = pace.unwrap_or(1.0 / self.world.cfg.dt) * (backlog as f32 / 300.0).clamp(0.6, 1.6);
+            self.backlog += elapsed * rate;
+            let whole = self.backlog as usize;
+            self.backlog -= whole as f32;
+            whole
         } else {
             self.backlog += elapsed * self.speed as f32;
             let whole = (self.backlog / self.world.cfg.dt) as usize;
@@ -356,7 +383,8 @@ impl Game {
         self.status = if watch.drifted {
             format!("Przebieg {run}: podgląd rozjechał się z treningiem (inna wersja gry w oknie niż w trenerze).")
         } else {
-            format!("Na żywo: mecz treningowy z przebiegu {run}, seed {}. Opóźnienie {behind:.0} s gry.", self.seed)
+            let tempo = pace.map_or(String::new(), |p| format!(" Trener gra {:.1}× szybciej niż czas rzeczywisty.", p * self.world.cfg.dt));
+            format!("Na żywo: mecz treningowy z przebiegu {run}, seed {}. W buforze {behind:.0} s gry.{tempo}", self.seed)
         };
         true
     }
@@ -698,7 +726,11 @@ impl Game {
                             cx.notify();
                         },
                     )))
-                    .child(Button::new("speed").small().label(if self.speed == 0 { "Szybkość: pełna".to_string() } else { format!("Szybkość ×{}", self.speed) }).on_click(cx.listener(
+                    .child(Button::new("speed").small().label(match (self.speed, self.watch.as_ref().is_some_and(|w| w.stream.is_some())) {
+                        (0, true) => "Szybkość: płynnie".to_string(),
+                        (0, false) => "Szybkość: pełna".to_string(),
+                        (speed, _) => format!("Szybkość ×{speed}"),
+                    }).on_click(cx.listener(
                         |this, _, _, cx| {
                             let at = SPEEDS.iter().position(|s| *s == this.speed).unwrap_or(0);
                             this.speed = SPEEDS[(at + 1) % SPEEDS.len()];
