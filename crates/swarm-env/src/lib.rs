@@ -163,8 +163,11 @@ impl VecEnv {
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
         file.write_all(LIVE_MAGIC)?;
         self.live = Some(file);
-        // The match in progress cannot be joined half-way; the viewer starts with the next one.
-        self.slots[0].tape = Some(Vec::new());
+        // A match that has not started yet is streamed from its first tick. One already in
+        // progress cannot be joined half-way; then the viewer starts with the next one.
+        let slot = &mut self.slots[0];
+        slot.on_tape = slot.world.tick == 0;
+        slot.tape = Some(if slot.on_tape { vec![Tape::Episode(slot.seed)] } else { Vec::new() });
         self.flush_tape()
     }
 

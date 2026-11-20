@@ -23,7 +23,7 @@ for i in "${!stages[@]}"; do
   # The reward for a whole base stays the same however many hit points it has.
   # A crystal is worth 0.3 at full starter reward; a rock 0.1 per size, so bigger rocks pay more
   # twice over (they also drop more crystals); an upgrade level 1.
-  $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 20 \
+  $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 20 --eval-envs 64 \
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \

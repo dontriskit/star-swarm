@@ -304,6 +304,10 @@ impl Game {
         }
         let Some(stream) = &mut watch.stream else { return false };
         stream.poll();
+        // Until the trainer has written a match from its start there is nothing of its to show.
+        if stream.episodes == 0 {
+            return false;
+        }
         // At a fixed speed the trainer may run ahead; past a minute's worth, skip forward to stay current.
         let backlog = stream.backlog();
         let budget = if self.paused {
@@ -1007,11 +1011,37 @@ mod live_tests {
             }
         }
         std::fs::remove_file(&path).unwrap();
-        // 780 ticks: the match in progress when streaming began is skipped, then two whole matches of 300 and the start of another.
-        assert_eq!(matches, 2, "matches seen from their first tick");
-        assert!(hashes >= 1 && ticks == 480, "{ticks} ticks, {hashes} hashes");
+        // 780 ticks from the very first one: two whole matches of 300 and the start of a third.
+        assert_eq!(matches, 3);
+        assert!(hashes >= 2 && ticks == 780, "{ticks} ticks, {hashes} hashes");
         // The window's world is the trainer's world, tick for tick.
         assert_eq!(world.unwrap().state_hash(), env.world(0).state_hash());
+    }
+
+    #[core::prelude::v1::test]
+    fn a_stream_joined_mid_match_starts_with_the_next_match() {
+        let cfg = Config { rock_count: 20, radius: 500.0, max_ticks: 300, ..Config::default() };
+        let mut env = VecEnv::with_learners(cfg, 2, 7, 3, Rewards::default(), 0);
+        let agents = env.agents();
+        let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
+        for _ in 0..10 {
+            env.step(&actions, &mut rewards, &mut dones);
+        }
+        let path = std::env::temp_dir().join(format!("star-swarm-late-{}.swl", std::process::id()));
+        env.stream_to(&path).unwrap();
+        let mut stream = Stream::open(&path).unwrap();
+        for _ in 0..50 {
+            env.step(&actions, &mut rewards, &mut dones);
+        }
+        stream.poll();
+        assert_eq!((stream.episodes, stream.queue.len()), (0, 0), "nothing of the match already under way is streamed");
+        for _ in 0..60 {
+            env.step(&actions, &mut rewards, &mut dones);
+        }
+        stream.poll();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(stream.episodes, 1);
+        assert!(matches!(stream.queue.front(), Some(Item::Episode(..))));
     }
 }
 

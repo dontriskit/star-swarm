@@ -30,6 +30,8 @@ pub struct Stream {
     /// Ships per match in the episode being read; 0 before the first one.
     ships: usize,
     started: bool,
+    /// Matches whose header has been read so far.
+    pub episodes: usize,
     pub queue: VecDeque<Item>,
 }
 
@@ -37,7 +39,7 @@ impl Stream {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(0))?;
-        Ok(Stream { path: path.to_path_buf(), file, pending: Vec::new(), ships: 0, started: false, queue: VecDeque::new() })
+        Ok(Stream { path: path.to_path_buf(), file, pending: Vec::new(), ships: 0, started: false, episodes: 0, queue: VecDeque::new() })
     }
 
     /// Ticks waiting to be played.
@@ -83,6 +85,7 @@ impl Stream {
                         ..Config::default()
                     };
                     self.ships = cfg.teams * cfg.ships_per_team;
+                    self.episodes += 1;
                     self.queue.push_back(Item::Episode(Box::new(cfg), seed));
                     at = body + EPISODE_LEN;
                 }
