@@ -21,7 +21,10 @@ pub const MY_TEAM: u8 = 0;
 const COMMAND_EVERY: u32 = 450;
 /// A click this close to one of your ships (world units) selects it.
 const PICK_RADIUS: f32 = 45.0;
-const SPEEDS: [u32; 4] = [1, 2, 4, 8];
+/// Game speeds the button cycles through; 0 means as fast as the machine can simulate.
+const SPEEDS: [u32; 6] = [1, 2, 4, 8, 32, 0];
+/// At full speed, how long one frame may spend simulating.
+const FULL_SPEED_BUDGET: Duration = Duration::from_millis(12);
 /// How fast the globe turns by itself, radians per second.
 const SPIN: f32 = 0.12;
 /// How far one press of an arrow button turns the globe, radians.
@@ -275,6 +278,14 @@ impl Game {
         }
         self.follow_training();
         if !self.running() {
+            return;
+        }
+        if self.speed == 0 {
+            // Full speed: simulate for as long as a frame can spare, then draw.
+            while now.elapsed() < FULL_SPEED_BUDGET && self.running() {
+                self.tick();
+            }
+            self.backlog = 0.0;
             return;
         }
         self.backlog += elapsed * self.speed as f32;
@@ -547,7 +558,7 @@ impl Game {
                             cx.notify();
                         },
                     )))
-                    .child(Button::new("speed").small().label(format!("Szybkość ×{}", self.speed)).on_click(cx.listener(
+                    .child(Button::new("speed").small().label(if self.speed == 0 { "Szybkość: pełna".to_string() } else { format!("Szybkość ×{}", self.speed) }).on_click(cx.listener(
                         |this, _, _, cx| {
                             let at = SPEEDS.iter().position(|s| *s == this.speed).unwrap_or(0);
                             this.speed = SPEEDS[(at + 1) % SPEEDS.len()];
