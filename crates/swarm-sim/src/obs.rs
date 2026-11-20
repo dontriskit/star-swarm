@@ -1,5 +1,5 @@
 use crate::geo::{self, Vec3};
-use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, PLANS, Plan, ROCK_SIZES, TIERS, UPGRADES, Vec2, World};
+use crate::sim::{CLASSES, Class, Config, DRONE_KINDS, ORDER_KINDS, OrderKind, PLANS, Plan, ROCK_SIZES, TIERS, UPGRADES, Vec2, World};
 
 /// How many of each kind of nearby object a ship sees.
 pub const NEAR: usize = 6;
@@ -21,7 +21,8 @@ pub const SECTORS: usize = 8;
 const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
-pub const OBS_LEN: usize = SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS;
+pub const OBS_LEN: usize =
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 1;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -39,6 +40,9 @@ pub struct Near {
     /// Where another ship is pointing, as a unit vector in this ship's frame;
     /// zero for everything that is not a ship.
     pub facing: Vec2,
+    /// For a ship: its shields and the crystals it carries, each as a share of what it can hold.
+    pub shield: f32,
+    pub cargo: f32,
 }
 
 /// A teammate on the team radar: teammates are known wherever they are.
@@ -51,6 +55,9 @@ pub struct MateObs {
     pub hull: f32,
     /// What the teammate has set out to do.
     pub mode: Option<Plan>,
+    /// Its shields and the crystals it carries, each as a share of what it can hold.
+    pub shield: f32,
+    pub cargo: f32,
 }
 
 /// A base as a ship knows it. Where bases are is known map-wide; an enemy base's health is
@@ -88,8 +95,11 @@ pub struct Observation {
     pub boost: f32,
     /// Points to spend, earned by handing crystals over at the base.
     pub points: u32,
-    /// Drones the ship has.
+    /// Drones the ship has, in all and by [`crate::DroneKind`].
     pub drones: u8,
+    pub drone_kinds: [u8; 3],
+    /// Inside its own base, where crystals are handed over and things are bought.
+    pub in_base: bool,
     /// The level of the ship's own base.
     pub base_level: u8,
     /// How far the team is towards its base's next level, 0 to 1 (1 at the top level).
@@ -255,6 +265,8 @@ impl<'a> Scan<'a> {
                 hp,
                 enemy,
                 facing: fwd.map_or(Vec2::default(), local),
+                shield: 0.0,
+                cargo: 0.0,
             })
         };
         // What the team last saw of each base, not necessarily how it is now.
@@ -280,7 +292,15 @@ impl<'a> Scan<'a> {
         for i in mates() {
             let s = &world.ships[i];
             let at = world.to_frame(me.pos, me.fwd, s.pos);
-            radar.offer(MateObs { pos: at, dist: at.len(), hull: s.hull.max(0.0) / cfg.hull_max(s), mode: s.vote }, at.len());
+            let mate = MateObs {
+                pos: at,
+                dist: at.len(),
+                hull: s.hull.max(0.0) / cfg.hull_max(s),
+                mode: s.vote,
+                shield: s.shield / cfg.shield_max(s),
+                cargo: s.cargo as f32 / cfg.cargo_max(s) as f32,
+            };
+            radar.offer(mate, at.len());
         }
         // Enemies beyond this ship's clear sight: on its own long-range radar, or in a teammate's sight.
         let mut contacts = List::default();
@@ -335,7 +355,9 @@ impl<'a> Scan<'a> {
                 continue;
             }
             let far = self.apart[ship * n + i] > cfg.view_range;
-            if let Some(seen) = see(far, s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)) {
+            if let Some(mut seen) = see(far, s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)) {
+                seen.shield = s.shield / cfg.shield_max(s);
+                seen.cargo = s.cargo as f32 / cfg.cargo_max(s) as f32;
                 ships.offer(seen, seen.dist);
             }
         }
@@ -364,6 +386,8 @@ impl<'a> Scan<'a> {
             boost: me.boost,
             points: me.points,
             drones: self.drones[ship],
+            drone_kinds: DRONE_KINDS.map(|k| world.drones.iter().filter(|d| d.owner == Some(ship as u16) && d.kind == k).count() as u8),
+            in_base: home.alive() && geo::chord(cfg.radius, home.pos, me.pos) < cfg.base_radius,
             base_level: home.level,
             base_progress: match cfg.next_base_level_at(home.level) {
                 Some(next) => {
@@ -504,6 +528,16 @@ impl Observation {
         // The radar sectors go last: a policy trained before they existed can be widened by
         // adding inputs at the end. 40 is a lot of rock for one sector.
         put(&self.rock_radar.map(|w| (w / 40.0).min(2.0)));
+        // Later additions, also at the end: shields and cargo of the ships in sight and of the
+        // teammates on the radar, the ship's drones by kind, and whether it is inside its base.
+        for slot in 0..NEAR {
+            put(&self.ships.get(slot).map_or([0.0; 2], |s| [s.shield, s.cargo]));
+        }
+        for slot in 0..MATES {
+            put(&self.mates.get(slot).map_or([0.0; 2], |m| [m.shield, m.cargo]));
+        }
+        put(&self.drone_kinds.map(|n| n as f32 / 3.0));
+        put(&[self.in_base as u8 as f32]);
         debug_assert_eq!(at, OBS_LEN);
     }
 }

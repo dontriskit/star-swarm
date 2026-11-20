@@ -691,14 +691,18 @@ impl Game {
                 .child(div().w(px(104.)).whitespace_nowrap().child(format!("{} T{}", class_name(ship.class), ship.tier)))
                 .child(div().w(px(40.)).text_color(muted).child(format!("♥{}", ship.lives)))
                 .child(div().w(px(52.)).text_color(muted).child(plan_name(ship.vote)))
-                .child(div().w(px(34.)).text_color(muted).child(format!("d{}", self.world.drones.iter().filter(|d| d.owner == Some(i as u16)).count())))
+                .child(div().w(px(58.)).text_color(muted).child({
+                    // Drones by kind: eco, shield, combat.
+                    let count = |kind| self.world.drones.iter().filter(|d| d.owner == Some(i as u16) && d.kind == kind).count();
+                    format!("e{} t{} b{}", count(swarm_sim::DroneKind::Eco), count(swarm_sim::DroneKind::Shield), count(swarm_sim::DroneKind::Combat))
+                }))
                 .children(levels)
         });
 
         div()
             .id("panel")
             .overflow_y_scroll()
-            .w(px(660.))
+            .w(px(690.))
             .h_full()
             .flex()
             .flex_col()
@@ -812,7 +816,7 @@ impl Game {
                     .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
                     .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
             }))
-            .child(div().text_color(muted).child("Drzewko: typ, tier, życia, tryb, drony (d) i poziom każdego ulepszenia"))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, życia, tryb, drony (eko, tarcza, bojowy) i poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
     }

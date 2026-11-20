@@ -1,6 +1,6 @@
 use crate::obs::{BaseObs, Near, Observation};
 use crate::rng::Rng;
-use crate::sim::{Action, Buy, Class, Config, Order, OrderKind, TIER2, TIERS, UPGRADES, Upgrade, Vec2, World};
+use crate::sim::{Action, Buy, Class, Config, DroneKind, Order, OrderKind, TIER2, TIERS, UPGRADES, Upgrade, Vec2, World};
 
 /// Anything that flies a ship: a human's input, a scripted bot, a trained
 /// policy, a remote agent.
@@ -120,6 +120,12 @@ impl ScriptedBot {
         // Prefer rocks this ship can break soon: a big rock nearby is worth less than a small one a little farther.
         let effort = |r: &&Near| r.dist + r.hp * cfg.rock_hp_of(crate::sim::ROCK_SIZES) * 12.0 / cfg.weapon(obs.class).damage.max(0.1);
         match obs.rocks.iter().min_by(|a, b| effort(a).total_cmp(&effort(b))) {
+            // With shields to spare, a small rock is broken fastest by flying into it while shooting.
+            Some(rock) if rock.radius <= cfg.rock_radius_of(2) && obs.shield > 0.5 * obs.shield_max => {
+                let mut act = Self::shoot(rock, 140.0, obs, cfg);
+                act.thrust = rock.pos.y.atan2(rock.pos.x).abs() < 0.6;
+                act
+            }
             Some(rock) => Self::shoot(rock, 140.0, obs, cfg),
             // Nothing in sight: head for the side the long-range radar shows the most rock on.
             None => {
@@ -139,11 +145,13 @@ impl ScriptedBot {
             return Some(Buy::Repair);
         }
         if obs.drones < cfg.drone_slots[obs.tier as usize - 1] {
-            return (obs.points >= cfg.drone_cost).then_some(Buy::Drone);
+            // The first drone mines; any further one fights.
+            let kind = if obs.drone_kinds[DroneKind::Eco as usize] == 0 { DroneKind::Eco } else { DroneKind::Combat };
+            return (obs.points >= cfg.drone_cost[kind as usize]).then_some(Buy::Drone(kind));
         }
         let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
         let lowest = obs.levels[next as usize];
-        let can_tier = obs.tier < TIERS && obs.base_level > obs.tier;
+        let can_tier = obs.tier < TIERS && obs.base_level >= obs.tier;
         match cfg.cost(lowest, obs.tier) {
             Some(cost) if lowest == 0 || !can_tier => (obs.points >= cost).then_some(Buy::Upgrade(next)),
             _ => (can_tier && obs.points >= cfg.tier_cost[obs.tier as usize - 1]).then_some(Buy::Tier(self.prefers)),
@@ -161,9 +169,17 @@ impl Controller for ScriptedBot {
         let home = obs.base.hp > 0.0;
         // Crystals are worth nothing until handed over: with a well-filled hold, and no orders
         // to be somewhere else, head home.
-        let unload = home && obs.cargo as f32 >= UNLOAD * obs.cargo_max as f32 && matches!(obs.order, OrderKind::Mine | OrderKind::Defend);
-        let mut act = if home && (unload || obs.hull < RETREAT * obs.hull_max) && obs.base.dist > cfg.base_heal_radius * 0.6 {
-            // Badly hurt or loaded up: back to the base.
+        // With a well-filled hold and no orders to be somewhere else, a ship flies home; once it is
+        // unloading it stays until the hold is empty, and while it can still afford something.
+        let free = matches!(obs.order, OrderKind::Mine | OrderKind::Defend);
+        let loaded = obs.cargo as f32 >= UNLOAD * obs.cargo_max as f32 || (obs.in_base && obs.cargo > 0);
+        let shopping = obs.in_base && self.shop(obs, cfg).is_some();
+        let unload = home && free && (loaded || shopping);
+        let mut act = if unload && obs.in_base {
+            // Inside the base: sit still, hand the crystals over, buy.
+            Action::default()
+        } else if home && (unload || obs.hull < RETREAT * obs.hull_max) && obs.base.dist > cfg.base_radius * 0.5 {
+            // Badly hurt or loaded up: back to the base, right into it.
             Self::fly(obs.base.pos, 0.0, obs, cfg)
         } else {
             match obs.order {
@@ -191,10 +207,13 @@ impl Controller for ScriptedBot {
                 },
             }
         };
-        if let Some(dodge) = Self::dodge(obs, cfg) {
+        // Dodging is for rocks too big to break by flying into them.
+        let ramming = obs.shield > 0.5 * obs.shield_max && obs.rocks.first().is_some_and(|r| r.radius <= cfg.rock_radius_of(2));
+        if let Some(dodge) = Self::dodge(obs, cfg).filter(|_| !ramming) {
             act = Action { fire: act.fire, ..dodge };
         }
-        act.buy = self.shop(obs, cfg);
+        act.deposit = obs.in_base;
+        act.buy = self.shop(obs, cfg).filter(|_| obs.in_base);
         debug_assert_eq!(UPGRADES.len(), PRIORITY.len());
         act
     }

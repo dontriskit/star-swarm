@@ -4,16 +4,28 @@ use swarm_sim::*;
 #[test]
 fn every_action_survives_encoding() {
     let buys: Vec<Option<Buy>> = std::iter::once(None)
-        .chain(UPGRADES.iter().copied().map(Buy::Upgrade).chain(TIER2.iter().copied().map(Buy::Tier)).map(Some))
+        .chain(
+            UPGRADES
+                .iter()
+                .copied()
+                .map(Buy::Upgrade)
+                .chain(TIER2.iter().copied().map(Buy::Tier))
+                .chain(DRONE_KINDS.iter().copied().map(Buy::Drone))
+                .chain([Buy::Repair, Buy::SellDrone])
+                .map(Some),
+        )
         .collect();
+    assert_eq!(buys.len(), swarm_sim::replay::BUY_CODES);
     let votes: Vec<Option<Plan>> = std::iter::once(None).chain(PLANS.iter().copied().map(Some)).collect();
     for thrust in [false, true] {
         for turn in [-1, 0, 1] {
             for (fire, boost) in [(false, false), (false, true), (true, false), (true, true)] {
                 for &buy in &buys {
                     for &vote in &votes {
-                        let a = Action { thrust, turn, fire, boost, buy, vote };
-                        assert_eq!(decode(encode(&a)), a);
+                        for deposit in [false, true] {
+                            let a = Action { thrust, turn, fire, boost, deposit, buy, vote };
+                            assert_eq!(decode(encode(&a)), a);
+                        }
                     }
                 }
             }

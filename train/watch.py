@@ -38,13 +38,13 @@ with torch.no_grad():
         actions = pack(policy.act(observe(env, "cpu"), greedy=True)[0])
         env.step(actions)
         # The environment holds an action for frame_skip ticks and buys only on the first:
-        # clear the four buy bits (5 to 8) of every 16-bit action for the held ticks.
-        held = (np.frombuffer(actions, dtype="<u2") & 0xFE1F).astype("<u2").tobytes()
+        # clear the five buy bits (5 to 9) of every 16-bit action for the held ticks.
+        held = (np.frombuffer(actions, dtype="<u2") & 0xFC1F).astype("<u2").tobytes()
         frames += actions + held * (args.frame_skip - 1)
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0009")
+    f.write(b"SWRP000A")
     f.write(struct.pack("<QfHHII", args.seed, args.radius, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
     f.write(struct.pack("<Q", len(frames) // 2))
     f.write(frames)

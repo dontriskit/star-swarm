@@ -118,11 +118,31 @@ pub enum Buy {
     /// without upgrades. Leaving tier 1 means picking the class; later the class is kept.
     /// The team's base has to be at least the level of the tier moved up to.
     Tier(Class),
-    /// A drone that follows the ship, breaks nearby rocks and gathers crystals for it.
-    Drone,
+    /// A drone of the given kind, to follow the ship.
+    Drone(DroneKind),
     /// Repair the team's base.
     Repair,
+    /// Sell one of the ship's drones back for half its price.
+    SellDrone,
 }
+
+/// What a drone does for its owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DroneKind {
+    /// Breaks rocks near its owner and gathers crystals for it. Its shots do nothing to ships.
+    Eco,
+    /// Puts itself between its owner and the nearest enemy and takes the shots meant for it,
+    /// until it has taken too many.
+    Shield,
+    /// Ignores rocks and shoots at the nearest enemy near its owner.
+    Combat,
+}
+
+pub const DRONE_KINDS: [DroneKind; 3] = [DroneKind::Eco, DroneKind::Shield, DroneKind::Combat];
+
+/// How close a shot has to pass to a shield drone to be stopped by it.
+const DRONE_RADIUS: f32 = 12.0;
 
 /// Rocks come in sizes 1 to this: S, M, L, XL, XXL.
 pub const ROCK_SIZES: u8 = 5;
@@ -182,6 +202,9 @@ pub struct Action {
     pub fire: bool,
     /// Burn the boost tank for extra thrust and top speed.
     pub boost: bool,
+    /// Inside the team's base: hand crystals over while this is held.
+    pub deposit: bool,
+    /// Only inside the team's base.
     pub buy: Option<Buy>,
     /// Switch to a mode; None keeps the ship's current one.
     pub vote: Option<Plan>,
@@ -282,12 +305,16 @@ pub struct Config {
     pub base_hp_per_level: f32,
     /// Share of its damage a base's turret gains with every level.
     pub turret_per_level: f32,
-    /// Crystals a ship next to its base hands over per tick.
-    pub deposit_rate: u32,
+    /// Share of its full hold a ship inside its base hands over per second.
+    pub deposit_rate: f32,
+    /// Share of the impact speed a rock takes as damage when a ship flies into it.
+    pub ram_rock: f32,
+    /// Hit points of a shield drone.
+    pub drone_hp: f32,
     /// Points one repair costs, and base hit points it restores.
     pub repair_step: u32,
-    /// Points a drone costs.
-    pub drone_cost: u32,
+    /// Points a drone costs, by [`DroneKind`].
+    pub drone_cost: [u32; 3],
     /// Drones a ship of tier 1, 2 and 3 can have.
     pub drone_slots: [u8; TIERS as usize],
     /// How far from its owner a drone looks for rocks.
@@ -331,12 +358,12 @@ impl Default for Config {
             max_speed: 150.0,
             turn_rate: 3.2,
             hull: 100.0,
-            shield: 40.0,
-            shield_regen: 4.0,
+            shield: 100.0,
+            shield_regen: 1.0,
             shield_delay: 60,
-            cargo: [60, 120, 200],
+            cargo: [150, 300, 500],
             tier_levels: [3, 4, 5],
-            tier_cost: [60, 120],
+            tier_cost: [150, 300],
             // Attack, health, fire rate, shield, speed, regen, agility, ammo: fighting stats grow
             // fast, mobility slowly.
             upgrade_steps: [0.2, 0.2, 0.05, 0.2, 0.05, 0.2, 0.05, 0.2],
@@ -382,9 +409,11 @@ impl Default for Config {
             base_level_at: [1000, 2500, 4500, 7000, 10000, 14000],
             base_hp_per_level: 200.0,
             turret_per_level: 0.15,
-            deposit_rate: 5,
+            deposit_rate: 0.1,
+            ram_rock: 0.2,
+            drone_hp: 30.0,
             repair_step: 10,
-            drone_cost: 40,
+            drone_cost: [40, 40, 60],
             drone_slots: [1, 2, 3],
             drone_reach: 240.0,
             drone_speed: 170.0,
@@ -472,10 +501,12 @@ impl Config {
         match buy {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
             // Leaving tier 1 needs a real class; after that the class named is ignored. A ship
-            // cannot outgrow its base: tier 2 needs a level-2 base, tier 3 a level-3 one.
-            Buy::Tier(class) => (s.tier < TIERS && base.level > s.tier && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
-            Buy::Drone => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_cost),
+            // cannot run far ahead of its base: tier 3 needs a level-2 base.
+            Buy::Tier(class) => (s.tier < TIERS && base.level >= s.tier && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
+            Buy::Drone(kind) => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_cost[kind as usize]),
             Buy::Repair => (base.alive() && base.hp < self.base_hp_max(base.level)).then_some(self.repair_step),
+            // Selling costs nothing; what it pays is handled where it happens.
+            Buy::SellDrone => (drones > 0).then_some(0),
         }
     }
     /// Hit points of a base of a given level when whole.
@@ -533,6 +564,8 @@ pub struct Ship {
     pub points: u32,
     /// Crystals the ship has handed over in all.
     pub deposited: u32,
+    /// The part of a crystal handed over so far this tick-by-tick, carried to the next tick.
+    pub unload: f32,
     pub levels: [u8; 8],
     /// The ship's mode; None until it picks one.
     pub vote: Option<Plan>,
@@ -578,6 +611,8 @@ pub struct Shot {
     /// The ship that fired it; None for a base turret.
     pub owner: Option<u16>,
     pub team: u8,
+    /// A mining shot from an eco drone: it breaks rocks and passes through everything else.
+    pub mining: bool,
 }
 
 impl Shot {
@@ -609,6 +644,9 @@ pub struct Drone {
     pub pos: Vec3,
     pub owner: Option<u16>,
     pub cooldown: u16,
+    pub kind: DroneKind,
+    /// Hit points left; only shield drones can be hit.
+    pub hp: f32,
 }
 
 impl Base {
@@ -710,6 +748,7 @@ impl World {
                     cargo: 0,
                     points: 0,
                     deposited: 0,
+                    unload: 0.0,
                     levels: [0; 8],
                     vote: None,
                     cooldown: 0,
@@ -941,12 +980,20 @@ impl World {
                 continue;
             }
             let act = actions[i];
-            if let Some(what) = act.buy {
+            // The shop is inside the base.
+            let inside = home.alive() && geo::chord(radius, home.pos, ship.pos) < cfg.base_radius;
+            if let Some(what) = act.buy.filter(|_| inside) {
                 let drones = self.drones.iter().filter(|d| d.owner == Some(i as u16)).count();
                 if let Some(cost) = cfg.price(ship, what, home, drones).filter(|cost| ship.points >= *cost) {
                     ship.points -= cost;
                     match what {
-                        Buy::Drone => self.drones.push(Drone { pos: ship.pos, owner: Some(i as u16), cooldown: 0 }),
+                        Buy::Drone(kind) => self.drones.push(Drone { pos: ship.pos, owner: Some(i as u16), cooldown: 0, kind, hp: cfg.drone_hp }),
+                        Buy::SellDrone => {
+                            // The last one bought goes, for half of what it cost.
+                            if let Some(at) = self.drones.iter().rposition(|d| d.owner == Some(i as u16)) {
+                                ship.points += cfg.drone_cost[self.drones.remove(at).kind as usize] / 2;
+                            }
+                        }
                         Buy::Repair => repairs.push(ship.team),
                         Buy::Upgrade(u) => ship.levels[u as usize] += 1,
                         Buy::Tier(class) => {
@@ -1010,6 +1057,7 @@ impl World {
                         damage: cfg.damage(ship),
                         owner: Some(i as u16),
                         team: ship.team,
+                        mining: false,
                     });
                 }
             }
@@ -1020,15 +1068,22 @@ impl World {
             base.hp = (base.hp + self.cfg.repair_step as f32).min(self.cfg.base_hp_max(base.level));
         }
 
-        // Ships next to their own base hand over the crystals they carry: every crystal is a
-        // point for the ship and counts towards the base's next level.
+        // A ship inside its own base hands over the crystals it carries for as long as it asks
+        // to, a tenth of a full hold a second: every crystal is a point for the ship and counts
+        // towards the base's next level.
         for i in 0..self.ships.len() {
             let ship = &mut self.ships[i];
             let base = &mut self.bases[ship.team as usize];
-            if !ship.alive || ship.cargo == 0 || !base.alive() || geo::chord(radius, base.pos, ship.pos) > self.cfg.base_heal_radius {
+            if !ship.alive || !actions[i].deposit || ship.cargo == 0 || !base.alive() || geo::chord(radius, base.pos, ship.pos) >= self.cfg.base_radius {
+                ship.unload = 0.0;
                 continue;
             }
-            let amount = ship.cargo.min(self.cfg.deposit_rate);
+            ship.unload += self.cfg.deposit_rate * self.cfg.cargo_max(ship) as f32 * dt;
+            let amount = (ship.unload as u32).min(ship.cargo);
+            ship.unload -= amount as f32;
+            if amount == 0 {
+                continue;
+            }
             ship.cargo -= amount;
             ship.points += amount;
             ship.deposited += amount;
@@ -1042,8 +1097,10 @@ impl World {
             }
         }
 
-        // Drones: an orphan is taken by the first ship with room that flies up to it; an owned one
-        // goes for the nearest rock near its owner, or trails its owner, and shoots rocks in range.
+        // Drones: an orphan is taken by the first ship with room that flies up to it. An owned one
+        // does its kind's job: an eco drone goes for crystals and rocks near its owner, a combat
+        // drone for the nearest enemy near its owner, a shield drone stands between its owner and
+        // the nearest enemy. With nothing to do they trail their owner.
         for d in 0..self.drones.len() {
             let drone = &self.drones[d];
             let Some(owner) = drone.owner.filter(|o| self.ships[*o as usize].alive) else {
@@ -1056,41 +1113,73 @@ impl World {
                 continue;
             };
             let ship = &self.ships[owner as usize];
-            let rock = self
-                .rocks
-                .iter()
-                .filter(|r| r.hp > 0.0 && geo::closer(radius, ship.pos, r.pos, self.cfg.drone_reach))
-                .min_by(|a, b| geo::chord(radius, drone.pos, a.pos).total_cmp(&geo::chord(radius, drone.pos, b.pos)))
-                .map(|r| (r.pos, self.cfg.rock_radius * r.size as f32));
-            // Crystals lying about come first, while the owner has room for them; then rocks; else trail the owner.
-            let crystal = (ship.cargo < self.cfg.cargo_max(ship))
-                .then(|| {
-                    self.crystals
-                        .iter()
-                        .filter(|c| !c.boost_cell && geo::closer(radius, ship.pos, c.pos, self.cfg.drone_reach))
-                        .min_by(|a, b| geo::chord(radius, drone.pos, a.pos).total_cmp(&geo::chord(radius, drone.pos, b.pos)))
-                        .map(|c| c.pos)
-                })
-                .flatten();
-            let (goal, keep) = match (crystal, rock) {
-                (Some(pos), _) => (pos, 0.0),
-                (None, Some((pos, size))) => (pos, size + 80.0),
-                (None, None) => (ship.pos, 45.0),
+            let (team, pos, kind) = (ship.team, drone.pos, drone.kind);
+            let nearest_to_drone = |a: &Vec3, b: &Vec3| geo::chord(radius, pos, *a).total_cmp(&geo::chord(radius, pos, *b));
+            // The nearest living enemy ship within `reach` of the owner.
+            let enemy = |reach: f32| {
+                self.ships
+                    .iter()
+                    .filter(|s| s.alive && s.team != team && geo::closer(radius, ship.pos, s.pos, reach))
+                    .map(|s| s.pos)
+                    .min_by(|a, b| geo::chord(radius, ship.pos, *a).total_cmp(&geo::chord(radius, ship.pos, *b)))
             };
-            let (team, pos) = (ship.team, drone.pos);
+            // Where to go and how far to stay from it, and what to shoot at, if anything.
+            let (goal, keep, target) = match kind {
+                DroneKind::Eco => {
+                    let rock = self
+                        .rocks
+                        .iter()
+                        .filter(|r| r.hp > 0.0 && geo::closer(radius, ship.pos, r.pos, self.cfg.drone_reach))
+                        .min_by(|a, b| nearest_to_drone(&a.pos, &b.pos))
+                        .map(|r| (r.pos, self.cfg.rock_radius * r.size as f32));
+                    // Crystals lying about come first, while the owner has room for them; then rocks.
+                    let crystal = (ship.cargo < self.cfg.cargo_max(ship))
+                        .then(|| {
+                            self.crystals
+                                .iter()
+                                .filter(|c| !c.boost_cell && geo::closer(radius, ship.pos, c.pos, self.cfg.drone_reach))
+                                .min_by(|a, b| nearest_to_drone(&a.pos, &b.pos))
+                                .map(|c| c.pos)
+                        })
+                        .flatten();
+                    match (crystal, rock) {
+                        (Some(at), rock) => (at, 0.0, rock.map(|(at, _)| at)),
+                        (None, Some((at, size))) => (at, size + 80.0, Some(at)),
+                        (None, None) => (ship.pos, 45.0, None),
+                    }
+                }
+                DroneKind::Combat => match enemy(self.cfg.drone_reach * 1.5) {
+                    Some(at) => (at, 150.0, Some(at)),
+                    None => (ship.pos, 45.0, None),
+                },
+                DroneKind::Shield => match enemy(self.cfg.view_range) {
+                    // A little way out from the owner, on the line to the threat.
+                    Some(at) => (geo::travel(radius, ship.pos, geo::toward(radius, ship.pos, at).unit(), 45.0), 0.0, None),
+                    None => (ship.pos, 45.0, None),
+                },
+            };
             let drone = &mut self.drones[d];
             drone.cooldown = drone.cooldown.saturating_sub(1);
             let way = geo::toward(radius, pos, goal);
             if way.len() > keep {
                 drone.pos = geo::travel(radius, pos, way.unit(), (self.cfg.drone_speed * dt).min(way.len() - keep));
             }
-            if let Some((at, _)) = rock {
+            if let Some(at) = target {
                 let gun = self.cfg.weapon(Class::Basic);
                 let aim = geo::toward(radius, drone.pos, at);
                 if drone.cooldown == 0 && aim.len() < gun.range * 0.6 {
                     drone.cooldown = self.cfg.drone_cooldown;
                     let life = self.cfg.shot_ticks(Class::Basic);
-                    self.shots.push(Shot { pos: drone.pos, vel: aim.unit().scale(gun.speed), ticks: life, life, damage: self.cfg.drone_damage, owner: Some(owner), team });
+                    self.shots.push(Shot {
+                        pos: drone.pos,
+                        vel: aim.unit().scale(gun.speed),
+                        ticks: life,
+                        life,
+                        damage: self.cfg.drone_damage,
+                        owner: Some(owner),
+                        team,
+                        mining: kind == DroneKind::Eco,
+                    });
                 }
             }
         }
@@ -1122,6 +1211,7 @@ impl World {
                         damage: self.cfg.turret_damage * stronger,
                         owner: None,
                         team: team as u8,
+                        mining: false,
                     });
                 }
             }
@@ -1154,6 +1244,23 @@ impl World {
                 shot.ticks = 0;
                 continue;
             }
+            // A mining shot breaks rocks and passes through everything else.
+            if shot.mining {
+                continue;
+            }
+            // A shield drone in the way takes the shot for its owner.
+            let ships = &self.ships;
+            let blocker = self.drones.iter_mut().find(|d| {
+                d.kind == DroneKind::Shield
+                    && d.hp > 0.0
+                    && d.owner.is_some_and(|o| ships[o as usize].team != shot.team)
+                    && geo::closer(radius, d.pos, shot.pos, DRONE_RADIUS)
+            });
+            if let Some(drone) = blocker {
+                drone.hp -= damage;
+                shot.ticks = 0;
+                continue;
+            }
             let hit = self.ships.iter().position(|s| {
                 s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.radius_of(s)
             });
@@ -1180,6 +1287,8 @@ impl World {
             }
         }
         self.shots.retain(|s| s.ticks > 0);
+        // A shield drone that has taken too much is gone.
+        self.drones.retain(|d| d.hp > 0.0);
 
         // Rocks drift; ships bounce off them and take damage by impact speed. Most rocks have no
         // ship anywhere near: a flat first pass over the ships says so. Once a ship has been
@@ -1217,6 +1326,12 @@ impl World {
                     spilled.push((ship.pos, dropped));
                     ship.last_hit_by = None;
                     self.events.push(Event::Crashed { ship: i as u16, damage });
+                    // The rock takes the blow too: flying into rocks breaks them faster than
+                    // shooting, for a ship with shields to spare.
+                    let blow = -closing * self.cfg.ram_rock;
+                    rock.hp -= blow;
+                    rock.last_hit_by = Some(i as u16);
+                    self.events.push(Event::RockHit { by: i as u16, size: rock.size, damage: blow });
                 }
             }
         }
@@ -1413,6 +1528,8 @@ impl World {
         for d in &self.drones {
             spot(d.pos).into_iter().for_each(&mut put);
             put(d.owner.map_or(u32::MAX, u32::from));
+            put(d.kind as u32);
+            put(d.hp.to_bits());
         }
         put(self.crystals.len() as u32);
         for c in &self.crystals {

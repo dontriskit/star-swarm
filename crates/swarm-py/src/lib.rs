@@ -131,10 +131,11 @@ impl Env {
     }
 
     /// Takes one little-endian uint16 per agent:
-    /// thrust | turn << 1 | fire << 3 | boost << 4 | buy << 5 | vote << 9,
+    /// thrust | turn << 1 | fire << 3 | boost << 4 | buy << 5 | vote << 10 | deposit << 13,
     /// with turn in 0..=2 (right, straight, left); buy 0 for nothing, 1..=8 for an upgrade,
-    /// 9..=12 for the next tier (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 for a
-    /// drone, 14 for a base repair; and vote 0 to
+    /// 9..=12 for the next tier (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 for an
+    /// eco drone, 14 for a base repair, 15 for a shield drone, 16 for a combat drone, 17 to sell a
+    /// drone (buying only works inside the base); deposit 1 to hand crystals over; and vote 0 to
     /// keep the ship's mode or 1..=4 to switch to farm, defend, attack A, attack B.
     /// Returns (rewards as float32, dones as uint8), one entry per agent.
     fn step<'py>(&mut self, py: Python<'py>, actions: &[u8]) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {

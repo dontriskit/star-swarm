@@ -1,25 +1,29 @@
 //! Recorded matches: the seed plus every ship's action on every tick, with a
 //! state hash every [`HASH_EVERY`] ticks so a diverging playback is detected.
 
-use crate::sim::{Action, Buy, Config, PLANS, TIER2, UPGRADES, World};
+use crate::sim::{Action, Buy, Config, DroneKind, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0009";
+const MAGIC: &[u8; 8] = b"SWRP000A";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
-pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len() + 2;
+pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len() + 5;
 
 /// What to buy as a small number: 0 nothing, 1 to 8 an upgrade, 9 to 12 the next tier
-/// (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 a drone, 14 a base repair.
+/// (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 an eco drone, 14 a base repair,
+/// 15 a shield drone, 16 a combat drone, 17 selling a drone.
 pub fn buy_code(buy: Option<Buy>) -> u8 {
     match buy {
         None => 0,
         Some(Buy::Upgrade(u)) => u as u8 + 1,
         Some(Buy::Tier(class)) => (UPGRADES.len() + TIER2.iter().position(|c| *c == class).map_or(0, |i| i + 1)) as u8,
-        Some(Buy::Drone) => (UPGRADES.len() + TIER2.len() + 1) as u8,
-        Some(Buy::Repair) => (UPGRADES.len() + TIER2.len() + 2) as u8,
+        Some(Buy::Drone(DroneKind::Eco)) => 13,
+        Some(Buy::Repair) => 14,
+        Some(Buy::Drone(DroneKind::Shield)) => 15,
+        Some(Buy::Drone(DroneKind::Combat)) => 16,
+        Some(Buy::SellDrone) => 17,
     }
 }
 
@@ -29,8 +33,11 @@ pub fn buy_of(code: u8) -> Option<Buy> {
         0 => None,
         n if n <= UPGRADES.len() => Some(Buy::Upgrade(UPGRADES[n - 1])),
         n if n <= UPGRADES.len() + TIER2.len() => Some(Buy::Tier(TIER2[n - UPGRADES.len() - 1])),
-        n if n == UPGRADES.len() + TIER2.len() + 1 => Some(Buy::Drone),
-        n if n == UPGRADES.len() + TIER2.len() + 2 => Some(Buy::Repair),
+        13 => Some(Buy::Drone(DroneKind::Eco)),
+        14 => Some(Buy::Repair),
+        15 => Some(Buy::Drone(DroneKind::Shield)),
+        16 => Some(Buy::Drone(DroneKind::Combat)),
+        17 => Some(Buy::SellDrone),
         _ => None,
     }
 }
@@ -39,12 +46,12 @@ pub fn buy_of(code: u8) -> Option<Buy> {
 pub const VOTE_CODES: usize = 1 + PLANS.len();
 
 /// Packs an action into 16 bits: thrust (bit 0), turn (bits 1-2: right, straight, left),
-/// fire (bit 3), boost (bit 4), what to buy (bits 5-8, see [`buy_code`]), and the vote on the
-/// team plan (bits 9-11: 0 keeps the last vote, 1 to 4 farm, defend, attack A, attack B).
+/// fire (bit 3), boost (bit 4), what to buy (bits 5-9, see [`buy_code`]), the mode (bits 10-12:
+/// 0 keeps the current one, 1 to 4 farm, defend, attack A, attack B), and deposit (bit 13).
 pub fn encode(a: &Action) -> u16 {
     let buy = buy_code(a.buy) as u16;
     let vote = a.vote.map_or(0, |p| p as u16 + 1);
-    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5 | vote << 9
+    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5 | vote << 10 | (a.deposit as u16) << 13
 }
 
 pub fn decode(b: u16) -> Action {
@@ -53,8 +60,9 @@ pub fn decode(b: u16) -> Action {
         turn: (((b >> 1) & 3) as i8 - 1).clamp(-1, 1),
         fire: b & 8 != 0,
         boost: b & 16 != 0,
-        buy: buy_of(((b >> 5) & 15) as u8),
-        vote: (((b >> 9) & 7) as usize).checked_sub(1).and_then(|i| PLANS.get(i).copied()),
+        buy: buy_of(((b >> 5) & 31) as u8),
+        vote: (((b >> 10) & 7) as usize).checked_sub(1).and_then(|i| PLANS.get(i).copied()),
+        deposit: b & (1 << 13) != 0,
     }
 }
 

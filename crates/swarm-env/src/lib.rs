@@ -471,7 +471,10 @@ mod tests {
     fn a_bought_upgrade_is_charged_once_per_decision() {
         let cfg = Config { rock_count: 0, ..mining() };
         let mut env = VecEnv::new(cfg, 1, 1, 3, Rewards::default());
-        env.slots[0].world.ships[0].points = 100;
+        // The shop is inside the base.
+        let world = &mut env.slots[0].world;
+        world.ships[0].points = 100;
+        world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 20.0);
         let buy = replay::encode(&Action { buy: Some(swarm_sim::Buy::Upgrade(swarm_sim::Upgrade::Attack)), ..Action::default() });
         let (mut rewards, mut dones) = (vec![0f32; 4], vec![0u8; 4]);
         env.step(&[buy, 0, 0, 0], &mut rewards, &mut dones);
@@ -549,7 +552,8 @@ mod tests {
         for _ in 0..60 {
             env.step(&[fire, 0], &mut rewards, &mut dones);
             paid += rewards[0];
-            if env.world(0).ships[1].shield < 40.0 {
+            let hit = &env.world(0).ships[1];
+            if hit.shield < env.config().shield_max(hit) {
                 break;
             }
         }

@@ -230,7 +230,12 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
     for drone in world.drones.iter().filter(|d| in_sight(d.pos) || d.owner.is_some_and(|o| world.ships[o as usize].team == MY_TEAM)) {
         if let Some(p) = view.at(drone.pos) {
             let color = drone.owner.map_or(rgb(0x8a93a6), |o| team_color(world.ships[o as usize].team));
-            fill_shape(window, &polygon(p, 3.5, 4, 0.0), color);
+            // Eco: a filled diamond. Shield: a ring. Combat: a small triangle.
+            match drone.kind {
+                swarm_sim::DroneKind::Eco => fill_shape(window, &polygon(p, 3.5, 4, 0.0), color),
+                swarm_sim::DroneKind::Shield => stroke_shape(window, &polygon(p, 4.5, 12, 0.0), 1.5, color),
+                swarm_sim::DroneKind::Combat => fill_shape(window, &polygon(p, 4.0, 3, -std::f32::consts::FRAC_PI_2), color),
+            }
         }
     }
 

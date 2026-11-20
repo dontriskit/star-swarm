@@ -19,8 +19,9 @@ from torch import nn
 
 from swarm_py import OBS_LEN, Env
 
-# Sizes of the six action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out to do).
-HEADS = (2, 3, 2, 2, 15, 5)
+# Sizes of the seven action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out
+# to do), deposit (hand crystals over while inside the base).
+HEADS = (2, 3, 2, 2, 18, 5, 2)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
 REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level", "rock_hit", "edge")
 CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
@@ -73,7 +74,7 @@ def forget(policy: Policy, how: str, device, hidden: int):
 def pack(actions: torch.Tensor) -> bytes:
     """One little-endian uint16 per agent, the encoding Env.step expects."""
     a = actions
-    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 9)
+    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 10) | (a[:, 6] << 13)
     return code.cpu().numpy().astype("<u2").tobytes()
 
 
@@ -197,7 +198,21 @@ def train(args):
     past = []
     policy = Policy(args.hidden).to(device)
     if args.init:
-        saved = torch.load(args.init, map_location=device)["model"]
+        checkpoint = torch.load(args.init, map_location=device)
+        saved = checkpoint["model"]
+        old_heads = tuple(checkpoint.get("heads", HEADS))
+        if old_heads != HEADS:
+            # The actions have grown since this policy was saved: a head got more choices, or a
+            # head was added. What it learned is copied head by head; every new choice starts
+            # from a zero logit, which a head of its own turns into an even split.
+            for key in ("logits.weight", "logits.bias"):
+                grown = torch.zeros(sum(HEADS), *saved[key].shape[1:], device=device)
+                at_old = at_new = 0
+                for i, size in enumerate(HEADS):
+                    was = old_heads[i] if i < len(old_heads) else 0
+                    grown[at_new : at_new + min(was, size)] = saved[key][at_old : at_old + min(was, size)]
+                    at_old, at_new = at_old + was, at_new + size
+                saved[key] = grown
         first = "trunk.0.weight"
         if saved[first].shape[1] < OBS_LEN:
             # The observation has grown since this policy was saved. New inputs are added at the
