@@ -301,7 +301,8 @@ fn three_deaths_demote_a_ship() {
     let mut world = duel(Config::default(), 150.0);
     let idle = [Action::default(); 2];
     let kill = |world: &mut World| {
-        world.ships[1].hull = -1.0;
+        // Well below zero: a ship that respawned inside its base is docked and being repaired.
+        world.ships[1].hull = -1000.0;
         world.step(&idle);
         assert!(!world.ships[1].alive);
         for _ in 0..world.cfg.respawn_ticks + 1 {
@@ -490,7 +491,7 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     let mut world = World::new(cfg, 4);
     let n = world.ships.len();
     let per_team = world.cfg.ships_per_team;
-    assert_eq!(per_team, 7);
+    assert_eq!(per_team, 9);
     let pick = |world: &mut World, modes: &[(usize, Plan)]| {
         let mut actions = vec![Action::default(); n];
         for (ship, mode) in modes {
@@ -512,11 +513,11 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     assert!(world.dist(world.ships[3].order.target, world.bases[0].pos) < 1.0);
     assert!(kinds(&world).iter().enumerate().all(|(i, k)| i == 3 || *k == OrderKind::Mine));
 
-    // Three of seven want to attack: not half the team, so nobody attacks.
-    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB)]);
+    // Four of nine want to attack: not half the team, so nobody attacks.
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB), (5, Plan::AttackA)]);
     assert!(kinds(&world).iter().all(|k| *k != OrderKind::Attack), "{:?}", kinds(&world));
 
-    // A fourth joins: the whole team attacks, defender included, at the base most of them picked.
+    // A fifth joins: the whole team attacks, defender included, at the base most of them picked.
     pick(&mut world, &[(4, Plan::AttackA)]);
     assert!(kinds(&world).iter().all(|k| *k == OrderKind::Attack), "{:?}", kinds(&world));
     assert!(world.ships[..per_team].iter().all(|s| world.dist(s.order.target, world.bases[1].pos) < 1.0));
@@ -524,10 +525,11 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
 
     // Team radar: a ship sees every teammate's mode and how the team splits.
+    // (The radar shows the six nearest of the eight teammates; the split counts them all.)
     let seen = observe(&world, 6);
-    assert_eq!(seen.mates.len(), per_team - 1);
-    assert_eq!(seen.mates.iter().filter(|m| m.mode == Some(Plan::AttackA)).count(), 3);
-    assert!((seen.votes[Plan::AttackA as usize] - 3.0 / per_team as f32).abs() < 1e-6);
+    assert_eq!(seen.mates.len(), 6);
+    assert!((seen.votes[Plan::AttackA as usize] - 4.0 / per_team as f32).abs() < 1e-6);
+    assert!((seen.votes[Plan::AttackB as usize] - 1.0 / per_team as f32).abs() < 1e-6);
 
     // Two change their minds: the attack is off, and everyone is back to their own mode.
     pick(&mut world, &[(0, Plan::Farm), (1, Plan::Farm)]);
@@ -536,7 +538,7 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
 
     // A team commanded from outside keeps the orders it was given.
     world.commanded[0] = true;
-    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackA), (4, Plan::AttackA)]);
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackA), (4, Plan::AttackA), (5, Plan::AttackA)]);
     assert_eq!(world.ships[0].order.kind, OrderKind::Mine);
 }
 
@@ -927,12 +929,12 @@ fn a_ship_passing_close_to_a_pack_picks_it_up() {
         world.step(&[Action::default(); 2]);
         world.ships[0].cargo
     };
-    // A small pack of 9 has radius 11: a tier-1 ship (radius 12) takes it from within 34.
-    assert_eq!(grab(30.0, 9), 9);
-    assert_eq!(grab(38.0, 9), 0);
-    // A big pack is a bigger target: 49 crystals have radius 15, so the reach is 42.
-    assert_eq!(grab(40.0, 49), 49);
-    assert_eq!(grab(46.0, 49), 0);
+    // A small pack of 9 has radius 16.5: a tier-1 ship (radius 12) takes it from within 45.
+    assert_eq!(grab(42.0, 9), 9);
+    assert_eq!(grab(49.0, 9), 0);
+    // A big pack is a bigger target: 49 crystals have radius 22.5, so the reach is 57.
+    assert_eq!(grab(54.0, 49), 49);
+    assert_eq!(grab(61.0, 49), 0);
 }
 
 #[test]
@@ -1006,4 +1008,44 @@ fn a_base_has_two_places_and_only_ships_at_rest_take_them() {
         world.step(&leave);
     }
     assert!(!world.ships[0].docked && world.ships[2].docked);
+}
+
+#[test]
+fn the_hull_mends_from_crystals_first_and_in_the_base() {
+    // A ship missing 30 hull picks up a pack of 50: 30 mend the hull, 20 go into the hold.
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 2);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
+    world.ships[0].hull = 70.0;
+    world.crystals.push(Crystal { pos: POLE, ticks: 100, value: 50, boost_cell: false });
+    let taken: u32 = world.step(&[Action::default(); 2]).iter().map(|e| if let Event::Collected { ship: 0, amount } = e { *amount } else { 0 }).sum();
+    assert_eq!((world.ships[0].hull, world.ships[0].cargo, taken), (100.0, 20, 50));
+    // Out in the open nothing else mends it.
+    world.ships[0].hull = 70.0;
+    for _ in 0..300 {
+        world.step(&[Action::default(); 2]);
+    }
+    assert_eq!(world.ships[0].hull, 70.0);
+    // A ship with a full hold still takes crystals while its hull needs them.
+    world.ships[0].cargo = world.cfg.cargo_max(&world.ships[0]);
+    world.crystals.push(Crystal { pos: POLE, ticks: 100, value: 10, boost_cell: false });
+    world.step(&[Action::default(); 2]);
+    assert_eq!(world.ships[0].hull, 80.0);
+
+    // Docked in the base: a tenth of the hull a second.
+    let mut world = at_home(0);
+    world.ships[0].hull = 40.0;
+    for _ in 0..30 {
+        world.step(&[Action::default(); 2]);
+    }
+    assert!((world.ships[0].hull - 50.0).abs() < 0.5, "after one second: {}", world.ships[0].hull);
+    // Next to the base but not in it: nothing.
+    let mut world = at_home(0);
+    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 100.0);
+    world.ships[0].hull = 40.0;
+    for _ in 0..30 {
+        world.step(&[Action::default(); 2]);
+    }
+    assert_eq!(world.ships[0].hull, 40.0);
 }

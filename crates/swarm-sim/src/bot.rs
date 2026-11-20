@@ -113,7 +113,7 @@ impl ScriptedBot {
 
     fn mine(obs: &Observation, cfg: &Config) -> Action {
         // A crystal pack needs cargo room; a boost cell is only worth it with a tank that is not full.
-        let wanted = |c: &&Near| if c.enemy { obs.boost < 0.95 } else { obs.cargo < obs.cargo_max };
+        let wanted = |c: &&Near| if c.enemy { obs.boost < 0.95 } else { obs.cargo < obs.cargo_max || obs.hull < obs.hull_max };
         if let Some(c) = obs.crystals.iter().find(wanted) {
             return Self::fly(c.pos, 0.0, obs, cfg);
         }
@@ -174,7 +174,9 @@ impl Controller for ScriptedBot {
         let free = matches!(obs.order, OrderKind::Mine | OrderKind::Defend);
         let loaded = obs.cargo as f32 >= UNLOAD * obs.cargo_max as f32 || (obs.in_base && obs.cargo > 0);
         let shopping = obs.in_base && self.shop(obs, cfg).is_some();
-        let unload = home && free && (loaded || shopping);
+        // Badly hurt, it goes home whatever its orders, and once docked stays until mended.
+        let hurt = obs.hull < RETREAT * obs.hull_max || (obs.in_base && obs.hull < 0.9 * obs.hull_max);
+        let unload = home && ((free && (loaded || shopping)) || hurt);
         let full = obs.base_docked >= obs.base_slots && !obs.in_base;
         let mut act = if unload && (obs.in_base || obs.base.dist < cfg.base_radius * 0.6) {
             // Docked, or inside and coming to rest: sit still, hand the crystals over, buy.
@@ -182,7 +184,7 @@ impl Controller for ScriptedBot {
         } else if unload && full && obs.base.dist < cfg.base_heal_radius {
             // Every place in the base is taken: wait just outside for one to come free.
             Action::default()
-        } else if home && (unload || obs.hull < RETREAT * obs.hull_max) && obs.base.dist > cfg.base_radius * 0.5 {
+        } else if unload && obs.base.dist > cfg.base_radius * 0.5 {
             // Badly hurt or loaded up: back to the base, right into it.
             Self::fly(obs.base.pos, if unload { cfg.base_radius * 0.3 } else { 0.0 }, obs, cfg)
         } else {

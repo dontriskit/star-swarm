@@ -491,9 +491,9 @@ mod tests {
         let agents = env.agents();
         let mut mask = vec![0u8; agents];
         env.controlled(&mut mask);
-        // 3 teams of 7: the first 7 ships of each match are the learner's.
-        assert_eq!(mask[..21].iter().map(|m| *m as usize).sum::<usize>(), 7);
-        assert!(mask[..7].iter().all(|m| *m == 1));
+        // 3 teams of 9: the first 9 ships of each match are the learner's.
+        assert_eq!(mask[..27].iter().map(|m| *m as usize).sum::<usize>(), 9);
+        assert!(mask[..9].iter().all(|m| *m == 1));
 
         // The learner team does nothing at all; the scripted teams must still play and finish matches.
         let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);

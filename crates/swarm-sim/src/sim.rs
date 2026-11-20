@@ -255,7 +255,7 @@ pub struct Config {
     pub base_radius: f32,
     /// Ships this close to their own standing base are repaired.
     pub base_heal_radius: f32,
-    /// Hull points per second repaired at the base.
+    /// Share of its hull a docked ship gets back per second.
     pub base_heal: f32,
     /// A standing base shoots the nearest enemy ship within this range.
     pub turret_range: f32,
@@ -350,7 +350,7 @@ impl Default for Config {
             radius: 1200.0,
             dt: 1.0 / 30.0,
             teams: 3,
-            ships_per_team: 7,
+            ships_per_team: 9,
             rock_count: 270,
             max_ticks: 36000,
             ship_radius: 12.0,
@@ -375,7 +375,7 @@ impl Default for Config {
             base_hp: 1000.0,
             base_radius: 60.0,
             base_heal_radius: 120.0,
-            base_heal: 10.0,
+            base_heal: 0.1,
             turret_range: 380.0,
             turret_damage: 15.0,
             turret_cooldown: 8,
@@ -525,7 +525,7 @@ impl Config {
     }
     /// How big a pack of crystals is: bigger packs are bigger targets. A boost cell (value 0) is the smallest.
     pub fn crystal_radius(&self, value: u32) -> f32 {
-        8.0 + (value as f32).sqrt()
+        1.5 * (8.0 + (value as f32).sqrt())
     }
     /// How close a ship of the given radius (0 for a drone) has to come to a pack to take it:
     /// its own radius plus twice the pack's.
@@ -1059,8 +1059,10 @@ impl World {
             } else {
                 ship.shield = (ship.shield + cfg.shield_regen * cfg.boost(ship, Upgrade::Regen) * dt).min(cfg.shield_max(ship));
             }
-            if home.alive() && geo::chord(radius, home.pos, ship.pos) < cfg.base_heal_radius {
-                ship.hull = (ship.hull + cfg.base_heal * dt).min(cfg.hull_max(ship));
+            // The hull is repaired in two ways only: docked in the base, a share of it a second, or
+            // by picking up crystals.
+            if ship.docked {
+                ship.hull = (ship.hull + cfg.base_heal * cfg.hull_max(ship) * dt).min(cfg.hull_max(ship));
             }
             ship.ammo = (ship.ammo + cfg.ammo_regen * cfg.boost(ship, Upgrade::Ammo) * dt).min(cfg.ammo_max(ship));
             ship.cooldown = ship.cooldown.saturating_sub(1);
@@ -1438,14 +1440,16 @@ impl World {
                 for d in drones {
                     let Some(i) = d.owner.map(|o| o as usize) else { continue };
                     let dist = geo::chord(radius, d.pos, c.pos);
-                    if ships[i].alive && ships[i].cargo < cfg.cargo_max(&ships[i]) && dist < cfg.pickup_reach(0.0, c.value) && best.is_none_or(|(_, b)| dist < b) {
+                    let useful = ships[i].cargo < cfg.cargo_max(&ships[i]) || ships[i].hull < cfg.hull_max(&ships[i]);
+                    if ships[i].alive && useful && dist < cfg.pickup_reach(0.0, c.value) && best.is_none_or(|(_, b)| dist < b) {
                         best = Some((i, dist));
                     }
                 }
             }
             for (i, s) in ships.iter().enumerate() {
-                // A boost cell is worth picking up until the tank is full; a crystal needs cargo room.
-                let wanted = if c.boost_cell { s.boost < 1.0 } else { s.cargo < cfg.cargo_max(s) };
+                // A boost cell is worth picking up until the tank is full; crystals mend a damaged
+                // hull, or need cargo room.
+                let wanted = if c.boost_cell { s.boost < 1.0 } else { s.cargo < cfg.cargo_max(s) || s.hull < cfg.hull_max(s) };
                 if !s.alive || !wanted {
                     continue;
                 }
@@ -1459,9 +1463,14 @@ impl World {
                     ships[i].boost = 1.0;
                     return false;
                 }
-                // Take what fits; the rest of the pack stays where it is.
-                let amount = c.value.min(cfg.cargo_max(&ships[i]) - ships[i].cargo);
-                ships[i].cargo += amount;
+                // Crystals mend the hull first, a point each; only what is left over goes into the
+                // hold, as far as it fits. The rest of the pack stays where it is.
+                let full = cfg.hull_max(&ships[i]);
+                let mend = c.value.min((full - ships[i].hull).max(0.0).ceil() as u32);
+                ships[i].hull = (ships[i].hull + mend as f32).min(full);
+                let stow = (c.value - mend).min(cfg.cargo_max(&ships[i]) - ships[i].cargo);
+                let amount = mend + stow;
+                ships[i].cargo += stow;
                 ships[i].collected += amount;
                 ships[i].score += amount;
                 c.value -= amount;
