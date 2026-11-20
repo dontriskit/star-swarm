@@ -647,6 +647,9 @@ pub struct Ship {
     pub streak: u32,
     /// Volleys of the current burst still to come.
     pub burst_left: u8,
+    /// What the ship was told to do on the last tick. A ship is shown this back, so that it
+    /// can keep to a course instead of deciding afresh every time.
+    pub last: Action,
     /// The upgrade levels the ship had at each tier when it moved up from it; what it falls
     /// back to when it runs out of lives at the tier above.
     pub saved: [[u8; 8]; TIERS as usize],
@@ -979,6 +982,7 @@ impl World {
                     lives: world.cfg.lives,
                     streak: 0,
                     burst_left: 0,
+                    last: Action::default(),
                     saved: [[0; 8]; TIERS as usize],
                     ammo: 0.0,
                     boost: 1.0,
@@ -1307,6 +1311,7 @@ impl World {
                 continue;
             }
             let act = actions[i];
+            ship.last = act;
             // The shop is for docked ships.
             if let Some(what) = act.buy.filter(|_| ship.docked) {
                 let drones = self.drones.iter().filter(|d| d.owner == Some(i as u16)).count();
@@ -1943,6 +1948,7 @@ impl World {
             put(s.lives as u32);
             put(s.streak);
             put(s.burst_left as u32);
+            put(crate::replay::encode(&s.last) as u32);
             for l in s.saved.iter().flatten() {
                 put(*l as u32);
             }

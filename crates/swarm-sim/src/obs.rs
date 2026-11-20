@@ -37,7 +37,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN + 6;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -123,6 +123,8 @@ pub struct Observation {
     /// Docked: at rest inside its own base with one of its places, where crystals are handed
     /// over and things are bought.
     pub in_base: bool,
+    /// What the ship did last: its own previous action.
+    pub last: crate::sim::Action,
     /// How many of the team's ships are docked in the base, this one included, and how many it takes.
     pub base_docked: u8,
     pub base_slots: u8,
@@ -447,6 +449,7 @@ impl<'a> Scan<'a> {
             drones: self.drones[ship],
             drone_kinds: DRONE_KINDS.map(|k| world.drones.iter().filter(|d| d.owner == Some(ship as u16) && d.kind == k).count() as u8),
             in_base: me.docked,
+            last: me.last,
             base_docked: world.ships.iter().filter(|s| s.team == me.team && s.docked).count() as u8,
             base_slots: cfg.base_slots as u8,
             base_level: home.level,
@@ -642,6 +645,9 @@ impl Observation {
                 None => put(&[0.0; FIELD_LEN]),
             }
         }
+        // The ship's own last action: thrust, turn, fire, boost, deposit, brake.
+        let last = &self.last;
+        put(&[last.thrust as u8 as f32, last.turn as f32, last.fire as u8 as f32, last.boost as u8 as f32, last.deposit as u8 as f32, last.brake as u8 as f32]);
         debug_assert_eq!(at, OBS_LEN);
     }
 }

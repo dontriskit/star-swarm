@@ -1385,6 +1385,6 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     assert!(world.cfg.view_range > 1000.0 && world.cfg.view_range < world.cfg.radar_range);
     // All twelve are in the vector a policy gets: the last six have their rows near the end.
     let v = seen.to_vec(&world.cfg);
-    let present = v[OBS_LEN - 121..OBS_LEN - 61].chunks(10).filter(|row| row[0] == 1.0).count();
+    let present = v[OBS_LEN - 127..OBS_LEN - 67].chunks(10).filter(|row| row[0] == 1.0).count();
     assert_eq!(present, 6);
 }

@@ -20,7 +20,9 @@ py=.venv/bin/python
 # base HP, turret damage, updates, entropy bonus at the start and at the end of the stage, share
 # of the starter reward. The bonus is kept low: with more of it the ships being trained act
 # close to at random, and a ship that thrusts at random never comes to rest inside its base.
-# Each update is 2048 matches x 64 decisions: about 900 thousand samples for the ships being trained.
+# Each update is 256 matches x 512 decisions (77 s of play): about 900 thousand samples for the
+# ships being trained. Long stretches, and credit that reaches some 15 s back directly (lam 0.99),
+# so that a flight somewhere or a fight is learned from what came of it.
 stages=("100 0 30 0.01 0.01 1" "300 5 50 0.01 0.005 1" "600 10 75 0.002 0.0005 0.8" "1000 15 150 0.0005 0.0003 0.5")
 for i in "${!stages[@]}"; do
   [ $((i + 1)) -ge "$first" ] || continue
@@ -46,7 +48,7 @@ for i in "${!stages[@]}"; do
   # and the team that stays out of it gains. So fighting has to pay for itself; 0.3 more while the
   # team is attacking and the attacker has the upper hand; a kill pays 8.
   $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --value-warmup "${WARMUP:-0}" --entropy-coef "$entropy_start" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
-    --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
+    --steps "${STEPS:-512}" --lam "${LAM:-0.99}" --envs "${ENVS:-256}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
     --opponent "${OPPONENT:-self}" --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
     --reward time=0.00083 --reward draw=30 --reward place=20 \
