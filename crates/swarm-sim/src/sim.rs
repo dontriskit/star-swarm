@@ -332,6 +332,14 @@ pub struct Config {
     /// Rocks lie in a field around every base, out to this far from it; the space between the
     /// fields is empty. 0 scatters them over the whole planet.
     pub rock_field: f32,
+    /// Farms: clusters of rocks of one kind, in rings around every base. For each ring: how far
+    /// from the base, the smallest and biggest rock size, and how many rocks to a farm. Small
+    /// rocks are close to home, the big ones farther out. Rocks beyond what the farms take are
+    /// stragglers, scattered over the field.
+    pub farm_rings: [(f32, u8, u8, u32); 3],
+    /// Farms in every ring, evenly around the base.
+    pub farms_per_ring: u32,
+    pub farm_radius: f32,
     pub crash_damage: f32,
 
     /// How long a pack of crystals takes to fade from its full worth to nothing.
@@ -370,6 +378,9 @@ impl Default for Config {
         Config {
             radius: 12000.0,
             rock_field: 2600.0,
+            farm_rings: [(750.0, 1, 2, 13), (1500.0, 3, 3, 9), (2300.0, 4, 5, 5)],
+            farms_per_ring: 3,
+            farm_radius: 260.0,
             dt: 1.0 / 30.0,
             teams: 3,
             ships_per_team: 9,
@@ -628,6 +639,17 @@ pub struct Rock {
     pub size: u8,
     pub hp: f32,
     pub last_hit_by: Option<u16>,
+    /// The farm it belongs to, as an index into [`World::farms`]; None for a straggler.
+    /// A broken rock is replaced in the same farm.
+    pub farm: Option<u16>,
+}
+
+/// A cluster of rocks of about one size. Every base has the same farms around it.
+#[derive(Clone, Copy, Debug)]
+pub struct Farm {
+    pub pos: Vec3,
+    /// Smallest and biggest rock size found here.
+    pub sizes: (u8, u8),
 }
 
 #[derive(Clone, Debug)]
@@ -740,6 +762,8 @@ pub struct World {
     pub drones: Vec<Drone>,
     /// One per team, indexed by team.
     pub bases: Vec<Base>,
+    /// The rock farms; see [`Config::farm_rings`].
+    pub farms: Vec<Farm>,
     /// The mode most of each team's ships are in, indexed by team; None until one picks a mode.
     pub plans: Vec<Option<Plan>>,
     /// Fog of war: the health each team last saw each base at, indexed by team, then by base.
@@ -774,6 +798,7 @@ impl World {
             crystals: Vec::new(),
             shots: Vec::new(),
             drones: Vec::new(),
+            farms: Vec::new(),
             plans: vec![None; bases.len()],
             seen_base_hp: vec![vec![cfg.base_hp; bases.len()]; bases.len()],
             commanded: vec![false; bases.len()],
@@ -823,8 +848,29 @@ impl World {
                 world.ships.push(ship);
             }
         }
-        for _ in 0..world.cfg.rock_count {
-            let rock = Self::new_rock(&world.cfg, &world.bases, &mut rng);
+        // The same farms around every base, turned by the same random angle ring by ring, so no
+        // team has the better field. Rocks are dealt to the farms base by base, so a match with
+        // few rocks is still even; what is left over is scattered.
+        let mut deal: Vec<u16> = Vec::new();
+        if world.cfg.rock_field > 0.0 {
+            let per_ring = world.cfg.farms_per_ring.max(1);
+            let turns: Vec<f32> = world.cfg.farm_rings.iter().map(|_| rng.range(0.0, std::f32::consts::TAU)).collect();
+            let mut slots: Vec<Vec<u16>> = vec![Vec::new(); world.bases.len()];
+            for (b, base) in world.bases.iter().enumerate() {
+                for (ring, turn) in world.cfg.farm_rings.iter().zip(&turns) {
+                    for k in 0..per_ring {
+                        let way = geo::bearing(base.pos, turn + std::f32::consts::TAU * k as f32 / per_ring as f32);
+                        let farm = world.farms.len() as u16;
+                        world.farms.push(Farm { pos: geo::travel(world.cfg.radius, base.pos, way, ring.0), sizes: (ring.1, ring.2) });
+                        slots[b].extend(std::iter::repeat_n(farm, ring.3 as usize));
+                    }
+                }
+            }
+            let most = slots.iter().map(Vec::len).max().unwrap_or(0);
+            deal = (0..most).flat_map(|k| slots.iter().filter_map(move |s| s.get(k).copied())).collect();
+        }
+        for i in 0..world.cfg.rock_count {
+            let rock = Self::new_rock(&world.cfg, &world.bases, &world.farms, deal.get(i).copied(), &mut rng);
             world.rocks.push(rock);
         }
         world.rng = rng;
@@ -972,7 +1018,15 @@ impl World {
         dropped
     }
 
-    fn new_rock(cfg: &Config, bases: &[Base], rng: &mut Rng) -> Rock {
+    fn new_rock(cfg: &Config, bases: &[Base], farms: &[Farm], farm: Option<u16>, rng: &mut Rng) -> Rock {
+        if let Some(home) = farm.and_then(|f| farms.get(f as usize)) {
+            // Somewhere in its farm, of one of the farm's sizes, and barely drifting.
+            let away = geo::bearing(home.pos, rng.range(0.0, std::f32::consts::TAU));
+            let pos = geo::travel(cfg.radius, home.pos, away, cfg.farm_radius * rng.range(0.0f32, 1.0).sqrt());
+            let size = home.sizes.0 + rng.below((home.sizes.1 - home.sizes.0) as u32 + 1) as u8;
+            let vel = geo::bearing(pos, rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed * 0.25));
+            return Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None, farm };
+        }
         let mut pos = Vec3::new(1.0, 0.0, 0.0);
         for _ in 0..10 {
             if cfg.rock_field > 0.0 && !bases.is_empty() {
@@ -995,7 +1049,7 @@ impl World {
         let mut pick = rng.below(cfg.rock_weights.iter().sum());
         let size = 1 + cfg.rock_weights.iter().position(|w| if pick < *w { true } else { pick -= *w; false }).unwrap_or(0) as u8;
         let vel = geo::bearing(pos, rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed));
-        Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None }
+        Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None, farm: None }
     }
 
     /// Drops one pack of crystals between `near` and `far` from a point. Nothing for an empty pack.
@@ -1493,12 +1547,18 @@ impl World {
             self.drop_pack(at, self.cfg.base_pack, self.cfg.base_radius + 20.0, self.cfg.base_radius + 120.0);
         }
 
-        // A rock that has drifted well out of every field is replaced by one inside a field.
+        // A rock that has drifted out of its farm, or a straggler well out of every field, is
+        // replaced by one where it belongs.
         if self.cfg.rock_field > 0.0 && self.tick % 128 == 0 {
             let leash = self.cfg.rock_field * 1.25;
             for r in 0..self.rocks.len() {
-                if self.bases.iter().all(|b| geo::chord(radius, b.pos, self.rocks[r].pos) > leash) {
-                    self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
+                let (at, farm) = (self.rocks[r].pos, self.rocks[r].farm);
+                let strayed = match farm.and_then(|f| self.farms.get(f as usize)) {
+                    Some(home) => geo::chord(radius, home.pos, at) > self.cfg.farm_radius * 1.6,
+                    None => self.bases.iter().all(|b| geo::chord(radius, b.pos, at) > leash),
+                };
+                if strayed {
+                    self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &self.farms, farm, &mut self.rng);
                 }
             }
         }
@@ -1518,7 +1578,8 @@ impl World {
                 let at = geo::travel(radius, pos, away, self.cfg.rock_radius * 1.5);
                 self.crystals.push(Crystal { pos: at, ticks: self.cfg.cell_ticks, value: 0, full: 0, boost_cell: true });
             }
-            self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
+            let farm = self.rocks[r].farm;
+            self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &self.farms, farm, &mut self.rng);
         }
 
         // Crystals go to the nearest ship in reach that still has room.
