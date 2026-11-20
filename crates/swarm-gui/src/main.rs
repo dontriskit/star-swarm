@@ -5,12 +5,13 @@ mod map;
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Selectable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
-use swarm_sim::{Config, Controller, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, World, observe};
+use swarm_sim::{Config, Controller, ModelBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, World, observe};
 #[cfg(test)]
 use swarm_sim::Vec2;
 
@@ -37,7 +38,10 @@ fn order_name(kind: OrderKind) -> &'static str {
 struct Game {
     world: World,
     seed: u64,
-    bot: ScriptedBot,
+    /// One controller per ship.
+    pilots: Vec<Box<dyn Controller>>,
+    /// Set when a trained network flies your fleet instead of the scripted bot.
+    model: Option<Arc<Net>>,
     commander: ScriptedCommander,
     /// What has been played so far, ready to save.
     recording: Replay,
@@ -55,6 +59,17 @@ struct Game {
 }
 
 impl Game {
+    /// Your fleet flies on a trained network and takes no orders; the other teams stay scripted.
+    fn with_model(seed: u64, net: Arc<Net>) -> Self {
+        let mut game = Game::new(seed, None);
+        for i in game.my_ships().collect::<Vec<_>>() {
+            game.pilots[i] = Box::new(ModelBot::new(net.clone(), ModelBot::HOLD));
+        }
+        game.model = Some(net);
+        game.status = "Twoja flota leci na modelu, pozostałe na botach skryptowych.".into();
+        game
+    }
+
     fn new(seed: u64, playback: Option<Replay>) -> Self {
         let seed = playback.as_ref().map_or(seed, |r| r.seed);
         let world = playback.as_ref().map_or_else(|| World::new(Config::default(), seed), Replay::world);
@@ -64,9 +79,10 @@ impl Game {
                 Some(r) => format!("Powtórka: {} s gry.", (r.ticks() as f32 * world.cfg.dt) as u32),
                 None => "Wybierz rozkaz, potem kliknij punkt na mapie.".into(),
             },
+            pilots: world.ships.iter().map(|_| Box::new(ScriptedBot) as Box<dyn Controller>).collect(),
+            model: None,
             world,
             seed,
-            bot: ScriptedBot,
             commander: ScriptedCommander::new(seed),
             playback,
             selected: BTreeSet::new(),
@@ -77,6 +93,11 @@ impl Game {
             backlog: 0.0,
             map_bounds: Rc::new(Cell::new(Bounds::default())),
         }
+    }
+
+    /// Orders only reach a scripted fleet in a live match.
+    fn takes_orders(&self) -> bool {
+        self.playback.is_none() && self.model.is_none()
     }
 
     fn running(&self) -> bool {
@@ -118,7 +139,7 @@ impl Game {
                         self.commander.command(&mut self.world, team);
                     }
                 }
-                (0..self.world.ships.len()).map(|i| self.bot.act(&observe(&self.world, i), &self.world.cfg)).collect()
+                (0..self.world.ships.len()).map(|i| self.pilots[i].act(&observe(&self.world, i), &self.world.cfg)).collect()
             }
         };
         self.world.step(&actions);
@@ -154,10 +175,10 @@ impl Game {
     }
 
     fn choose_order(&mut self, kind: OrderKind) {
-        self.order = kind;
-        if self.playback.is_some() {
+        if !self.takes_orders() {
             return;
         }
+        self.order = kind;
         if kind == OrderKind::Mine {
             self.give(Order::default());
         } else {
@@ -176,7 +197,7 @@ impl Game {
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((ship, _)) = near {
             self.toggle(ship);
-        } else if self.playback.is_none() && self.order != OrderKind::Mine {
+        } else if self.takes_orders() && self.order != OrderKind::Mine {
             self.give(Order { kind: self.order, target: at });
         }
     }
@@ -189,7 +210,11 @@ impl Game {
 
     fn restart(&mut self) {
         let seed = self.seed.wrapping_add(1);
-        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, ..Game::new(seed, None) };
+        let fresh = match self.model.clone() {
+            Some(net) => Game::with_model(seed, net),
+            None => Game::new(seed, None),
+        };
+        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, ..fresh };
     }
 
     fn save(&mut self) {
@@ -208,15 +233,30 @@ impl Game {
         let teams = (0..self.world.bases.len()).map(|t| {
             let alive = self.world.ships.iter().filter(|s| s.team == t as u8 && s.alive).count();
             let name = TEAM_NAMES[t % TEAM_NAMES.len()];
+            let crystals: u32 = self.world.ships.iter().filter(|s| s.team == t as u8).map(|s| s.collected).sum();
+            let who = match (t as u8 == MY_TEAM, self.model.is_some()) {
+                (true, true) => format!("{name} (Ty, model)"),
+                (true, false) => format!("{name} (Ty)"),
+                (false, _) => format!("{name} (skrypt)"),
+            };
             div()
                 .flex()
                 .items_center()
                 .gap_2()
                 .child(div().size_3().rounded_sm().bg(rgb(TEAM_COLORS[t % TEAM_COLORS.len()])))
-                .child(div().flex_1().child(if t as u8 == MY_TEAM { format!("{name} (Ty)") } else { name.to_string() }))
-                .child(div().text_color(muted).child(format!("{alive} w grze")))
+                .child(div().flex_1().child(who))
+                .child(div().w(px(52.)).flex().justify_end().text_color(muted).child(alive.to_string()))
+                .child(div().w(px(72.)).flex().justify_end().child(crystals.to_string()))
                 .child(div().w(px(56.)).flex().justify_end().child(self.team_score(t as u8).to_string()))
         });
+        let teams_header = div()
+            .flex()
+            .gap_2()
+            .text_color(muted)
+            .child(div().flex_1().child("Drużyna"))
+            .child(div().w(px(52.)).flex().justify_end().child("W grze"))
+            .child(div().w(px(72.)).flex().justify_end().child("Kryształy"))
+            .child(div().w(px(56.)).flex().justify_end().child("Wynik"));
 
         let orders = [OrderKind::Mine, OrderKind::Attack, OrderKind::Defend, OrderKind::Regroup].map(|kind| {
             let button = Button::new(("order", kind as usize)).small().label(order_name(kind)).selected(self.order == kind);
@@ -286,7 +326,7 @@ impl Game {
                     .child(div().text_xl().child("Star Swarm"))
                     .child(format!("{:02}:{:02}", left as u32 / 60, left as u32 % 60)),
             )
-            .child(div().flex().flex_col().gap_1().children(teams))
+            .child(div().flex().flex_col().gap_1().child(teams_header).children(teams))
             .child(
                 div()
                     .flex()
@@ -314,7 +354,13 @@ impl Game {
                         cx.notify();
                     }))),
             )
-            .child(div().text_color(muted).child(if self.playback.is_some() { "Powtórka (rozkazy wyłączone)" } else { "Rozkaz" }))
+            .child(div().text_color(muted).child(if self.playback.is_some() {
+                "Powtórka (rozkazy wyłączone)"
+            } else if self.model.is_some() {
+                "Flotą steruje model (nie słucha jeszcze rozkazów)"
+            } else {
+                "Rozkaz"
+            }))
             .child(div().flex().gap_2().children(orders))
             .child(
                 div()
@@ -378,6 +424,7 @@ impl Render for Game {
 fn main() {
     let mut seed = 1;
     let mut playback = None;
+    let mut model = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match (arg.as_str(), args.next()) {
@@ -385,13 +432,21 @@ fn main() {
             ("--replay", Some(path)) => {
                 playback = Some(Replay::load(&path).unwrap_or_else(|e| fail(&format!("cannot read replay {path}: {e}"))))
             }
-            _ => fail("usage: swarm-gui [--seed N] [--replay FILE]"),
+            ("--model", Some(path)) => {
+                model = Some(Arc::new(Net::load(&path).unwrap_or_else(|e| fail(&format!("cannot read policy {path}: {e}")))))
+            }
+            _ => fail("usage: swarm-gui [--seed N] [--replay FILE | --model POLICY.swp]"),
         }
     }
     application().with_assets(assets::Assets).run(move |cx| {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
-        open_window(WindowOptions::default(), cx, move |_, cx| cx.new(|_| Game::new(seed, playback)))
+        open_window(WindowOptions::default(), cx, move |_, cx| {
+            cx.new(|_| match model {
+                Some(net) if playback.is_none() => Game::with_model(seed, net),
+                _ => Game::new(seed, playback),
+            })
+        })
             .expect("failed to open window");
     });
 }

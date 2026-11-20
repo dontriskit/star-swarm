@@ -42,4 +42,13 @@ uv pip install --python .venv/bin/python -r train/requirements.txt
 cargo run --release -p swarm-env --example throughput     # environment speed alone
 ```
 
+To see a trained policy fly your fleet against scripted teams, or to measure it over full matches:
+
+```sh
+.venv/bin/python train/export.py runs/mine/policy.pt runs/mine/policy.swp       # weights file for the game
+cargo run --release -p swarm-gui -- --model runs/mine/policy.swp                 # watch it play
+cargo run --release -p swarm-sim --example versus -- runs/mine/policy.swp 20     # 20 matches, numbers per team
+.venv/bin/python train/watch.py runs/mine/policy.pt model.replay                 # one training-style match as a replay
+```
+
 The run first measures the scripted bot on a fixed set of matches, then trains, then plays the trained policy on the same matches. Each line of `runs/<name>/metrics.jsonl` is one measurement: crystals per ship per minute, upgrade levels per ship at the end of a match, deaths per ship.
