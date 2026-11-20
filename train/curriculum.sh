@@ -6,6 +6,8 @@
 # crystals handed over at the base (0.1 each) and every new base level (25 to each ship), and a
 # starter reward for collecting crystals, breaking rocks and buying upgrades that shrinks
 # stage by stage. Set STARTER=0 to switch the starter reward off altogether.
+# ENVS, HIDDEN and MINIBATCH set the number of matches played side by side, the width of the
+# network and the batch size (defaults 2048, 1024, 16384: a network that keeps the GPU busy).
 # Usage: train/curriculum.sh NAME [START_POLICY.pt [FIRST_STAGE]]
 # FIRST_STAGE (1 to 4) resumes an interrupted run from that stage, starting from START_POLICY.pt.
 set -euo pipefail
@@ -16,7 +18,8 @@ starter=${STARTER:-1}
 py=.venv/bin/python
 
 # base HP, turret damage, updates, entropy bonus at the end of the stage, share of the starter reward
-stages=("100 0 60 0.01 1" "300 5 100 0.01 1" "600 10 150 0.01 0.5" "1000 15 300 0.002 0.2")
+# Each update is 2048 matches x 64 decisions: about 900 thousand samples for the ships being trained.
+stages=("100 0 30 0.01 1" "300 5 50 0.01 1" "600 10 75 0.01 0.5" "1000 15 150 0.002 0.2")
 for i in "${!stages[@]}"; do
   [ $((i + 1)) -ge "$first" ] || continue
   read -r hp turret updates entropy_end share <<<"${stages[$i]}"
@@ -28,7 +31,8 @@ for i in "${!stages[@]}"; do
   # (2 for breaking one), 1 for anything bought.
   # Fighting: dying costs 10; damage to an enemy ship pays 0.05 a point, and 0.3 more while the
   # team is attacking and the attacker has the upper hand; a kill pays 5.
-  $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 20 --eval-envs 64 \
+  $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
+    --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 \
     --reward time=0.00083 --reward draw=30 \
