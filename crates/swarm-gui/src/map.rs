@@ -67,6 +67,13 @@ impl View {
             .then(|| point(px(self.cx + p.dot(self.right) * self.radius), px(self.cy - p.dot(self.camera.up) * self.radius)))
     }
 
+    /// The point on the edge of the globe nearest to where a far-side position would be drawn.
+    fn on_edge(&self, p: Vec3) -> Point<Pixels> {
+        let (x, y) = (p.dot(self.right), p.dot(self.camera.up));
+        let len = (x * x + y * y).sqrt().max(1e-6);
+        point(px(self.cx + x / len * self.radius), px(self.cy - y / len * self.radius))
+    }
+
     /// A direction along the surface at `p` as a unit direction on screen (x right, y down).
     fn heading(&self, dir: Vec3) -> (f32, f32) {
         let (x, y) = (dir.dot(self.right), -dir.dot(self.camera.up));
@@ -116,9 +123,16 @@ fn team_color(team: u8) -> Rgba {
     rgb(TEAM_COLORS[team as usize % TEAM_COLORS.len()])
 }
 
-/// A circle on the planet's surface, as the screen points of its visible part.
+/// A circle on the planet's surface as screen points. Where it runs behind the planet it is
+/// drawn along the edge of the globe, so the visible part keeps its shape; a circle mostly on
+/// the far side gives nothing.
 fn ring(world: &World, view: &View, around: Vec3, radius: f32, sides: usize) -> Vec<Point<Pixels>> {
-    (0..sides).filter_map(|i| view.at(world.offset(around, std::f32::consts::TAU * i as f32 / sides as f32, radius))).collect()
+    let points: Vec<Vec3> = (0..sides).map(|i| world.offset(around, std::f32::consts::TAU * i as f32 / sides as f32, radius)).collect();
+    // Mostly behind the planet: what little shows would be a sliver along the edge, so leave it out.
+    if points.iter().filter(|p| view.at(**p).is_some()).count() * 3 < points.len() {
+        return Vec::new();
+    }
+    points.into_iter().map(|p| view.at(p).unwrap_or_else(|| view.on_edge(p))).collect()
 }
 
 /// With `fog`, only what the player's team can see is drawn: enemy ships, shots and crystals
@@ -185,15 +199,16 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
         }
     }
 
-    // What your ships can see, faintly outlined.
-    if fog {
-        for eye in &eyes {
-            let reach = ring(world, &view, *eye, world.cfg.view_range, 40);
-            if reach.len() >= 3 {
-                stroke_shape(window, &reach, 1.0, rgba(0x4c9aff22));
-            }
+    // How far each ship of the blue team sees. Together the circles are the team's radar.
+    for eye in &eyes {
+        let reach = ring(world, &view, *eye, world.cfg.view_range, 48);
+        if reach.len() >= 3 {
+            fill_shape(window, &reach, rgba(0x4c9aff0a));
+            stroke_shape(window, &reach, 1.0, rgba(0x4c9aff38));
         }
     }
+    // On the radar: anything within sight of one of the blue team's living ships.
+    let on_radar = |p: Vec3| eyes.iter().any(|e| geo::chord(world.cfg.radius, *e, p) < world.cfg.view_range);
 
     for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
@@ -235,9 +250,56 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
             let (s, c) = turn.sin_cos();
             point(center.x + px((fx * c - fy * s) * radius * reach), center.y + px((fx * s + fy * c) * radius * reach))
         };
-        fill_shape(window, &[corner(0.0, 1.0), corner(2.5, 0.9), corner(-2.5, 0.9)], team_color(ship.team));
+        // An enemy the blue team can see is a radar contact and gets a marker; one it cannot see
+        // (only drawn when watching without fog) is dimmed.
+        let spotted = ship.team != MY_TEAM && on_radar(ship.pos);
+        let mut color = team_color(ship.team);
+        if ship.team != MY_TEAM && !spotted {
+            color.a = 0.4;
+        }
+        fill_shape(window, &[corner(0.0, 1.0), corner(2.5, 0.9), corner(-2.5, 0.9)], color);
+        if spotted {
+            stroke_shape(window, &polygon(center, radius + 4.0, 4, std::f32::consts::FRAC_PI_4), 1.0, rgba(0xffffffb0));
+        }
         if selected.contains(&i) {
             stroke_shape(window, &polygon(center, radius + 5.0, 24, 0.0), 1.5, rgb(0xffffff));
         }
     }
+
+    minimap(world, camera, &in_sight, area, window);
+}
+
+/// The whole planet unrolled in a corner of the view: longitude across, latitude up. Bases are
+/// squares, ships dots, and the cross marks where the globe view is centred.
+fn minimap(world: &World, camera: Camera, in_sight: &dyn Fn(Vec3) -> bool, area: Bounds<Pixels>, window: &mut Window) {
+    let (width, height, margin) = (280.0f32, 140.0f32, 12.0f32);
+    let left = f32::from(area.origin.x) + margin;
+    let top = f32::from(area.origin.y) + f32::from(area.size.height) - height - margin;
+    let place = |p: Vec3| {
+        let (lon, lat) = (p.y.atan2(p.x), p.z.clamp(-1.0, 1.0).asin());
+        point(
+            px(left + (lon + std::f32::consts::PI) / std::f32::consts::TAU * width),
+            px(top + (std::f32::consts::FRAC_PI_2 - lat) / std::f32::consts::PI * height),
+        )
+    };
+    let frame = Bounds::new(point(px(left), px(top)), size(px(width), px(height)));
+    window.paint_quad(fill(frame, rgba(0x0b0f17e6)));
+    window.paint_quad(outline(frame, rgb(0x263046), BorderStyle::Solid));
+    // The equator, where the bases sit.
+    window.paint_quad(fill(Bounds::new(point(px(left), px(top + height / 2.0)), size(px(width), px(1.0))), rgb(0x1c2536)));
+
+    for rock in &world.rocks {
+        dot(window, place(rock.pos), 0.5, rgb(0x3a4252));
+    }
+    for (team, base) in world.bases.iter().enumerate() {
+        let color = if base.alive() { team_color(team as u8) } else { rgb(0x3a4050) };
+        dot(window, place(base.pos), 3.5, color);
+    }
+    for ship in world.ships.iter().filter(|s| s.alive && (s.team == MY_TEAM || in_sight(s.pos))) {
+        dot(window, place(ship.pos), if ship.team == MY_TEAM { 2.0 } else { 1.5 }, team_color(ship.team));
+    }
+    // Where the globe view is looking.
+    let eye = place(camera.center);
+    window.paint_quad(fill(Bounds::new(point(eye.x - px(5.0), eye.y), size(px(11.0), px(1.0))), rgb(0xffffff)));
+    window.paint_quad(fill(Bounds::new(point(eye.x, eye.y - px(5.0)), size(px(1.0), px(11.0))), rgb(0xffffff)));
 }
