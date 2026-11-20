@@ -363,3 +363,42 @@ fn each_class_fires_its_own_volley() {
         assert_eq!(world.shots.len(), lasers, "{class:?}");
     }
 }
+
+#[test]
+fn carried_crystals_take_damage_before_the_hull_and_fall_out() {
+    let mut world = duel(Config::default(), 150.0);
+    world.ships[1].shield = 0.0;
+    world.ships[1].shield_wait = u16::MAX;
+    world.ships[1].cargo = 12;
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+
+    // The first hits cost crystals, not hull.
+    let mut hits = 0;
+    while hits < 1 {
+        hits += world.step(&fire).iter().filter(|e| matches!(e, Event::Hit { victim: 1, .. })).count();
+    }
+    assert_eq!(world.ships[1].hull, 100.0);
+    assert!(world.ships[1].cargo < 12 && world.ships[1].cargo >= 12 - 9, "cargo {}", world.ships[1].cargo);
+    assert!(!world.crystals.is_empty(), "the lost crystals lie on the map");
+    // They land outside the ship's own reach, so it does not simply scoop them back up.
+    assert!(world.crystals.iter().all(|c| world.dist(c.pos, world.ships[1].pos) > world.cfg.pickup_radius));
+
+    // Keep firing: the hull starts to go only once the hold is empty.
+    for _ in 0..90 {
+        world.step(&fire);
+    }
+    assert_eq!(world.ships[1].cargo, 0);
+    assert!(world.ships[1].hull < 100.0);
+}
+
+#[test]
+fn crystal_armor_can_be_switched_off() {
+    let mut world = duel(Config { crystal_armor: 0.0, ..Config::default() }, 150.0);
+    world.ships[1].shield = 0.0;
+    world.ships[1].shield_wait = u16::MAX;
+    world.ships[1].cargo = 12;
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    while !world.step(&fire).iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })) {}
+    assert_eq!(world.ships[1].cargo, 12);
+    assert!(world.ships[1].hull < 100.0);
+}

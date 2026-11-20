@@ -205,6 +205,9 @@ pub struct Config {
     pub boost_cell_chance: f32,
     /// Deaths before a ship is demoted: tier 2 falls to tier 1, tier 1 loses its upgrades.
     pub lives: u8,
+    /// Once the shields are down, carried crystals take the damage before the hull does:
+    /// each crystal soaks up this many points and is knocked out of the hold. 0 switches this off.
+    pub crystal_armor: f32,
 
     pub rock_radius: f32,
     pub rock_hp: f32,
@@ -266,6 +269,7 @@ impl Default for Config {
             boost_regen: 0.1,
             boost_cell_chance: 0.15,
             lives: 3,
+            crystal_armor: 1.0,
             rock_radius: 18.0,
             rock_hp: 30.0,
             rock_speed: 12.0,
@@ -368,6 +372,8 @@ pub struct Ship {
     pub ammo: f32,
     /// Boost tank, 0 to 1.
     pub boost: f32,
+    /// Damage taken on the cargo that has not yet knocked a whole crystal loose.
+    pub spill: f32,
     pub cargo: u32,
     pub levels: [u8; 8],
     pub cooldown: u16,
@@ -502,6 +508,7 @@ impl World {
                     lives: world.cfg.lives,
                     ammo: 0.0,
                     boost: 1.0,
+                    spill: 0.0,
                     cargo: 0,
                     levels: [0; 8],
                     cooldown: 0,
@@ -583,12 +590,31 @@ impl World {
         ship.last_hit_by = None;
     }
 
-    /// Shields soak up damage first; what is left goes to the hull.
-    fn hurt(cfg: &Config, ship: &mut Ship, damage: f32) {
+    /// Shields soak up damage first, then the crystals in the hold, and only then the hull.
+    /// Returns how many crystals were knocked out of the hold.
+    fn hurt(cfg: &Config, ship: &mut Ship, damage: f32) -> u32 {
         let absorbed = ship.shield.min(damage);
         ship.shield -= absorbed;
-        ship.hull -= damage - absorbed;
         ship.shield_wait = cfg.shield_delay;
+        let mut left = damage - absorbed;
+        let mut dropped = 0;
+        if cfg.crystal_armor > 0.0 && ship.cargo > 0 && left > 0.0 {
+            ship.spill += left / cfg.crystal_armor;
+            let loose = ship.spill.floor();
+            if loose as u32 > ship.cargo {
+                // More than the hold could take: the rest reaches the hull.
+                left = (ship.spill - ship.cargo as f32) * cfg.crystal_armor;
+                dropped = ship.cargo;
+                ship.spill = 0.0;
+            } else {
+                left = 0.0;
+                dropped = loose as u32;
+                ship.spill -= loose;
+            }
+            ship.cargo -= dropped;
+        }
+        ship.hull -= left;
+        dropped
     }
 
     fn new_rock(cfg: &Config, bases: &[Base], rng: &mut Rng) -> Rock {
@@ -608,11 +634,11 @@ impl World {
         Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None }
     }
 
-    /// Drops crystals around a point; `cells` lets some of them be boost cells.
-    fn scatter(&mut self, at: Vec3, count: u32, spread: f32, cells: bool) {
+    /// Drops crystals between `near` and `far` from a point; `cells` lets some of them be boost cells.
+    fn scatter(&mut self, at: Vec3, count: u32, near: f32, far: f32, cells: bool) {
         for _ in 0..count {
             let away = geo::bearing(at, self.rng.range(0.0, std::f32::consts::TAU));
-            let pos = geo::travel(self.cfg.radius, at, away, self.rng.range(0.0, spread));
+            let pos = geo::travel(self.cfg.radius, at, away, self.rng.range(near, far));
             let boost_cell = cells && self.rng.unit() < self.cfg.boost_cell_chance;
             self.crystals.push(Crystal { pos, ticks: self.cfg.crystal_ticks, boost_cell });
         }
@@ -739,6 +765,9 @@ impl World {
             }
         }
 
+        // Crystals knocked out of holds this tick: where, and how many.
+        let mut spilled: Vec<(Vec3, u32)> = Vec::new();
+
         // Shots: move, then hit the first rock or enemy ship they touch.
         let falloff = self.cfg.shot_falloff;
         for shot in &mut self.shots {
@@ -759,7 +788,8 @@ impl World {
                 s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.ship_radius
             });
             if let Some(v) = hit {
-                Self::hurt(&self.cfg, &mut self.ships[v], damage);
+                let dropped = Self::hurt(&self.cfg, &mut self.ships[v], damage);
+                spilled.push((self.ships[v].pos, dropped));
                 self.ships[v].last_hit_by = shot.owner;
                 self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage });
                 shot.ticks = 0;
@@ -804,11 +834,17 @@ impl World {
                 if closing < 0.0 {
                     ship.vel = ship.vel.sub(n.scale(1.5 * closing));
                     let damage = -closing * self.cfg.crash_damage;
-                    Self::hurt(&self.cfg, ship, damage);
+                    let dropped = Self::hurt(&self.cfg, ship, damage);
+                    spilled.push((ship.pos, dropped));
                     ship.last_hit_by = None;
                     self.events.push(Event::Crashed { ship: i as u16, damage });
                 }
             }
+        }
+
+        // Spilled crystals land a little way off, out of the ship's own reach, for anyone to pick up.
+        for (at, count) in spilled {
+            self.scatter(at, count, self.cfg.pickup_radius * 2.0, self.cfg.pickup_radius * 4.5, false);
         }
 
         // Broken rocks leave crystals and are replaced elsewhere.
@@ -818,7 +854,7 @@ impl World {
             }
             let (pos, rock_size, by) = (self.rocks[r].pos, self.rocks[r].size, self.rocks[r].last_hit_by);
             self.events.push(Event::RockDestroyed { by, size: rock_size });
-            self.scatter(pos, CRYSTALS_PER_SIZE[rock_size as usize], self.cfg.rock_radius * rock_size as f32, true);
+            self.scatter(pos, CRYSTALS_PER_SIZE[rock_size as usize], 0.0, self.cfg.rock_radius * rock_size as f32, true);
             self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
         }
 
@@ -883,7 +919,7 @@ impl World {
                 self.ships[k as usize].score += self.cfg.kill_score;
             }
             self.events.push(Event::Killed { by, victim: i as u16 });
-            self.scatter(pos, dropped, 30.0, false);
+            self.scatter(pos, dropped, 0.0, 30.0, false);
         }
 
         &self.events
@@ -911,6 +947,7 @@ impl World {
             put(s.lives as u32);
             put(s.ammo.to_bits());
             put(s.boost.to_bits());
+            put(s.spill.to_bits());
             put(s.cargo);
             put(s.score);
             put(s.alive as u32);
