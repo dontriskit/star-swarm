@@ -3,6 +3,8 @@ use crate::sim::{CLASSES, Class, Config, DRONE_KINDS, ORDER_KINDS, OrderKind, PL
 
 /// How many of each kind of nearby object a ship sees.
 pub const NEAR: usize = 6;
+/// How many rocks a ship sees: more than of anything else, since finding rocks is half the game.
+pub const ROCKS: usize = 12;
 /// How many incoming enemy shots a ship sees.
 pub const SHOTS: usize = 4;
 /// How many enemy bases a ship knows about (the nearest ones still standing).
@@ -22,7 +24,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -132,8 +134,8 @@ pub struct Observation {
     /// Long-range radar: how much rock lies in each direction within radar range (the sizes of
     /// the rocks added up), by sector: [`SECTORS`] of them, from dead ahead round to the left.
     pub rock_radar: [f32; SECTORS],
-    /// Nearest first, at most [`NEAR`] each, within the view range.
-    pub rocks: List<Near, NEAR>,
+    /// Nearest first, within the view range: at most [`ROCKS`] rocks, [`NEAR`] of the others.
+    pub rocks: List<Near, ROCKS>,
     pub crystals: List<Near, NEAR>,
     pub ships: List<Near, NEAR>,
     /// Enemy shots, nearest first, at most [`SHOTS`].
@@ -546,6 +548,24 @@ impl Observation {
         put(&[self.in_base as u8 as f32]);
         // How full the base is: 1 means every place is taken.
         put(&[self.base_docked as f32 / self.base_slots.max(1) as f32]);
+        // The rocks beyond the nearest six, which have their rows further up.
+        for slot in NEAR..ROCKS {
+            match self.rocks.get(slot) {
+                Some(n) => put(&[
+                    1.0,
+                    n.pos.x / view,
+                    n.pos.y / view,
+                    n.vel.x / speed,
+                    n.vel.y / speed,
+                    n.radius / cfg.rock_radius_of(ROCK_SIZES),
+                    n.hp,
+                    n.enemy as u8 as f32,
+                    n.facing.x,
+                    n.facing.y,
+                ]),
+                None => put(&[0.0; NEAR_LEN]),
+            }
+        }
         debug_assert_eq!(at, OBS_LEN);
     }
 }

@@ -432,7 +432,7 @@ impl Default for Config {
             upgrade_cost: 10,
             respawn_ticks: 90,
             kill_score: 20,
-            view_range: 600.0,
+            view_range: 1040.0,
             radar_range: 1500.0,
         }
     }
