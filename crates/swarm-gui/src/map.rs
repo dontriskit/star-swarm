@@ -15,6 +15,8 @@ use crate::{MY_TEAM, TEAM_COLORS};
 pub struct Camera {
     pub center: Vec3,
     pub up: Vec3,
+    /// 1 fits the whole globe in the view; more shows a smaller part of it bigger.
+    pub zoom: f32,
 }
 
 impl Camera {
@@ -22,7 +24,19 @@ impl Camera {
     pub fn looking_at(center: Vec3) -> Self {
         let north = geo::tangent(center, Vec3::new(0.0, 0.0, 1.0));
         let up = if north.len() > 1e-3 { north.unit() } else { geo::basis(center).0 };
-        Camera { center, up }
+        Camera { center, up, zoom: 1.0 }
+    }
+
+    /// Over the player's own base, close enough to take in its rock field on a big planet.
+    pub fn home(world: &World) -> Self {
+        let mut camera = Self::looking_at(world.bases[MY_TEAM as usize].pos);
+        camera.zoom = (world.cfg.radius / 3200.0).max(1.0);
+        camera
+    }
+
+    /// Zooms by a factor, between the whole globe and a close look at a few ships.
+    pub fn zoom_by(&mut self, factor: f32) {
+        self.zoom = (self.zoom * factor).clamp(1.0, 40.0);
     }
 
     fn right(&self) -> Vec3 {
@@ -55,7 +69,7 @@ impl View {
         View {
             cx: f32::from(area.origin.x) + w / 2.0,
             cy: f32::from(area.origin.y) + h / 2.0,
-            radius: (w.min(h) / 2.0 * 0.94).max(1.0),
+            radius: (w.min(h) / 2.0 * 0.94).max(1.0) * camera.zoom,
             camera,
             right: camera.right(),
         }
@@ -139,6 +153,11 @@ fn ring(world: &World, view: &View, around: Vec3, radius: f32, sides: usize) -> 
 /// show within view range of one of its living ships, and enemy bases show the health the
 /// team last saw.
 pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: bool, area: Bounds<Pixels>, window: &mut Window) {
+    // Zoomed in, the globe is bigger than the view: nothing is drawn outside it.
+    window.with_content_mask(Some(ContentMask { bounds: area }), |window| paint_globe(world, selected, camera, fog, area, window));
+}
+
+fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: bool, area: Bounds<Pixels>, window: &mut Window) {
     let view = View::new(area, camera);
     let eyes: Vec<Vec3> = world.ships.iter().filter(|s| s.team == MY_TEAM && s.alive).map(|s| s.pos).collect();
     let in_sight = |p: Vec3| !fog || eyes.iter().any(|e| geo::chord(world.cfg.radius, *e, p) < world.cfg.view_range);

@@ -329,6 +329,9 @@ pub struct Config {
     pub drone_cooldown: u16,
     pub drone_damage: f32,
     pub rock_speed: f32,
+    /// Rocks lie in a field around every base, out to this far from it; the space between the
+    /// fields is empty. 0 scatters them over the whole planet.
+    pub rock_field: f32,
     pub crash_damage: f32,
 
     /// How long a pack of crystals takes to fade from its full worth to nothing.
@@ -365,7 +368,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            radius: 1200.0,
+            radius: 12000.0,
+            rock_field: 2600.0,
             dt: 1.0 / 30.0,
             teams: 3,
             ships_per_team: 9,
@@ -971,11 +975,18 @@ impl World {
     fn new_rock(cfg: &Config, bases: &[Base], rng: &mut Rng) -> Rock {
         let mut pos = Vec3::new(1.0, 0.0, 0.0);
         for _ in 0..10 {
-            // Uniform over the sphere: uniform height, uniform angle around the axis.
-            let z = rng.range(-1.0, 1.0);
-            let around = rng.range(0.0, std::f32::consts::TAU);
-            let r = (1.0 - z * z).max(0.0).sqrt();
-            pos = Vec3::new(r * around.cos(), r * around.sin(), z);
+            if cfg.rock_field > 0.0 && !bases.is_empty() {
+                // Somewhere in the field of one of the bases, evenly over its area.
+                let home = bases[rng.below(bases.len() as u32) as usize].pos;
+                let away = geo::bearing(home, rng.range(0.0, std::f32::consts::TAU));
+                pos = geo::travel(cfg.radius, home, away, cfg.rock_field * rng.range(0.0f32, 1.0).sqrt());
+            } else {
+                // Uniform over the sphere: uniform height, uniform angle around the axis.
+                let z = rng.range(-1.0, 1.0);
+                let around = rng.range(0.0, std::f32::consts::TAU);
+                let r = (1.0 - z * z).max(0.0).sqrt();
+                pos = Vec3::new(r * around.cos(), r * around.sin(), z);
+            }
             if bases.iter().all(|b| geo::chord(cfg.radius, b.pos, pos) > 200.0) {
                 break;
             }
@@ -1480,6 +1491,16 @@ impl World {
         }
         for at in shed {
             self.drop_pack(at, self.cfg.base_pack, self.cfg.base_radius + 20.0, self.cfg.base_radius + 120.0);
+        }
+
+        // A rock that has drifted well out of every field is replaced by one inside a field.
+        if self.cfg.rock_field > 0.0 && self.tick % 128 == 0 {
+            let leash = self.cfg.rock_field * 1.25;
+            for r in 0..self.rocks.len() {
+                if self.bases.iter().all(|b| geo::chord(radius, b.pos, self.rocks[r].pos) > leash) {
+                    self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
+                }
+            }
         }
 
         // Broken rocks leave crystals and are replaced elsewhere.

@@ -239,7 +239,7 @@ impl Game {
     fn new(seed: u64, playback: Option<Replay>) -> Self {
         let seed = playback.as_ref().map_or(seed, |r| r.seed);
         let world = playback.as_ref().map_or_else(|| World::new(Config::default(), seed), Replay::world);
-        let camera = Camera::looking_at(world.bases[MY_TEAM as usize].pos);
+        let camera = Camera::home(&world);
         let mut world = world;
         // You give the orders for your own team; its ships' votes are not counted.
         world.commanded[MY_TEAM as usize] = playback.is_none();
@@ -760,22 +760,29 @@ impl Game {
                     .children([("left", "◀", -NUDGE, 0.0), ("right", "▶", NUDGE, 0.0), ("up", "▲", 0.0, NUDGE), ("down", "▼", 0.0, -NUDGE)].map(
                         |(id, label, yaw, pitch)| {
                             Button::new(id).small().label(label).on_click(cx.listener(move |this, _, _, cx| {
-                                this.camera.turn(yaw, pitch);
+                                // A nudge moves the view by the same share of what is on screen at any zoom.
+                                this.camera.turn(yaw / this.camera.zoom, pitch / this.camera.zoom);
                                 cx.notify();
                             }))
                         },
                     ))
                     .child(Button::new("home").small().label("Moja baza").on_click(cx.listener(|this, _, _, cx| {
-                        this.camera = Camera::looking_at(this.world.bases[MY_TEAM as usize].pos);
+                        this.camera = Camera::home(&this.world);
                         cx.notify();
                     })))
+                    .children([("zoom-out", "−", 1.0 / 1.5), ("zoom-in", "+", 1.5)].map(|(id, label, factor)| {
+                        Button::new(id).small().label(label).on_click(cx.listener(move |this, _, _, cx| {
+                            this.camera.zoom_by(factor);
+                            cx.notify();
+                        }))
+                    }))
                     .child(Button::new("spin").small().label(if self.spin { "Obrót: wł." } else { "Obrót: wył." }).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.spin = !this.spin;
                             cx.notify();
                         },
                     )))
-                    .child(div().text_xs().text_color(muted).child("albo przeciągnij prawym przyciskiem myszy")),
+                    .child(div().text_xs().text_color(muted).child("przeciągnij prawym przyciskiem, kółko przybliża")),
             )
             .child(div().text_color(muted).child(if self.watch.is_some() {
                 "Podgląd treningu (rozkazy wyłączone)"
@@ -850,6 +857,12 @@ impl Render for Game {
                             cx.notify();
                         }),
                     )
+                    // The wheel zooms.
+                    .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
+                        let lines = f32::from(event.delta.pixel_delta(px(20.0)).y) / 20.0;
+                        this.camera.zoom_by(1.15f32.powf(lines.clamp(-5.0, 5.0)));
+                        cx.notify();
+                    }))
                     // Dragging with the right button turns the globe.
                     .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, _, _| this.drag = Some(event.position)))
                     .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
@@ -941,14 +954,18 @@ mod tests {
 
     #[core::prelude::v1::test]
     fn the_view_opens_on_your_own_base_and_clicks_map_back_to_the_planet() {
-        let game = game();
+        let mut game = game();
         let base = game.world.bases[MY_TEAM as usize].pos;
         let middle = on_screen(&game, base);
+        assert!(game.camera.zoom > 3.0, "on a big planet the view opens zoomed in on the home field");
         assert!((f32::from(middle.x) - 300.0).abs() < 0.5 && (f32::from(middle.y) - 300.0).abs() < 0.5);
         let view = map::View::new(game.map_bounds.get(), game.camera);
         let there = spot(&game);
         let back = view.to_world(view.at(there).unwrap()).unwrap();
         assert!(game.world.dist(there, back) < 1.0);
+        // Zoomed all the way out the whole globe fits.
+        game.camera.zoom = 1.0;
+        let view = map::View::new(game.map_bounds.get(), game.camera);
         // The far side of the planet is not drawn, and the corner of the canvas is not on the globe.
         assert!(view.at(base.scale(-1.0)).is_none());
         assert!(view.to_world(point(px(2.), px(2.))).is_none());
@@ -957,6 +974,7 @@ mod tests {
     #[core::prelude::v1::test]
     fn turning_the_globe_brings_the_far_side_into_view() {
         let mut game = game();
+        game.camera.zoom = 1.0;
         let other = game.world.bases[1].pos;
         // Half a turn in steps; the second base is a third of the way around.
         let mut seen = false;
@@ -1003,6 +1021,7 @@ mod tests {
     #[core::prelude::v1::test]
     fn mine_applies_at_once_and_clicks_off_the_globe_do_nothing() {
         let mut game = game();
+        game.camera.zoom = 1.0;
         game.choose_order(OrderKind::Defend);
         game.click_map(point(px(2.), px(2.)));
         assert!(game.world.ships.iter().all(|s| s.order.kind == OrderKind::Mine));

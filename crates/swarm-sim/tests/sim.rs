@@ -52,9 +52,29 @@ fn bases_are_equally_far_apart() {
     let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
     let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
     let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
-    // A third of the way around a planet of radius 1200.
-    assert!((d01 - 2513.3).abs() < 1.0, "{d01}");
-    assert!((d01 - d12).abs() < 1.0 && (d12 - d20).abs() < 1.0);
+    // A third of the way around a planet of radius 12000.
+    assert!((d01 - 25132.7).abs() < 5.0, "{d01}");
+    assert!((d01 - d12).abs() < 5.0 && (d12 - d20).abs() < 5.0);
+}
+
+#[test]
+fn rocks_lie_in_fields_around_the_bases_and_stay_there() {
+    let mut world = World::new(Config::default(), 4);
+    let field = world.cfg.rock_field;
+    let from_a_base = |world: &World, p: Vec3| world.bases.iter().map(|b| world.dist(b.pos, p)).fold(f32::MAX, f32::min);
+    assert!(world.rocks.iter().all(|r| from_a_base(&world, r.pos) <= field + 1.0));
+    // Every base has its share, and a ship at home has rocks in sight.
+    for b in 0..3 {
+        let near = world.rocks.iter().filter(|r| world.dist(world.bases[b].pos, r.pos) <= field + 1.0).count();
+        assert!(near > 60, "base {b} has {near} rocks");
+    }
+    assert!(!observe(&world, 0).rocks.is_empty());
+    // Rocks drift, but none is left to wander off into the empty space between the fields.
+    let idle = vec![Action::default(); world.ships.len()];
+    for _ in 0..3000 {
+        world.step(&idle);
+    }
+    assert!(world.rocks.iter().all(|r| from_a_base(&world, r.pos) <= field * 1.3));
 }
 
 #[test]
