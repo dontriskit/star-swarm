@@ -238,9 +238,12 @@ pub struct Config {
     pub bodies: [Body; 5],
     /// Share of its damage a shot still does at the end of its range; it fades linearly on the way.
     pub shot_falloff: f32,
-    /// Shots carried and shots regained per second, before upgrades.
+    /// Ammo carried and ammo regained per second, before upgrades.
     pub ammo: f32,
     pub ammo_regen: f32,
+    /// How much damage one unit of ammo buys: a shot costs its muzzle damage divided by this,
+    /// so harder-hitting shots, from a bigger gun or from attack upgrades, eat more ammo.
+    pub ammo_damage: f32,
     /// Thrust and top-speed multipliers while boosting.
     pub boost_thrust: f32,
     pub boost_speed: f32,
@@ -306,11 +309,11 @@ impl Default for Config {
             turret_damage: 15.0,
             turret_cooldown: 8,
             weapons: [
-                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 520.0, cooldown: 8, damage: 10.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 800.0, cooldown: 14, damage: 30.0 },
-                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 560.0, cooldown: 8, damage: 11.0 },
-                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 480.0, cooldown: 5, damage: 8.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 480.0, cooldown: 10, damage: 8.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 8, damage: 10.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 14, damage: 30.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 8, damage: 11.0 },
+                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 5, damage: 8.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 10, damage: 8.0 },
             ],
             bodies: [
                 Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
@@ -323,6 +326,7 @@ impl Default for Config {
             shot_falloff: 0.4,
             ammo: 30.0,
             ammo_regen: 4.0,
+            ammo_damage: 10.0,
             boost_thrust: 2.5,
             boost_speed: 1.6,
             boost_drain: 0.5,
@@ -376,6 +380,10 @@ impl Config {
     /// Ticks between volleys.
     pub fn cooldown(&self, s: &Ship) -> u16 {
         ((self.weapon(s.class).cooldown as f32 / self.boost(s, Upgrade::FireRate)).round() as u16).max(2)
+    }
+    /// Ammo one volley costs: every laser's damage, at [`Config::ammo_damage`] damage per unit.
+    pub fn volley_cost(&self, s: &Ship) -> f32 {
+        self.weapon(s.class).lasers as f32 * self.damage(s) / self.ammo_damage
     }
     pub fn ammo_max(&self, s: &Ship) -> f32 {
         self.ammo * self.boost(s, Upgrade::Ammo)
@@ -861,9 +869,10 @@ impl World {
             ship.ammo = (ship.ammo + cfg.ammo_regen * cfg.boost(ship, Upgrade::Ammo) * dt).min(cfg.ammo_max(ship));
             ship.cooldown = ship.cooldown.saturating_sub(1);
             let weapon = *cfg.weapon(ship.class);
-            if act.fire && ship.cooldown == 0 && ship.ammo >= weapon.lasers as f32 {
+            let cost = cfg.volley_cost(ship);
+            if act.fire && ship.cooldown == 0 && ship.ammo >= cost {
                 ship.cooldown = cfg.cooldown(ship);
-                ship.ammo -= weapon.lasers as f32;
+                ship.ammo -= cost;
                 let life = cfg.shot_ticks(ship.class);
                 let left = ship.pos.cross(ship.fwd);
                 for laser in 0..weapon.lasers {

@@ -173,7 +173,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         cargo: me.cargo,
         cargo_max: cfg.cargo_max(me),
         vel: local(me.vel),
-        ready: me.cooldown == 0 && me.ammo >= cfg.weapon(me.class).lasers as f32,
+        ready: me.cooldown == 0 && me.ammo >= cfg.volley_cost(me),
         tier: me.tier,
         class: me.class,
         lives: me.lives,

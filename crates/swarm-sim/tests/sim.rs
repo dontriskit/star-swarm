@@ -361,10 +361,10 @@ fn ammo_runs_out_and_comes_back() {
         world.step(&fire);
         volleys += (world.shots.len() > before) as u32;
     }
-    // A Scatter spends three shots a volley: 30 on board plus 4 a second over 20 s is about 36 volleys,
-    // not the 120 its cooldown alone allows.
-    assert!((34..=38).contains(&volleys), "fired {volleys} volleys");
-    assert!(world.ships[0].ammo < 3.0, "less than one volley left");
+    // A Scatter volley is three shots of 8 damage, 2.4 ammo: 30 on board plus 4 a second over 20 s
+    // is about 45 volleys, not the 120 its cooldown alone allows.
+    assert!((43..=47).contains(&volleys), "fired {volleys} volleys");
+    assert!(world.ships[0].ammo < 2.4, "less than one volley left");
     for _ in 0..600 {
         world.step(&[Action::default(); 2]);
     }
@@ -615,4 +615,33 @@ fn a_ram_wins_a_collision_and_a_lancer_is_fragile() {
         world.cfg.hull_max(&s)
     };
     assert!(hull(Class::Ram) > hull(Class::Twin) && hull(Class::Twin) > hull(Class::Lancer));
+}
+
+#[test]
+fn harder_hitting_shots_cost_more_ammo() {
+    let world = duel(Config::default(), 150.0);
+    let cost = |class: Class, attack: u8| {
+        let mut s = world.ships[0].clone();
+        s.class = class;
+        s.levels[Upgrade::Attack as usize] = attack;
+        world.cfg.volley_cost(&s)
+    };
+    // One ammo buys 10 damage: a basic shot of 10 costs 1, a Lancer's 30 costs 3.
+    assert!((cost(Class::Basic, 0) - 1.0).abs() < 1e-6);
+    assert!((cost(Class::Lancer, 0) - 3.0).abs() < 1e-6);
+    assert!((cost(Class::Twin, 0) - 2.2).abs() < 1e-6, "two lasers of 11");
+    // Attack upgrades make every shot hit harder and cost more.
+    assert!(cost(Class::Basic, 3) > cost(Class::Basic, 0) * 1.5);
+
+    // A Lancer's full hold of 30 is ten shots; the eleventh has to wait for ammo to come back.
+    let mut world = duel(Config { ammo_regen: 0.0, ..Config::default() }, 150.0);
+    world.ships[0].class = Class::Lancer;
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    let mut shots = 0;
+    for _ in 0..300 {
+        let before = world.shots.len();
+        world.step(&fire);
+        shots += (world.shots.len() > before) as u32;
+    }
+    assert_eq!(shots, 10);
 }
