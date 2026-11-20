@@ -416,7 +416,7 @@ impl Default for Config {
             tier_cost: [150, 300, 600],
             // Attack, health, fire rate, shield, speed, regen, agility, ammo: fighting stats grow
             // fast, mobility slowly.
-            upgrade_steps: [0.2, 0.2, 0.05, 0.2, 0.05, 0.2, 0.05, 0.2],
+            upgrade_steps: [0.2, 0.2, 0.12, 0.2, 0.05, 0.2, 0.05, 0.2],
             tier_discount: 0.95,
             base_hp: 1000.0,
             base_radius: 60.0,
@@ -426,11 +426,11 @@ impl Default for Config {
             turret_damage: 15.0,
             turret_cooldown: 8,
             weapons: [
-                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 8, damage: 2.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 14, damage: 6.0 },
-                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 8, damage: 2.2 },
-                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 5, damage: 1.6 },
-                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 10, damage: 1.6 },
+                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 14, damage: 2.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 22, damage: 6.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 13, damage: 2.2 },
+                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 8, damage: 1.6 },
+                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 16, damage: 1.6 },
             ],
             bodies: [
                 Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
@@ -442,7 +442,7 @@ impl Default for Config {
             ],
             shot_full: 0.6,
             ammo: 30.0,
-            ammo_regen: 4.0,
+            ammo_regen: 1.2,
             ammo_damage: 2.0,
             boost_thrust: 2.5,
             boost_speed: 1.6,

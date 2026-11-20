@@ -509,11 +509,19 @@ fn ammo_runs_out_and_comes_back() {
         world.step(&fire);
         volleys += (world.shots.len() > before) as u32;
     }
-    // A Scatter volley is three shots of 8 damage, 2.4 ammo: 30 on board plus 4 a second over 20 s
-    // is about 45 volleys, not the 120 its cooldown alone allows.
-    assert!((43..=47).contains(&volleys), "fired {volleys} volleys");
+    // A Scatter volley is three shots, 2.4 ammo: 30 on board plus 1.2 a second over 20 s is
+    // about 22 volleys, not the 75 its cooldown alone allows. Firing without a target runs dry.
+    assert!((21..=24).contains(&volleys), "fired {volleys} volleys");
+
+    // A basic ship without upgrades fires about twice a second, and its ammo comes back at
+    // little more than half of that.
+    let basic = &duel(Config::default(), 150.0).ships[0].clone();
+    let cfg = Config::default();
+    assert_eq!(cfg.cooldown(basic), 14);
+    assert!(cfg.ammo_regen < 0.6 * 30.0 / 14.0 * cfg.volley_cost(basic));
     assert!(world.ships[0].ammo < 2.4, "less than one volley left");
-    for _ in 0..600 {
+    // An empty magazine takes 25 s to fill.
+    for _ in 0..900 {
         world.step(&[Action::default(); 2]);
     }
     assert_eq!(world.ships[0].ammo, world.cfg.ammo_max(&world.ships[0]));
