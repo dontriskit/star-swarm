@@ -51,6 +51,10 @@ pub struct Rewards {
     pub hull: f32,
     /// Extra for every point of damage to an enemy whose shields are down: its crystals are falling out.
     pub bare: f32,
+    /// When time runs out with no winner: the team that handed over the most crystals gets
+    /// this much, the one that handed over the fewest loses it, the rest fall evenly between.
+    /// Only teams whose base still stands are ranked. On top of `draw`.
+    pub place: f32,
     /// Extra per point of damage dealt to an enemy ship while the team is attacking and the
     /// attacker has the upper hand: the enemy has less hull and shield left than the attacker,
     /// is outnumbered around itself, or has drones to be taken.
@@ -59,7 +63,7 @@ pub struct Rewards {
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0, place: 0.0 }
     }
 }
 
@@ -397,7 +401,20 @@ impl VecEnv {
                         match slot.world.winner() {
                             Some(winner) => (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win),
                             // Time ran out with more than one base standing: nobody won, and everybody pays.
-                            None => rewards.iter_mut().for_each(|r| *r -= pay.draw),
+                            None => {
+                                rewards.iter_mut().for_each(|r| *r -= pay.draw);
+                                // Two that fought fall behind the one that mined: rank the standing bases.
+                                let bases = &slot.world.bases;
+                                let standing = bases.iter().filter(|b| b.alive()).count();
+                                for s in 0..rewards.len() {
+                                    let mine = &bases[team_of(s)];
+                                    if standing > 1 && mine.alive() {
+                                        let behind = bases.iter().filter(|b| b.alive() && b.deposited < mine.deposited).count() as f32;
+                                        let ahead = bases.iter().filter(|b| b.alive() && b.deposited > mine.deposited).count() as f32;
+                                        rewards[s] += pay.place * (behind - ahead) / (standing - 1) as f32;
+                                    }
+                                }
+                            }
                         }
                         let mut stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
                         stats.plans = slot.planned.map(|ticks| ticks as f32 / (slot.world.tick.max(1) as usize * per_team) as f32);
@@ -535,6 +552,23 @@ mod tests {
         env.step(&actions, &mut rewards, &mut dones);
         assert!(dones.iter().all(|d| *d == 1));
         assert!(rewards.iter().all(|r| (*r + 5.03).abs() < 1e-5), "the draw is charged to everyone: {:?}", &rewards[..3]);
+    }
+
+    #[test]
+    fn when_time_runs_out_the_team_that_handed_over_most_comes_first() {
+        let cfg = Config { rock_count: 0, max_ticks: 3, turret_damage: 0.0, ..Config::default() };
+        let pay = Rewards { place: 10.0, crash: 0.0, death: 0.0, ..Rewards::default() };
+        let mut env = VecEnv::new(cfg, 1, 3, 3, pay);
+        let per_team = env.config().ships_per_team;
+        for (team, deposited) in [(0, 500), (1, 900), (2, 100)] {
+            env.slots[0].world.bases[team].deposited = deposited;
+        }
+        let agents = env.agents();
+        let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
+        env.step(&actions, &mut rewards, &mut dones);
+        assert!(dones.iter().all(|d| *d == 1));
+        let of_team = |t: usize| rewards[t * per_team];
+        assert_eq!((of_team(0), of_team(1), of_team(2)), (0.0, 10.0, -10.0), "middle, first, last");
     }
 
     /// One ship a side, ship 0 pointing at ship 1 from 150 away, far from the bases; returns

@@ -29,6 +29,8 @@ for i in "${!stages[@]}"; do
   # At full starter reward: 0.2 for every crystal picked up (a small pack pays about 2.3, an
   # XXL one about 25), 0.1 per size for a rock broken, 0.1 per point of damage to a small rock
   # (1 for breaking one), 1 for anything bought.
+  # When time runs out everybody pays 30, and the standing bases are ranked by crystals handed
+  # over: 20 back for the first, 20 more off for the last. Destroying the others still pays best.
   # Hull is precious: every point lost costs 0.3 (shields are free to spend), so flying into
   # rocks pays only while the shields hold. A pack fades to nothing in 10 s, so the 0.2 a
   # crystal is paid on what is left of it.
@@ -41,7 +43,7 @@ for i in "${!stages[@]}"; do
     --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
-    --reward time=0.00083 --reward draw=30 \
+    --reward time=0.00083 --reward draw=30 --reward place=20 \
     --reward deposit=0.1 --reward base_level=25 \
     --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
