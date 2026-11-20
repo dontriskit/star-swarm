@@ -429,7 +429,7 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
     // Full power over the first 60% of the range (282 of 470), then fading to nothing.
     let (near, middle, far) = (hit_from(60.0).unwrap(), hit_from(250.0).unwrap(), hit_from(420.0).unwrap());
     assert_eq!((near, middle), (2.0, 2.0), "full power inside the full-power range");
-    assert!(far < 0.8 && far > 0.1, "near the edge of its range did {far}");
+    assert!(far < 1.2 && far > 0.1, "near the edge of its range did {far}");
     assert_eq!(hit_from(600.0), None, "a basic laser reaches 470");
 }
 
@@ -584,12 +584,53 @@ fn a_ship_has_inertia_drifts_and_can_brake() {
 
 #[test]
 fn each_class_fires_its_own_volley() {
-    for (class, lasers) in [(Class::Basic, 1), (Class::Lancer, 1), (Class::Twin, 2), (Class::Scatter, 3), (Class::Ram, 1)] {
+    for (class, lasers) in [(Class::Basic, 1), (Class::Lancer, 1), (Class::Twin, 2), (Class::Scatter, 2), (Class::Ram, 1)] {
         let mut world = duel(Config::default(), 150.0);
         world.ships[0].class = class;
         world.step(&[Action { fire: true, ..Action::default() }, Action::default()]);
         assert_eq!(world.shots.len(), lasers, "{class:?}");
     }
+}
+
+#[test]
+fn a_hunter_fires_in_bursts_and_every_class_is_built_differently() {
+    // One pull of the trigger: three volleys of two, four ticks apart, then a long wait.
+    let mut world = duel(Config::default(), 5000.0);
+    world.ships[0].class = Class::Scatter;
+    let idle = [Action::default(); 2];
+    world.step(&[Action { fire: true, ..Action::default() }, Action::default()]);
+    let mut fired_at = vec![0u32];
+    for tick in 1..40 {
+        let before = world.shots.len();
+        world.step(&idle);
+        if world.shots.len() > before {
+            fired_at.push(tick);
+        }
+    }
+    assert_eq!(fired_at, [0, 4, 8], "the burst runs on by itself");
+
+    // Hunter fast and thin, tank slow and thick, cannon far-reaching and fragile.
+    let cfg = Config::default();
+    let ship = |class: Class| {
+        let mut s = world.ships[0].clone();
+        s.class = class;
+        s
+    };
+    let (basic, cannon, hunter, tank) = (ship(Class::Basic), ship(Class::Lancer), ship(Class::Scatter), ship(Class::Ram));
+    assert!(cfg.speed_of(&hunter) > 1.2 * cfg.speed_of(&basic) && cfg.speed_of(&tank) < 0.75 * cfg.speed_of(&basic));
+    assert!(cfg.hull_max(&tank) > 2.0 * cfg.hull_max(&basic) && cfg.hull_max(&hunter) < cfg.hull_max(&basic));
+    assert!(cfg.weapon(Class::Lancer).range > 1.8 * cfg.weapon(Class::Basic).range && cfg.hull_max(&cannon) < cfg.hull_max(&basic));
+    assert!(cfg.turn_rate_of(&tank) < cfg.turn_rate_of(&cannon) && cfg.turn_rate_of(&cannon) < cfg.turn_rate_of(&hunter));
+
+    // Shots are as big as they hit hard: a cannon's is more than twice a basic one, and a
+    // top-tier cannon with every attack upgrade fires a ball bigger than a tier-1 ship.
+    assert!(cfg.shot_radius(&cannon) > 2.0 * cfg.shot_radius(&basic));
+    let mut star = ship(Class::Lancer);
+    star.tier = TIERS;
+    star.levels[Upgrade::Attack as usize] = cfg.max_level(TIERS);
+    assert!(cfg.shot_radius(&star) > cfg.ship_radius, "{}", cfg.shot_radius(&star));
+    assert!(cfg.damage(&star) > 15.0 * cfg.damage(&cannon), "{}", cfg.damage(&star));
+    assert!(cfg.hull_max(&{ let mut s = star.clone(); s.levels[Upgrade::Health as usize] = cfg.max_level(TIERS); s }) > 1000.0);
 }
 
 #[test]
@@ -823,14 +864,14 @@ fn harder_hitting_shots_cost_more_ammo() {
         s.levels[Upgrade::Attack as usize] = attack;
         world.cfg.volley_cost(&s)
     };
-    // One ammo buys one point of damage: a basic shot of 1 costs 1, a Lancer's 3 costs 3.
+    // Two points of damage cost one round: a basic shot of 2 costs 1, a cannon's 10 costs 5.
     assert!((cost(Class::Basic, 0) - 1.0).abs() < 1e-6);
-    assert!((cost(Class::Lancer, 0) - 3.0).abs() < 1e-6);
-    assert!((cost(Class::Twin, 0) - 2.2).abs() < 1e-6, "two lasers of 1.1");
+    assert!((cost(Class::Lancer, 0) - 5.0).abs() < 1e-6);
+    assert!((cost(Class::Twin, 0) - 2.2).abs() < 1e-6, "two lasers of 2.2");
     // Attack upgrades make every shot hit harder and cost more.
     assert!(cost(Class::Basic, 3) > cost(Class::Basic, 0) * 1.5);
 
-    // A Lancer's full hold of 30 is ten shots; the eleventh has to wait for ammo to come back.
+    // A cannon's full magazine of 30 is six shots; the seventh has to wait for ammo to come back.
     let mut world = duel(Config { ammo_regen: 0.0, ..Config::default() }, 150.0);
     world.ships[0].class = Class::Lancer;
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
@@ -840,7 +881,7 @@ fn harder_hitting_shots_cost_more_ammo() {
         world.step(&fire);
         shots += (world.shots.len() > before) as u32;
     }
-    assert_eq!(shots, 10);
+    assert_eq!(shots, 6);
 }
 
 /// One ship of one team, parked inside its base with crystals on board; no rocks.
@@ -875,9 +916,9 @@ fn crystals_are_handed_over_inside_the_base_a_tenth_of_a_hold_a_second() {
     }
     assert_eq!((world.ships[0].cargo, world.ships[0].points, world.bases[0].deposited), (0, 45, 45));
 
-    // Next to the base is not inside it: nothing is handed over 100 away.
+    // Next to the base is not inside it: nothing is handed over 250 away.
     let mut world = at_home(45);
-    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 100.0);
+    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 250.0);
     for _ in 0..60 {
         world.step(&unload);
     }
@@ -889,7 +930,7 @@ fn the_shop_is_inside_the_base() {
     let buy = [Action { buy: Some(Buy::Upgrade(Upgrade::Attack)), ..Action::default() }, Action::default()];
     let mut world = at_home(0);
     world.ships[0].points = 100;
-    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 100.0);
+    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 250.0);
     world.step(&buy);
     assert_eq!((world.ships[0].points, world.ships[0].levels[Upgrade::Attack as usize]), (100, 0), "outside the base nothing can be bought");
     world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 20.0);
@@ -906,11 +947,11 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
     // Tier 2 costs a full tier-1 hold, 150.
     world.step(&tier_up);
     assert_eq!((world.ships[0].tier, world.ships[0].points), (2, 850));
-    // Tier 3 needs no more of the base, only 300 points; the last tier needs a level-2 base.
+    // Tier 3 needs no more of the base, only 300 points; from tier 4 on the base has to keep up.
     world.step(&tier_up);
     assert_eq!((world.ships[0].tier, world.ships[0].points), (3, 550));
     world.step(&tier_up);
-    assert_eq!(world.ships[0].tier, 3, "tier 4 needs a level-2 base");
+    assert_eq!(world.ships[0].tier, 3, "tier 4 needs a level-3 base");
 
     // The team has handed over 995 crystals so far; this ship brings the rest.
     world.bases[0].deposited = 995;
@@ -926,10 +967,16 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
 
     world.ships[0].points = 600;
     world.step(&tier_up);
-    assert_eq!((world.ships[0].tier, world.ships[0].points), (4, 0), "the last tier costs 600");
-    assert_eq!(world.cfg.max_level(4), 6, "and every tier allows one more level of each upgrade");
-    assert_eq!(world.cfg.next_base_level_at(2), Some(2500));
-    assert_eq!(world.cfg.next_base_level_at(7), None);
+    assert_eq!(world.ships[0].tier, 3, "a level-2 base is not enough");
+    world.bases[0].level = 3;
+    world.step(&tier_up);
+    assert_eq!((world.ships[0].tier, world.ships[0].points), (4, 0), "tier 4 costs 600");
+    // Seven tiers, each asking for a base one level higher, up to a level-6 base for the last.
+    let cfg = &world.cfg;
+    assert_eq!((1..=6).map(|tier| (1..=6).find(|base| cfg.base_allows(tier, *base)).unwrap()).collect::<Vec<u8>>(), [1, 1, 3, 4, 5, 6]);
+    assert_eq!((1..=7).map(|tier| cfg.max_level(tier)).collect::<Vec<u8>>(), [3, 4, 5, 6, 7, 8, 9], "every tier allows one more level of each upgrade");
+    assert_eq!(cfg.next_base_level_at(2), Some(2500));
+    assert_eq!(cfg.next_base_level_at(6), None, "a base tops out at level 6");
 }
 
 #[test]
@@ -1162,12 +1209,12 @@ fn a_ship_passing_close_to_a_pack_picks_it_up() {
         world.step(&[Action::default(); 2]);
         world.ships[0].cargo
     };
-    // A small pack of 9 has radius 16.5: a tier-1 ship (radius 12) takes it from within 45.
-    assert_eq!(grab(42.0, 9), 9);
-    assert_eq!(grab(49.0, 9), 0);
-    // A big pack is a bigger target: 49 crystals have radius 22.5, so the reach is 57.
-    assert_eq!(grab(54.0, 49), 49);
-    assert_eq!(grab(61.0, 49), 0);
+    // A small pack of 9 has radius 16.5: a tier-1 ship (radius 16) takes it from within 49.
+    assert_eq!(grab(46.0, 9), 9);
+    assert_eq!(grab(53.0, 9), 0);
+    // A big pack is a bigger target: 49 crystals have radius 22.5, so the reach is 61.
+    assert_eq!(grab(58.0, 49), 49);
+    assert_eq!(grab(65.0, 49), 0);
 }
 
 #[test]
@@ -1205,7 +1252,7 @@ fn a_base_has_two_places_and_only_ships_at_rest_take_them() {
     let base = world.bases[0].pos;
     // Three ships at rest inside the base, well clear of each other, and a fourth flying through it.
     for i in 0..4 {
-        world.ships[i].pos = world.offset(base, i as f32 * 2.1, if i < 3 { 38.0 } else { 5.0 });
+        world.ships[i].pos = world.offset(base, i as f32 * 2.1, if i < 3 { 90.0 } else { 5.0 });
         world.ships[i].vel = Vec3::default();
         world.ships[i].cargo = 60;
         world.ships[i].points = 50;
@@ -1275,7 +1322,7 @@ fn the_hull_mends_from_crystals_first_and_in_the_base() {
     assert!((world.ships[0].hull - 50.0).abs() < 0.5, "after one second: {}", world.ships[0].hull);
     // Next to the base but not in it: nothing.
     let mut world = at_home(0);
-    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 100.0);
+    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 250.0);
     world.ships[0].hull = 40.0;
     for _ in 0..30 {
         world.step(&[Action::default(); 2]);

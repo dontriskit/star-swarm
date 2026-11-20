@@ -70,14 +70,16 @@ pub enum Class {
     /// Tier 1: one laser, middling in everything.
     #[default]
     Basic,
-    /// Tier 2: one fast, hard-hitting laser with a long reach and a slow rate of fire.
+    /// The cannon: one big, fast, far-reaching shot, seldom. A thin hull and a slow turn. At
+    /// the top tiers its shot is a ball that flattens whatever it meets.
     Lancer,
-    /// Tier 2: two lasers side by side.
+    /// The cruiser: two lasers side by side, a little tougher than a basic ship, good at everything.
     Twin,
-    /// Tier 2: three lasers in a fan, short reach, fast fire.
+    /// The hunter: fast and nimble, with a thin hull; it fires bursts of three quick volleys
+    /// and then has to wait.
     Scatter,
-    /// Tier 2: a heavy hull and a weak gun, built to fly into enemies: it deals a lot of
-    /// ramming damage and takes little.
+    /// The tank: slow, slow to turn, more than twice the hull and a short gun. Built to fly
+    /// into enemies: it deals a lot of ramming damage and takes little.
     Ram,
 }
 
@@ -93,6 +95,9 @@ pub struct Body {
     pub ram_deal: f32,
     /// Ramming damage it takes.
     pub ram_take: f32,
+    /// Top speed and engine push, and how fast it turns.
+    pub speed: f32,
+    pub turn: f32,
 }
 
 /// A class's guns.
@@ -108,6 +113,12 @@ pub struct Weapon {
     pub cooldown: u16,
     /// Damage per laser at the muzzle.
     pub damage: f32,
+    /// Volleys to a burst: after the first, the rest follow on their own, `burst_gap` ticks
+    /// apart, and only then does the cooldown start. 1 fires single volleys.
+    pub burst: u8,
+    pub burst_gap: u16,
+    /// Radius of a shot from a ship without attack upgrades; see [`Config::shot_radius`].
+    pub size: f32,
 }
 
 /// What a ship can spend crystals on.
@@ -148,7 +159,7 @@ const DRONE_RADIUS: f32 = 12.0;
 pub const ROCK_SIZES: u8 = 5;
 
 /// Ship tiers run from 1 to this.
-pub const TIERS: u8 = 4;
+pub const TIERS: u8 = 7;
 
 /// What a ship has set out to do, which its teammates can see. Farming is the default, and
 /// defending is each ship's own choice. Attacking is a team decision: when at least half of a
@@ -397,8 +408,8 @@ impl Default for Config {
             ships_per_team: 7,
             rock_count: 11000,
             max_ticks: 36000,
-            ship_radius: 12.0,
-            ship_radii: [12.0, 15.0, 19.0, 23.0],
+            ship_radius: 16.0,
+            ship_radii: [16.0, 20.0, 24.0, 29.0, 34.0, 40.0, 48.0],
             ram_damage: 0.1,
             plan_ticks: 30,
             thrust_accel: 75.0,
@@ -411,34 +422,34 @@ impl Default for Config {
             shield: 100.0,
             shield_regen: 1.0,
             shield_delay: 60,
-            cargo: [150, 300, 500, 750],
-            tier_levels: [3, 4, 5, 6],
-            tier_cost: [150, 300, 600],
+            cargo: [150, 300, 500, 750, 1000, 1300, 1600],
+            tier_levels: [3, 4, 5, 6, 7, 8, 9],
+            tier_cost: [150, 300, 600, 1000, 1500, 2200],
             // Attack, health, fire rate, shield, speed, regen, agility, ammo: fighting stats grow
             // fast, mobility slowly.
-            upgrade_steps: [0.2, 0.2, 0.12, 0.2, 0.05, 0.2, 0.05, 0.2],
+            upgrade_steps: [0.2, 0.2, 0.08, 0.2, 0.05, 0.2, 0.05, 0.2],
             tier_discount: 0.95,
             base_hp: 1000.0,
-            base_radius: 60.0,
-            base_heal_radius: 120.0,
+            base_radius: 150.0,
+            base_heal_radius: 260.0,
             base_heal: 0.1,
-            turret_range: 380.0,
+            turret_range: 520.0,
             turret_damage: 15.0,
             turret_cooldown: 8,
             weapons: [
-                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 14, damage: 2.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 22, damage: 6.0 },
-                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 13, damage: 2.2 },
-                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 8, damage: 1.6 },
-                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 16, damage: 1.6 },
+                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 14, damage: 2.0, burst: 1, burst_gap: 0, size: 3.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 900.0, speed: 520.0, cooldown: 32, damage: 10.0, burst: 1, burst_gap: 0, size: 7.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 520.0, speed: 350.0, cooldown: 13, damage: 2.2, burst: 1, burst_gap: 0, size: 3.5 },
+                Weapon { lasers: 2, fan: 0.06, range: 420.0, speed: 420.0, cooldown: 34, damage: 1.6, burst: 3, burst_gap: 4, size: 2.5 },
+                Weapon { lasers: 1, fan: 0.0, range: 300.0, speed: 300.0, cooldown: 16, damage: 2.0, burst: 1, burst_gap: 0, size: 4.0 },
             ],
             bodies: [
-                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
-                // The sniper pays for its reach with a thin hull.
-                Body { hull: 0.7, ram_deal: 0.5, ram_take: 1.5 },
-                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
-                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
-                Body { hull: 1.6, ram_deal: 5.0, ram_take: 0.25 },
+                Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0, speed: 1.0, turn: 1.0 },
+                // The cannon pays for its reach with a thin hull and a slow turn.
+                Body { hull: 0.7, ram_deal: 0.5, ram_take: 1.5, speed: 0.9, turn: 0.8 },
+                Body { hull: 1.2, ram_deal: 1.0, ram_take: 1.0, speed: 1.0, turn: 1.0 },
+                Body { hull: 0.8, ram_deal: 1.0, ram_take: 1.0, speed: 1.25, turn: 1.3 },
+                Body { hull: 2.2, ram_deal: 5.0, ram_take: 0.25, speed: 0.7, turn: 0.7 },
             ],
             shot_full: 0.6,
             ammo: 30.0,
@@ -451,11 +462,11 @@ impl Default for Config {
             boost_cell_chance: 0.15,
             lives: 0,
             crystal_armor: 1.0,
-            rock_radius: 18.0,
+            rock_radius: 22.0,
             rock_hp: 20.0,
             rock_packs: [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)],
             rock_weights: [35, 28, 20, 11, 6],
-            base_levels: 7,
+            base_levels: 6,
             base_level_at: [1000, 2500, 4500, 7000, 10000, 14000],
             base_hp_per_level: 200.0,
             turret_per_level: 0.15,
@@ -466,7 +477,7 @@ impl Default for Config {
             drone_hp: 30.0,
             repair_step: 10,
             drone_cost: [40, 40, 60],
-            drone_slots: [1, 2, 3, 4],
+            drone_slots: [1, 2, 3, 4, 4, 4, 4],
             drone_reach: 240.0,
             drone_speed: 170.0,
             drone_cooldown: 10,
@@ -496,11 +507,17 @@ impl Config {
     /// What a ship of a tier starts from in one stat, as a multiple of a new tier-1 ship:
     /// a fully upgraded ship of the tier below, less the discount.
     pub fn tier_base(&self, u: Upgrade, tier: u8) -> f32 {
-        (1..tier).fold(1.0, |base, t| base * (1.0 + self.upgrade_steps[u as usize] * self.max_level(t) as f32) * self.tier_discount)
+        ((1.0 + self.tier_gain(u)) * self.tier_discount).powi(tier as i32 - 1)
+    }
+    /// What a full set of one upgrade adds at any tier: the tier-1 step times the tier-1 cap.
+    /// Higher tiers have more levels, each a smaller step, so that a ship's strength grows by
+    /// the same factor from tier to tier and not ever faster.
+    pub fn tier_gain(&self, u: Upgrade) -> f32 {
+        self.upgrade_steps[u as usize] * self.tier_levels[0] as f32
     }
     /// A ship's multiplier in one stat: its tier's starting point, raised by its upgrade level.
     pub fn boost(&self, ship: &Ship, u: Upgrade) -> f32 {
-        self.tier_base(u, ship.tier) * (1.0 + self.upgrade_steps[u as usize] * ship.levels[u as usize] as f32)
+        self.tier_base(u, ship.tier) * (1.0 + self.tier_gain(u) * ship.levels[u as usize] as f32 / self.max_level(ship.tier) as f32)
     }
     pub fn radius_of(&self, s: &Ship) -> f32 {
         self.ship_radii[s.tier as usize - 1]
@@ -533,7 +550,15 @@ impl Config {
         self.ammo * self.boost(s, Upgrade::Ammo)
     }
     pub fn turn_rate_of(&self, s: &Ship) -> f32 {
-        self.turn_rate * self.boost(s, Upgrade::Agility)
+        self.turn_rate * self.body(s.class).turn * self.boost(s, Upgrade::Agility)
+    }
+    /// A ship's top speed and engine push as a multiple of a new basic ship's.
+    pub fn speed_of(&self, s: &Ship) -> f32 {
+        self.body(s.class).speed * self.boost(s, Upgrade::Speed)
+    }
+    /// How big a ship's shots are: its gun's size, growing with the damage they do.
+    pub fn shot_radius(&self, s: &Ship) -> f32 {
+        self.weapon(s.class).size * self.boost(s, Upgrade::Attack).sqrt()
     }
     /// How many ticks a shot of this class flies.
     pub fn shot_ticks(&self, class: Class) -> u16 {
@@ -543,13 +568,14 @@ impl Config {
     pub fn cargo_max(&self, s: &Ship) -> u32 {
         self.cargo[s.tier as usize - 1]
     }
-    /// Highest upgrade level a ship of this tier can reach.
-    /// Whether a base of this level lets a ship of this tier move up one: only the step to
-    /// the last tier asks for a base above level 1.
+    /// Whether a base of this level lets a ship of this tier move up one. Up to tier 3 any
+    /// base will do; from there the base has to be as high as the ship is now: tier 4 needs a
+    /// level-3 base, tier 7 a level-6 one.
     pub fn base_allows(&self, tier: u8, base_level: u8) -> bool {
-        tier + 1 < TIERS || base_level >= 2
+        tier < 3 || base_level >= tier
     }
 
+    /// Highest upgrade level a ship of this tier can reach.
     pub fn max_level(&self, tier: u8) -> u8 {
         self.tier_levels[tier as usize - 1]
     }
@@ -559,15 +585,14 @@ impl Config {
     }
     /// Price of the next level of an upgrade for a ship of this tier, or None at the cap.
     pub fn cost(&self, level: u8, tier: u8) -> Option<u32> {
-        (level < self.max_level(tier)).then(|| self.upgrade_cost * (level as u32 + 1))
+        (level < self.max_level(tier)).then(|| self.upgrade_cost * (level as u32 + 1) * tier as u32)
     }
     /// Price in points of what a ship wants to buy, or None when it cannot be bought at all.
     /// `base` is the ship's own base and `drones` how many drones it already has.
     pub fn price(&self, s: &Ship, buy: Buy, base: &Base, drones: usize) -> Option<u32> {
         match buy {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
-            // Leaving tier 1 needs a real class; after that the class named is ignored. Up to
-            // tier 3 any base will do; tier 4 needs a level-2 base.
+            // Leaving tier 1 needs a real class; after that the class named is ignored.
             Buy::Tier(class) => (s.tier < TIERS && self.base_allows(s.tier, base.level) && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
             Buy::Drone(kind) => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_cost[kind as usize]),
             Buy::Repair => (base.alive() && base.hp < self.base_hp_max(base.level)).then_some(self.repair_step),
@@ -620,6 +645,8 @@ pub struct Ship {
     pub lives: u8,
     /// Kills since it was last destroyed.
     pub streak: u32,
+    /// Volleys of the current burst still to come.
+    pub burst_left: u8,
     /// Shots on board.
     pub ammo: f32,
     /// Boost tank, 0 to 1.
@@ -799,6 +826,8 @@ pub struct Shot {
     pub mining: bool,
     /// Fired by the ship's own weapon, not by one of its drones or a turret.
     pub from_ship: bool,
+    /// How big it is: it hits whatever it comes this close to the edge of.
+    pub radius: f32,
 }
 
 impl Shot {
@@ -946,6 +975,7 @@ impl World {
                     class: Class::Basic,
                     lives: world.cfg.lives,
                     streak: 0,
+                    burst_left: 0,
                     ammo: 0.0,
                     boost: 1.0,
                     spill: 0.0,
@@ -1316,7 +1346,7 @@ impl World {
                 }
             }
             ship.fwd = geo::turn(ship.pos, ship.fwd, act.turn.clamp(-1, 1) as f32 * cfg.turn_rate_of(ship) * dt);
-            let speed_boost = cfg.boost(ship, Upgrade::Speed);
+            let speed_boost = cfg.speed_of(ship);
             // Boosting burns the tank and needs the engine on; otherwise the tank slowly refills.
             let thrust = act.thrust && !act.brake;
             let boosting = act.boost && thrust && ship.boost > 0.0;
@@ -1355,8 +1385,15 @@ impl World {
             ship.cooldown = ship.cooldown.saturating_sub(1);
             let weapon = *cfg.weapon(ship.class);
             let cost = cfg.volley_cost(ship);
-            if act.fire && ship.cooldown == 0 && ship.ammo >= cost {
+            if ship.burst_left > 0 && ship.cooldown == 0 && ship.ammo < cost {
+                // Out of ammo in the middle of a burst: the rest of it is lost.
+                ship.burst_left = 0;
                 ship.cooldown = cfg.cooldown(ship);
+            }
+            if (act.fire || ship.burst_left > 0) && ship.cooldown == 0 && ship.ammo >= cost {
+                // A burst, once begun, runs on by itself; the cooldown starts after its last volley.
+                ship.burst_left = if ship.burst_left > 0 { ship.burst_left - 1 } else { weapon.burst.saturating_sub(1) };
+                ship.cooldown = if ship.burst_left > 0 { weapon.burst_gap.max(1) } else { cfg.cooldown(ship) };
                 ship.ammo -= cost;
                 let life = cfg.shot_ticks(ship.class);
                 let left = ship.pos.cross(ship.fwd);
@@ -1375,6 +1412,7 @@ impl World {
                         team: ship.team,
                         mining: false,
                         from_ship: true,
+                        radius: cfg.shot_radius(ship),
                     });
                 }
             }
@@ -1500,6 +1538,7 @@ impl World {
                         team,
                         mining: kind == DroneKind::Eco,
                         from_ship: false,
+                        radius: 2.0,
                     });
                 }
             }
@@ -1534,6 +1573,7 @@ impl World {
                         team: team as u8,
                         mining: false,
                         from_ship: false,
+                        radius: 2.0,
                     });
                 }
             }
@@ -1551,8 +1591,8 @@ impl World {
             shot.ticks -= 1;
             let damage = shot.damage_now(full);
             let mut touched = None;
-            self.index.near(&self.cfg, &self.farms, &self.rocks, shot.pos, biggest_rock, |i, r| {
-                if touched.is_none() && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32 {
+            self.index.near(&self.cfg, &self.farms, &self.rocks, shot.pos, biggest_rock + shot.radius, |i, r| {
+                if touched.is_none() && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32 + shot.radius {
                     touched = Some(i);
                 }
             });
@@ -1583,7 +1623,7 @@ impl World {
                 continue;
             }
             let hit = self.ships.iter().position(|s| {
-                s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.radius_of(s)
+                s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.radius_of(s) + shot.radius
             });
             if let Some(v) = hit {
                 let hull = self.ships[v].hull;
@@ -1903,6 +1943,7 @@ impl World {
             put(s.class as u32);
             put(s.lives as u32);
             put(s.streak);
+            put(s.burst_left as u32);
             put(s.ammo.to_bits());
             put(s.boost.to_bits());
             put(s.spill.to_bits());

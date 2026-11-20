@@ -37,10 +37,10 @@ const TEAM_NAMES: [&str; 6] = ["Niebiescy", "Pomarańczowi", "Zieloni", "Fioleto
 fn class_name(class: Class) -> &'static str {
     match class {
         Class::Basic => "Podstawowy",
-        Class::Lancer => "Lanca",
-        Class::Twin => "Bliźniak",
-        Class::Scatter => "Rozrzut",
-        Class::Ram => "Taran",
+        Class::Lancer => "Działo",
+        Class::Twin => "Krążownik",
+        Class::Scatter => "Łowca",
+        Class::Ram => "Czołg",
     }
 }
 

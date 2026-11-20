@@ -138,12 +138,12 @@ def summarize(stats) -> dict:
         # What the ships turned into: share of each class and mean level of each upgrade at the end.
         "classes": {name: round(float(s[:, 9 + i].mean()), 3) for i, name in enumerate(CLASSES)},
         "upgrades": {name: round(float(s[:, 14 + i].mean()), 2) for i, name in enumerate(UPGRADES)},
-        "tiers": [round(float(s[:, 22 + i].mean()), 3) for i in range(4)],
+        "tiers": [round(float(s[:, 22 + i].mean()), 3) for i in range(7)],
         # Share of ship-time spent in each mode.
-        "plans": {name: round(float(s[:, 26 + i].mean()), 3) for i, name in enumerate(PLANS)},
-        "base_level": round(float(s[:, 30].mean()), 2),
-        "deposited_per_min": round(float(s[:, 31].mean() / minutes), 2),
-        "drones": round(float(s[:, 32].mean()), 2),
+        "plans": {name: round(float(s[:, 29 + i].mean()), 3) for i, name in enumerate(PLANS)},
+        "base_level": round(float(s[:, 33].mean()), 2),
+        "deposited_per_min": round(float(s[:, 34].mean() / minutes), 2),
+        "drones": round(float(s[:, 35].mean()), 2),
     }
 
 

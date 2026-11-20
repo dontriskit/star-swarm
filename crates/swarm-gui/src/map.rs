@@ -269,7 +269,8 @@ fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: b
 
     for shot in world.shots.iter().filter(|s| s.team == MY_TEAM || in_sight(s.pos)) {
         if let Some(p) = view.at(shot.pos) {
-            dot(window, p, 1.2, team_color(shot.team));
+            // A shot is as big as it is in the game, and never too small to see.
+            dot(window, p, (shot.radius * scale).max(1.2), team_color(shot.team));
         }
     }
 
@@ -306,7 +307,25 @@ fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: b
             // Not seen clearly by the blue team: dimmer on its long-range radar, dimmest off it.
             color.a = if blip(ship.pos) { 0.6 } else { 0.3 };
         }
-        fill_shape(window, &[corner(0.0, 1.0), corner(2.5, 0.9), corner(-2.5, 0.9)], color);
+        // Every class has its own outline, as angle from the nose and reach from the middle:
+        // a dart, the cannon's long needle, the cruiser's two prongs, the hunter's swept wing
+        // and the tank's block.
+        let outline: &[(f32, f32)] = match ship.class {
+            swarm_sim::Class::Basic => &[(0.0, 1.0), (2.5, 0.9), (-2.5, 0.9)],
+            swarm_sim::Class::Lancer => &[(0.0, 1.6), (0.45, 0.55), (2.6, 0.95), (3.14, 0.55), (-2.6, 0.95), (-0.45, 0.55)],
+            swarm_sim::Class::Twin => &[(0.4, 1.25), (0.0, 0.5), (-0.4, 1.25), (-1.5, 0.7), (-2.6, 1.0), (3.14, 0.55), (2.6, 1.0), (1.5, 0.7)],
+            swarm_sim::Class::Scatter => &[(0.0, 1.3), (2.1, 1.25), (3.14, 0.25), (-2.1, 1.25)],
+            swarm_sim::Class::Ram => &[(0.0, 1.15), (0.75, 1.0), (1.6, 0.95), (2.4, 1.05), (3.14, 0.85), (-2.4, 1.05), (-1.6, 0.95), (-0.75, 1.0)],
+        };
+        let shape: Vec<Point<Pixels>> = outline.iter().map(|(turn, reach)| corner(*turn, *reach)).collect();
+        fill_shape(window, &shape, color);
+        // From tier 4 up a ship wears a bright rim; the top tier a second one around it.
+        if ship.tier >= 4 {
+            stroke_shape(window, &shape, 1.0, rgba(0xffffffa0));
+        }
+        if ship.tier == swarm_sim::TIERS {
+            stroke_shape(window, &polygon(center, radius * 1.7, 24, 0.0), 1.0, rgba(0xffffff60));
+        }
         if spotted {
             stroke_shape(window, &polygon(center, radius + 4.0, 4, std::f32::consts::FRAC_PI_4), 1.0, rgba(0xffffffb0));
         }
