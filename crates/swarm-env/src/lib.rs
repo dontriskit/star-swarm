@@ -47,6 +47,8 @@ pub struct Rewards {
     pub base_level: f32,
     /// Per point of damage a ship's shots do to a rock of the smallest size.
     pub rock_hit: f32,
+    /// Taken off for every point of hull a ship loses, whatever did it. Shields are free to spend.
+    pub hull: f32,
     /// Extra per point of damage dealt to an enemy ship while the team is attacking and the
     /// attacker has the upper hand: the enemy has less hull and shield left than the attacker,
     /// is outnumbered around itself, or has drones to be taken.
@@ -55,7 +57,7 @@ pub struct Rewards {
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0 }
     }
 }
 
@@ -364,6 +366,7 @@ impl VecEnv {
                                 }
                             }
                             Event::Demoted { .. } => {}
+                            Event::HullLost { ship, amount } => rewards[ship as usize] -= pay.hull * amount,
                             Event::Deposited { ship, amount } => rewards[ship as usize] += pay.deposit * amount as f32,
                             Event::BaseLevel { team, .. } => {
                                 (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] += pay.base_level);
@@ -563,11 +566,11 @@ mod tests {
     #[test]
     fn attacking_with_the_upper_hand_pays_extra() {
         let pay = Rewards { hit: 1.0, edge: 3.0, crash: 0.0, death: 0.0, ..Rewards::default() };
-        // The same single hit of a little under 1 damage in each case.
+        // The same single hit of 1 damage, from inside the laser's full-power range, in each case.
         let plain = first_hit_pay(pay, false, 100.0);
         let even = first_hit_pay(pay, true, 100.0);
         let weaker = first_hit_pay(pay, true, 50.0);
-        assert!(plain > 0.5 && plain < 1.0, "a plain hit pays its damage: {plain}");
+        assert!(plain > 0.5 && plain <= 1.0, "a plain hit pays its damage: {plain}");
         assert!((even - plain).abs() < 1e-4, "attacking an equal pays no more: {even}");
         assert!((weaker - 4.0 * plain).abs() < 1e-3, "attacking a weaker enemy pays hit plus edge: {weaker}");
         // Farming ships get no bonus for shooting a weaker enemy either.

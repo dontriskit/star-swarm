@@ -268,8 +268,9 @@ pub struct Config {
     pub weapons: [Weapon; 5],
     /// Build per class, indexed by [`Class`].
     pub bodies: [Body; 5],
-    /// Share of its damage a shot still does at the end of its range; it fades linearly on the way.
-    pub shot_falloff: f32,
+    /// Share of its range over which a shot does its full damage; past that it fades evenly to
+    /// nothing at the end of the range.
+    pub shot_full: f32,
     /// Ammo carried and ammo regained per second, before upgrades.
     pub ammo: f32,
     pub ammo_regen: f32,
@@ -330,7 +331,10 @@ pub struct Config {
     pub rock_speed: f32,
     pub crash_damage: f32,
 
+    /// How long a pack of crystals takes to fade from its full worth to nothing.
     pub crystal_ticks: u16,
+    /// How long a boost cell lies around.
+    pub cell_ticks: u16,
     pub pickup_radius: f32,
 
     pub upgrade_cost: u32,
@@ -394,7 +398,7 @@ impl Default for Config {
                 Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
                 Body { hull: 1.6, ram_deal: 5.0, ram_take: 0.25 },
             ],
-            shot_falloff: 0.4,
+            shot_full: 0.6,
             ammo: 30.0,
             ammo_regen: 4.0,
             ammo_damage: 1.0,
@@ -427,7 +431,8 @@ impl Default for Config {
             drone_damage: 1.0,
             rock_speed: 12.0,
             crash_damage: 0.15,
-            crystal_ticks: 600,
+            crystal_ticks: 300,
+            cell_ticks: 600,
             pickup_radius: 26.0,
             upgrade_cost: 10,
             respawn_ticks: 90,
@@ -602,8 +607,11 @@ pub struct Rock {
 pub struct Crystal {
     pub pos: Vec3,
     pub ticks: u16,
-    /// How many crystals are in this pack; a ship without room for all of it takes what fits.
+    /// How many crystals are in this pack now; a ship without room for all of it takes what fits.
+    /// A pack fades: it is worth less every moment it lies there, down to nothing.
     pub value: u32,
+    /// What the pack was worth when it dropped.
+    pub full: u32,
     /// A boost cell refills the boost tank instead of going into the cargo hold.
     pub boost_cell: bool,
 }
@@ -625,10 +633,11 @@ pub struct Shot {
 }
 
 impl Shot {
-    /// Damage fades linearly to `falloff` of the muzzle damage over the shot's range.
-    pub fn damage_now(&self, falloff: f32) -> f32 {
+    /// Full damage over the first `full` share of the shot's range, then fading evenly to
+    /// nothing at the end of it.
+    pub fn damage_now(&self, full: f32) -> f32 {
         let flown = 1.0 - self.ticks as f32 / self.life.max(1) as f32;
-        self.damage * (1.0 - (1.0 - falloff) * flown)
+        self.damage * ((1.0 - flown) / (1.0 - full).max(1e-3)).clamp(0.0, 1.0)
     }
 }
 
@@ -684,6 +693,8 @@ pub enum Event {
     /// `by` is None when a base turret did it.
     Hit { by: Option<u16>, victim: u16, damage: f32 },
     Crashed { ship: u16, damage: f32 },
+    /// Damage got past the shields (and the hold) and took this much off a ship's hull.
+    HullLost { ship: u16, amount: f32 },
     Killed { by: Option<u16>, victim: u16 },
 }
 
@@ -896,15 +907,16 @@ impl World {
         ship.last_hit_by = None;
     }
 
-    /// Shields soak up damage first, then the crystals in the hold, and only then the hull.
-    /// Returns how many crystals were knocked out of the hold.
-    fn hurt(cfg: &Config, ship: &mut Ship, damage: f32) -> u32 {
+    /// Shields soak up damage first; then, when an enemy did it, the crystals in the hold; and
+    /// only then the hull. Returns how many crystals were knocked out of the hold. Flying into
+    /// a rock is no attack: it goes from the shields straight to the hull.
+    fn hurt(cfg: &Config, ship: &mut Ship, damage: f32, attacked: bool) -> u32 {
         let absorbed = ship.shield.min(damage);
         ship.shield -= absorbed;
         ship.shield_wait = cfg.shield_delay;
         let mut left = damage - absorbed;
         let mut dropped = 0;
-        if cfg.crystal_armor > 0.0 && ship.cargo > 0 && left > 0.0 {
+        if attacked && cfg.crystal_armor > 0.0 && ship.cargo > 0 && left > 0.0 {
             ship.spill += left / cfg.crystal_armor;
             let loose = ship.spill.floor();
             if loose as u32 > ship.cargo {
@@ -949,7 +961,7 @@ impl World {
         }
         let away = geo::bearing(at, self.rng.range(0.0, std::f32::consts::TAU));
         let pos = geo::travel(self.cfg.radius, at, away, self.rng.range(near, far));
-        self.crystals.push(Crystal { pos, ticks: self.cfg.crystal_ticks, value, boost_cell: false });
+        self.crystals.push(Crystal { pos, ticks: self.cfg.crystal_ticks, value, full: value, boost_cell: false });
     }
 
     /// Advances the match by one tick. `actions[i]` drives `ships[i]`.
@@ -1254,11 +1266,11 @@ impl World {
         let rock_field = &self.rock_field;
 
         // Shots: move, then hit the first rock or enemy ship they touch.
-        let falloff = self.cfg.shot_falloff;
+        let full = self.cfg.shot_full;
         for shot in &mut self.shots {
             (shot.pos, shot.vel) = geo::advance(radius, shot.pos, shot.vel, dt);
             shot.ticks -= 1;
-            let damage = shot.damage_now(falloff);
+            let damage = shot.damage_now(full);
             let touched = if rock_field.any_near(radius, shot.pos, 0.0) {
                 self.rocks.iter_mut().find(|r| r.hp > 0.0 && geo::chord(radius, r.pos, shot.pos) < self.cfg.rock_radius * r.size as f32)
             } else {
@@ -1294,8 +1306,12 @@ impl World {
                 s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.radius_of(s)
             });
             if let Some(v) = hit {
-                let dropped = Self::hurt(&self.cfg, &mut self.ships[v], damage);
+                let hull = self.ships[v].hull;
+                let dropped = Self::hurt(&self.cfg, &mut self.ships[v], damage, true);
                 spilled.push((self.ships[v].pos, dropped));
+                if self.ships[v].hull < hull {
+                    self.events.push(Event::HullLost { ship: v as u16, amount: hull - self.ships[v].hull });
+                }
                 self.ships[v].last_hit_by = shot.owner;
                 self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage });
                 shot.ticks = 0;
@@ -1351,8 +1367,11 @@ impl World {
                 if closing < 0.0 {
                     ship.vel = ship.vel.sub(n.scale(1.5 * closing));
                     let damage = -closing * self.cfg.crash_damage;
-                    let dropped = Self::hurt(&self.cfg, ship, damage);
-                    spilled.push((ship.pos, dropped));
+                    let hull = ship.hull;
+                    Self::hurt(&self.cfg, ship, damage, false);
+                    if ship.hull < hull {
+                        self.events.push(Event::HullLost { ship: i as u16, amount: hull - ship.hull });
+                    }
                     ship.last_hit_by = None;
                     self.events.push(Event::Crashed { ship: i as u16, damage });
                     // The rock takes the blow too: flying into rocks breaks them faster than
@@ -1394,8 +1413,12 @@ impl World {
                         ship.vel = ship.vel.sub(n.scale(0.75 * closing));
                         if enemies {
                             let damage = -closing * self.cfg.ram_damage * blow;
-                            let dropped = Self::hurt(&self.cfg, ship, damage);
+                            let hull = ship.hull;
+                            let dropped = Self::hurt(&self.cfg, ship, damage, true);
                             spilled.push((ship.pos, dropped));
+                            if ship.hull < hull {
+                                self.events.push(Event::HullLost { ship: k as u16, amount: hull - ship.hull });
+                            }
                             ship.last_hit_by = Some(other as u16);
                             self.events.push(Event::Crashed { ship: k as u16, damage });
                         }
@@ -1422,7 +1445,7 @@ impl World {
             if self.rng.unit() < self.cfg.boost_cell_chance {
                 let away = geo::bearing(pos, self.rng.range(0.0, std::f32::consts::TAU));
                 let at = geo::travel(radius, pos, away, self.cfg.rock_radius * 1.5);
-                self.crystals.push(Crystal { pos: at, ticks: self.cfg.crystal_ticks, value: 0, boost_cell: true });
+                self.crystals.push(Crystal { pos: at, ticks: self.cfg.cell_ticks, value: 0, full: 0, boost_cell: true });
             }
             self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
         }
@@ -1434,6 +1457,14 @@ impl World {
         let drones = &self.drones;
         self.crystals.retain_mut(|c| {
             c.ticks -= 1;
+            if !c.boost_cell {
+                // Worth its full value when it drops, nothing when its time is up, evenly in between.
+                let left = (c.full as u64 * c.ticks as u64).div_ceil(cfg.crystal_ticks.max(1) as u64);
+                c.value = c.value.min(left as u32);
+                if c.value == 0 {
+                    return false;
+                }
+            }
             let mut best: Option<(usize, f32)> = None;
             // A drone gathers crystals (not boost cells) for its owner, as long as the owner has room.
             if !c.boost_cell {

@@ -221,8 +221,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
     for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
             // Boost cells are larger and orange.
-            // A pack is drawn at its true size, which is what a ship has to reach; never too small to see.
-            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { ((world.cfg.crystal_radius(crystal.value) * scale).max(1.8), rgb(0x8ef0c8)) };
+            // Bigger packs are drawn bigger, but always smaller than a ship; a fading pack shrinks.
+            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.4 + (crystal.value as f32).sqrt() * 0.3, rgb(0x8ef0c8)) };
             dot(window, p, half, color);
         }
     }

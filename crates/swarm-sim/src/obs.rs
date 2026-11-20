@@ -39,8 +39,8 @@ pub struct Near {
     pub hp: f32,
     /// An enemy ship or shot. Among crystals it marks a boost cell.
     pub enemy: bool,
-    /// Where another ship is pointing, as a unit vector in this ship's frame;
-    /// zero for everything that is not a ship.
+    /// Where another ship is pointing, as a unit vector in this ship's frame. For a crystal
+    /// pack, x is the share of its time it has left before it fades to nothing. Zero otherwise.
     pub facing: Vec2,
     /// For a ship: its shields and the crystals it carries, each as a share of what it can hold.
     pub shield: f32,
@@ -351,7 +351,11 @@ impl<'a> Scan<'a> {
         }
         let mut crystals = List::default();
         for c in &world.crystals {
-            if let Some(seen) = see(self.out_of_sight(me.pos, c.pos), c.pos, Vec3::default(), 0.0, c.value as f32 / biggest_pack, c.boost_cell, None) {
+            if let Some(mut seen) = see(self.out_of_sight(me.pos, c.pos), c.pos, Vec3::default(), 0.0, c.value as f32 / biggest_pack, c.boost_cell, None) {
+                // How much of its time a fading pack has left: the sooner it is reached, the more it is worth.
+                if !c.boost_cell {
+                    seen.facing.x = c.ticks as f32 / cfg.crystal_ticks.max(1) as f32;
+                }
                 crystals.offer(seen, seen.dist);
             }
         }
@@ -369,7 +373,7 @@ impl<'a> Scan<'a> {
         }
         let mut shots = List::default();
         for s in world.shots.iter().filter(|s| s.team != me.team) {
-            if let Some(seen) = see(self.out_of_sight(me.pos, s.pos), s.pos, s.vel, 0.0, s.damage_now(cfg.shot_falloff) / cfg.hull, true, None) {
+            if let Some(seen) = see(self.out_of_sight(me.pos, s.pos), s.pos, s.vel, 0.0, s.damage_now(cfg.shot_full) / cfg.hull, true, None) {
                 shots.offer(seen, seen.dist);
             }
         }

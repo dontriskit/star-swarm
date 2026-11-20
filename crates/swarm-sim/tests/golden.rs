@@ -1,7 +1,7 @@
 //! Guards against the observation or the simulation changing by accident: bots, trained
 //! policies and the live view depend on every number. A change made for speed has to
 //! reproduce these hashes bit for bit; a change to the rules or to what ships observe means
-//! recording them again, on purpose. (Last recorded when the view widened.)
+//! recording them again, on purpose. (Last recorded when crystal packs began to fade and shots got a full-power range.)
 use swarm_sim::*;
 
 /// The observation fingerprint and the state hash the match ends in.
@@ -50,6 +50,6 @@ fn observations_and_the_match_are_what_they_were() {
     assert_eq!(state, RECORDED_STATE, "the match itself went differently; got state {state:#018x}");
 }
 
-const RECORDED: u64 = 0x4dc3bfcb8e6a7d25;
+const RECORDED: u64 = 0xb3695e58c4157d42;
 /// Recorded from the straightforward step function; a faster one has to end in the same state.
-const RECORDED_STATE: u64 = 0xa3dfdb0588350870;
+const RECORDED_STATE: u64 = 0x3ff5106fbc69da66;

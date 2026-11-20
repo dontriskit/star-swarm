@@ -29,12 +29,15 @@ for i in "${!stages[@]}"; do
   # At full starter reward: 0.4 for every crystal picked up (a small pack pays about 4.5, an
   # XXL one about 50), 0.2 per size for a rock broken, 0.2 per point of damage to a small rock
   # (2 for breaking one), 1 for anything bought.
+  # Hull is precious: every point lost costs 0.3 (shields are free to spend), so flying into
+  # rocks pays only while the shields hold. A pack fades to nothing in 10 s, so the 0.4 a
+  # crystal is paid on what is left of it.
   # Fighting: dying costs 10; damage to an enemy ship pays 0.05 a point, and 0.3 more while the
   # team is attacking and the attacker has the upper hand; a kill pays 5.
   $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
     --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
-    --reward win=50 --reward lose=50 --reward hurt=0.02 \
+    --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
     --reward time=0.00083 --reward draw=30 \
     --reward deposit=0.1 --reward base_level=25 \
     --reward death=10 --reward hit=0.05 --reward edge=0.3 --reward kill=5 \

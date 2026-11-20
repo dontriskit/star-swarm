@@ -352,9 +352,10 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
         }
         None
     };
-    let (near, far) = (hit_from(60.0).unwrap(), hit_from(420.0).unwrap());
-    assert!(near > 0.9 && near <= 1.0, "point blank did {near}");
-    assert!(far < 0.6 && far >= 0.4, "at the edge of its range did {far}");
+    // Full power over the first 60% of the range (282 of 470), then fading to nothing.
+    let (near, middle, far) = (hit_from(60.0).unwrap(), hit_from(250.0).unwrap(), hit_from(420.0).unwrap());
+    assert_eq!((near, middle), (1.0, 1.0), "full power inside the full-power range");
+    assert!(far < 0.4 && far > 0.05, "near the edge of its range did {far}");
     assert_eq!(hit_from(600.0), None, "a basic laser reaches 470");
 }
 
@@ -879,6 +880,52 @@ fn flying_into_a_rock_damages_it_and_costs_shield() {
     let lost = world.cfg.shield_max(&world.ships[0]) - world.ships[0].shield;
     assert!(lost > 10.0 && lost < blow, "the ship lost {lost} shield");
     assert_eq!(world.ships[0].hull, 100.0, "the shield took all of it");
+
+    // With the shields gone the hull pays, and the hold is left alone: a rock is no attacker.
+    let cfg = Config { teams: 1, ships_per_team: 1, rock_count: 0, ..Config::default() };
+    let mut world = World::new(cfg, 2);
+    world.ships[0].pos = POLE;
+    let spot = world.offset(POLE, 0.3, 250.0);
+    world.face(0, spot);
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: 250.0, last_hit_by: None });
+    world.ships[0].shield = 0.0;
+    world.ships[0].shield_wait = u16::MAX;
+    world.ships[0].cargo = 40;
+    let mut lost = 0.0;
+    for _ in 0..120 {
+        let events = world.step(&go);
+        lost += events.iter().map(|e| if let Event::HullLost { amount, .. } = e { *amount } else { 0.0 }).sum::<f32>();
+        if events.iter().any(|e| matches!(e, Event::Crashed { .. })) {
+            break;
+        }
+    }
+    assert!(world.ships[0].hull < 100.0);
+    assert!((100.0 - world.ships[0].hull - lost).abs() < 1e-3, "the lost hull is reported");
+    assert_eq!(world.ships[0].cargo, 40, "flying into a rock knocks no crystals out");
+    assert!(world.crystals.is_empty());
+}
+
+#[test]
+fn a_pack_of_crystals_fades_to_nothing() {
+    let cfg = Config { teams: 1, ships_per_team: 1, rock_count: 0, ..Config::default() };
+    let mut world = World::new(cfg, 3);
+    let life = world.cfg.crystal_ticks;
+    assert_eq!(life, 300, "ten seconds");
+    let far = world.offset(world.ships[0].pos, 0.0, 600.0);
+    world.crystals.push(Crystal { pos: far, ticks: life, value: 100, full: 100, boost_cell: false });
+    let idle = vec![Action::default(); 1];
+    let mut last = 100;
+    for tick in 1..life {
+        world.step(&idle);
+        let value = world.crystals[0].value;
+        assert!(value <= last && value > 0);
+        last = value;
+        if tick == life / 2 {
+            assert_eq!(value, 50, "half its worth at half its time");
+        }
+    }
+    world.step(&idle);
+    assert!(world.crystals.is_empty(), "gone when its time is up");
 }
 
 #[test]
@@ -925,7 +972,7 @@ fn a_ship_passing_close_to_a_pack_picks_it_up() {
         let mut world = World::new(cfg.clone(), 2);
         world.ships[0].pos = POLE;
         world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
-        world.crystals.push(Crystal { pos: world.offset(POLE, 0.3, gap), ticks: 100, value, boost_cell: false });
+        world.crystals.push(Crystal { pos: world.offset(POLE, 0.3, gap), ticks: 100, value, full: 1_000_000, boost_cell: false });
         world.step(&[Action::default(); 2]);
         world.ships[0].cargo
     };
@@ -1018,7 +1065,7 @@ fn the_hull_mends_from_crystals_first_and_in_the_base() {
     world.ships[0].pos = POLE;
     world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
     world.ships[0].hull = 70.0;
-    world.crystals.push(Crystal { pos: POLE, ticks: 100, value: 50, boost_cell: false });
+    world.crystals.push(Crystal { pos: POLE, ticks: 100, value: 50, full: 1_000_000, boost_cell: false });
     let taken: u32 = world.step(&[Action::default(); 2]).iter().map(|e| if let Event::Collected { ship: 0, amount } = e { *amount } else { 0 }).sum();
     assert_eq!((world.ships[0].hull, world.ships[0].cargo, taken), (100.0, 20, 50));
     // Out in the open nothing else mends it.
@@ -1029,7 +1076,7 @@ fn the_hull_mends_from_crystals_first_and_in_the_base() {
     assert_eq!(world.ships[0].hull, 70.0);
     // A ship with a full hold still takes crystals while its hull needs them.
     world.ships[0].cargo = world.cfg.cargo_max(&world.ships[0]);
-    world.crystals.push(Crystal { pos: POLE, ticks: 100, value: 10, boost_cell: false });
+    world.crystals.push(Crystal { pos: POLE, ticks: 100, value: 10, full: 1_000_000, boost_cell: false });
     world.step(&[Action::default(); 2]);
     assert_eq!(world.ships[0].hull, 80.0);
 
@@ -1060,6 +1107,7 @@ fn a_destroyed_ship_comes_back_whole_and_empty_but_keeps_its_points() {
     let idle = [Action::default(); 2];
     world.step(&idle);
     assert!(!world.ships[0].alive);
+    assert!(world.crystals.iter().any(|c| c.value == 40), "half of what it carried was left behind as a pack");
     for _ in 0..world.cfg.respawn_ticks + 1 {
         world.step(&idle);
     }
@@ -1071,7 +1119,6 @@ fn a_destroyed_ship_comes_back_whole_and_empty_but_keeps_its_points() {
     assert_eq!(ship.levels[Upgrade::Attack as usize], 2, "and so are upgrades, while it has lives left");
     assert_eq!(observe(&world, 0).drones, 0, "its drones are no longer its own");
     assert_eq!(world.drones.len(), 1, "they stay where they were, for anyone to take");
-    assert!(world.crystals.iter().any(|c| c.value == 40), "half of what it carried was left behind as a pack");
 }
 
 #[test]
