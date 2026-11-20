@@ -241,14 +241,17 @@ def train(args):
     # every match. Against "scripted" only team 0 is ours.
     mirror = args.opponent == "mirror"
     self_play = args.opponent in ("self", "mirror")
-    env = make_env(args, args.envs, args.seed, learners=args.teams if self_play else 1)
+    # With --bots, that many of the teams (the last ones) are flown by the scripted bot under
+    # its scripted commander, which raids; the rest are ours.
+    flown = args.teams - args.bots if self_play else 1
+    env = make_env(args, args.envs, args.seed, learners=flown)
     # One of the training matches is streamed for `swarm-gui --watch` to show live.
     env.stream(str(out / "live.swl"))
     # And the matches in which the team being trained got somewhere are kept, for `swarm-gui --wins`.
     env.keep_wins(str(out / "wins"))
     team = torch.arange(env.agents, device=device) % env.ships // args.ships_per_team
-    ours = (team >= 0 if mirror else team == 0).nonzero().squeeze(-1)
-    theirs = (team < 0 if mirror else team != 0).nonzero().squeeze(-1)
+    ours = (team < flown if mirror else team == 0).nonzero().squeeze(-1)
+    theirs = (team < 0 if mirror else (team != 0) & (team < flown)).nonzero().squeeze(-1)
     n, steps = len(ours), args.steps
     everyone = torch.zeros(env.agents, len(HEADS), dtype=torch.long, device=device)
     rival = Policy(args.hidden).to(device)
@@ -459,6 +462,7 @@ if __name__ == "__main__":
     p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")
     p.add_argument("--opponent", default="self", choices=["self", "mirror", "scripted"],
                    help="who flies the other teams in training: earlier copies of the policy, or the scripted bot")
+    p.add_argument("--bots", type=int, default=0, help="with self or mirror: how many of the teams the scripted bot flies instead")
     p.add_argument("--snapshot-every", type=int, default=10, help="updates between new frozen copies for self-play")
     p.add_argument("--snapshots", type=int, default=6, help="how many frozen copies to keep")
     p.add_argument("--reward", action="append", default=[], metavar="NAME=WEIGHT", help="override a reward weight, e.g. --reward buy=4")
