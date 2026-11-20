@@ -306,7 +306,11 @@ pub struct Config {
 
     pub respawn_ticks: u16,
     pub kill_score: u32,
+    /// How far a ship sees clearly: everything in this range is observed in detail, enough to aim.
     pub view_range: f32,
+    /// How far a ship's long-range radar reaches: it shows where enemy ships are and in which
+    /// directions the rocks lie, without any detail.
+    pub radar_range: f32,
 }
 
 impl Default for Config {
@@ -394,6 +398,7 @@ impl Default for Config {
             respawn_ticks: 90,
             kill_score: 20,
             view_range: 600.0,
+            radar_range: 1500.0,
         }
     }
 }

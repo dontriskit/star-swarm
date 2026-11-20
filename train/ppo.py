@@ -197,7 +197,16 @@ def train(args):
     past = []
     policy = Policy(args.hidden).to(device)
     if args.init:
-        policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
+        saved = torch.load(args.init, map_location=device)["model"]
+        first = "trunk.0.weight"
+        if saved[first].shape[1] < OBS_LEN:
+            # The observation has grown since this policy was saved. New inputs are added at the
+            # end, so the old policy carries over with zero weights on them: it behaves exactly
+            # as before until training teaches it to use them.
+            grown = torch.zeros(saved[first].shape[0], OBS_LEN, device=device)
+            grown[:, : saved[first].shape[1]] = saved[first]
+            saved[first] = grown
+        policy.load_state_dict(saved)
         forget(policy, args.forget, device, args.hidden)
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
 

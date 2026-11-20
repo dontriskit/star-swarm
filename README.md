@@ -14,6 +14,7 @@ A team space game where a human commands a fleet of AI-flown ships. Ships break 
 - Ships take up room: they bounce off each other, and enemies that collide take damage by how fast they met. A Ram deals five times the ramming damage and takes a quarter; a Lancer deals half and takes one and a half times.
 - Every ship has a mode. Farming is the default and defending the base is a ship's own choice. Attacking is a team decision: when at least half of a team's living ships pick an attack, the whole team attacks the base most of them picked. A human commander's orders replace the modes of their team.
 - Team radar: a ship knows where every teammate is, how damaged it is and what mode it is in, and it is told about enemies a teammate can see.
+- Long-range radar: beyond its clear sight (600) and up to 1500 away a ship still knows where enemy ships are, though not enough to aim, and how much rock lies in each of eight directions around it.
 - Fog of war: beyond its own view range a ship sees nothing else, and a team knows an enemy base's health only from the last time one of its ships was near it. When you play, the window shows only what your team sees.
 - Once its shields are down, a ship loses the crystals in its hold before it loses hull; they fall out and anyone can pick them up.
 - Shots have a range and do less damage the farther they fly (40% at the end of their range). Every laser fired costs one round of ammo, which comes back over time.

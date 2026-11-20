@@ -121,8 +121,13 @@ impl ScriptedBot {
         let effort = |r: &&Near| r.dist + r.hp * cfg.rock_hp_of(crate::sim::ROCK_SIZES) * 12.0 / cfg.weapon(obs.class).damage.max(0.1);
         match obs.rocks.iter().min_by(|a, b| effort(a).total_cmp(&effort(b))) {
             Some(rock) => Self::shoot(rock, 140.0, obs, cfg),
-            // Nothing in sight: cruise until something shows up.
-            None => Action { thrust: true, ..Action::default() },
+            // Nothing in sight: head for the side the long-range radar shows the most rock on.
+            None => {
+                let best = (0..obs.rock_radar.len()).max_by(|a, b| obs.rock_radar[*a].total_cmp(&obs.rock_radar[*b])).unwrap_or(0);
+                let angle = (best as f32 + 0.5) * std::f32::consts::TAU / obs.rock_radar.len() as f32;
+                let angle = if angle > std::f32::consts::PI { angle - std::f32::consts::TAU } else { angle };
+                Action { thrust: angle.abs() < 0.9, turn: Self::turn_to(angle), ..Action::default() }
+            }
         }
     }
 

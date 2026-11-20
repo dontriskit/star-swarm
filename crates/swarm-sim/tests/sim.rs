@@ -825,3 +825,31 @@ fn a_ship_passing_close_to_a_pack_picks_it_up() {
     assert_eq!(grab(40.0, 49), 49);
     assert_eq!(grab(46.0, 49), 0);
 }
+
+#[test]
+fn long_range_radar_shows_far_enemies_and_which_way_the_rocks_are() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 4);
+    let far_ahead = world.offset(POLE, 0.3, 1000.0);
+    world.ships[0].pos = POLE;
+    world.face(0, far_ahead);
+    // An enemy 1000 away: beyond clear sight (600), inside radar range (1500).
+    world.ships[1].pos = far_ahead;
+    let seen = observe(&world, 0);
+    assert!(seen.ships.is_empty(), "too far to see clearly or aim at");
+    assert_eq!(seen.contacts.len(), 1);
+    assert!((seen.contacts[0].x - 1000.0).abs() < 1.0 && seen.contacts[0].y.abs() < 1.0, "dead ahead: {:?}", seen.contacts[0]);
+    // Beyond radar range it is not on the radar at all.
+    world.ships[1].pos = world.offset(POLE, 0.3, 1700.0);
+    assert!(observe(&world, 0).contacts.is_empty());
+
+    // Rocks: a big one far ahead and a small one to the left show up as weight in those directions.
+    world.rocks.push(Rock { pos: world.offset(POLE, 0.3, 1200.0), vel: Vec3::default(), size: 5, hp: 250.0, last_hit_by: None });
+    let to_the_left = world.offset(POLE, 0.3 + std::f32::consts::FRAC_PI_2, 900.0);
+    world.rocks.push(Rock { pos: to_the_left, vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None });
+    let radar = observe(&world, 0).rock_radar;
+    assert_eq!(radar[0] + radar[7], 5.0, "the big rock is dead ahead: {radar:?}");
+    assert_eq!(radar[1] + radar[2], 1.0, "the small rock is to the left: {radar:?}");
+    assert_eq!(radar.iter().sum::<f32>(), 6.0);
+    assert!(observe(&world, 0).rocks.is_empty(), "neither is close enough to see clearly");
+}

@@ -12,12 +12,16 @@ const BASE_LEN: usize = 4;
 /// How many teammates a ship's team radar shows (the nearest ones).
 pub const MATES: usize = 6;
 const MATE_LEN: usize = 4 + PLANS.len();
-/// How many enemies spotted by teammates, out of the ship's own sight, its radar shows.
+/// How many enemies out of the ship's own sight its radar shows: those within its long-range
+/// radar and those a teammate can see.
 pub const CONTACTS: usize = 4;
+/// The long-range radar reports rocks by direction: this many sectors around the ship,
+/// starting dead ahead and going round to the left.
+pub const SECTORS: usize = 8;
 const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
-pub const OBS_LEN: usize = SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN;
+pub const OBS_LEN: usize = SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -107,9 +111,13 @@ pub struct Observation {
     pub enemy_bases: List<BaseObs, BASES>,
     /// Team radar: living teammates, nearest first, at most [`MATES`].
     pub mates: List<MateObs, MATES>,
-    /// Team radar: enemies some teammate can see but this ship cannot, in its own frame,
-    /// nearest first, at most [`CONTACTS`].
+    /// Radar contacts: enemies beyond this ship's clear sight that its long-range radar picks
+    /// up or that a teammate can see, in its own frame, nearest first, at most [`CONTACTS`].
+    /// Position only, not enough to aim at.
     pub contacts: List<Vec2, CONTACTS>,
+    /// Long-range radar: how much rock lies in each direction within radar range (the sizes of
+    /// the rocks added up), by sector: [`SECTORS`] of them, from dead ahead round to the left.
+    pub rock_radar: [f32; SECTORS],
     /// Nearest first, at most [`NEAR`] each, within the view range.
     pub rocks: List<Near, NEAR>,
     pub crystals: List<Near, NEAR>,
@@ -274,16 +282,39 @@ impl<'a> Scan<'a> {
             let at = world.to_frame(me.pos, me.fwd, s.pos);
             radar.offer(MateObs { pos: at, dist: at.len(), hull: s.hull.max(0.0) / cfg.hull_max(s), mode: s.vote }, at.len());
         }
-        // Enemies in a teammate's sight but not in this ship's own.
+        // Enemies beyond this ship's clear sight: on its own long-range radar, or in a teammate's sight.
         let mut contacts = List::default();
         for (e, enemy) in world.ships.iter().enumerate() {
             if !enemy.alive || enemy.team == me.team || !(self.apart[ship * n + e] > cfg.view_range) {
                 continue;
             }
-            if mates().any(|m| self.apart[m * n + e] < cfg.view_range) {
+            if self.apart[ship * n + e] < cfg.radar_range || mates().any(|m| self.apart[m * n + e] < cfg.view_range) {
                 let at = world.to_frame(me.pos, me.fwd, enemy.pos);
                 contacts.offer(at, at.len());
             }
+        }
+
+        // Long-range radar for rocks: no positions, just how much rock lies which way. The
+        // sector comes from which side of the nose and of the left wing the rock is on.
+        let left = me.pos.cross(me.fwd);
+        let mut rock_radar = [0.0f32; SECTORS];
+        for r in &world.rocks {
+            if !geo::closer(cfg.radius, me.pos, r.pos, cfg.radar_range) {
+                continue;
+            }
+            let (ahead, aside) = (r.pos.dot(me.fwd), r.pos.dot(left));
+            // Octants, counter-clockwise from dead ahead: each quadrant split by which axis dominates.
+            let sector = match (ahead >= 0.0, aside >= 0.0, ahead.abs() >= aside.abs()) {
+                (true, true, true) => 0,
+                (true, true, false) => 1,
+                (false, true, false) => 2,
+                (false, true, true) => 3,
+                (false, false, true) => 4,
+                (false, false, false) => 5,
+                (true, false, false) => 6,
+                (true, false, true) => 7,
+            };
+            rock_radar[sector] += r.size as f32;
         }
 
         let mut rocks = List::default();
@@ -357,6 +388,7 @@ impl<'a> Scan<'a> {
             enemy_bases,
             mates: radar,
             contacts,
+            rock_radar,
             rocks,
             crystals,
             ships,
@@ -469,6 +501,9 @@ impl Observation {
                 }
             }
         }
+        // The radar sectors go last: a policy trained before they existed can be widened by
+        // adding inputs at the end. 40 is a lot of rock for one sector.
+        put(&self.rock_radar.map(|w| (w / 40.0).min(2.0)));
         debug_assert_eq!(at, OBS_LEN);
     }
 }

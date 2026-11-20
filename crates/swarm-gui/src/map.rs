@@ -199,16 +199,23 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
         }
     }
 
-    // How far each ship of the blue team sees. Together the circles are the team's radar.
+    // Around each ship of the blue team: the inner circle is how far it sees clearly, the faint
+    // outer one how far its long-range radar reaches.
     for eye in &eyes {
+        let far = ring(world, &view, *eye, world.cfg.radar_range, 64);
+        if far.len() >= 3 {
+            stroke_shape(window, &far, 1.0, rgba(0x4c9aff16));
+        }
         let reach = ring(world, &view, *eye, world.cfg.view_range, 48);
         if reach.len() >= 3 {
             fill_shape(window, &reach, rgba(0x4c9aff0a));
             stroke_shape(window, &reach, 1.0, rgba(0x4c9aff38));
         }
     }
-    // On the radar: anything within sight of one of the blue team's living ships.
+    // Seen clearly: within sight of one of the blue team's living ships. On the radar: within
+    // the long range of one of them, which gives a position but no detail.
     let on_radar = |p: Vec3| eyes.iter().any(|e| geo::chord(world.cfg.radius, *e, p) < world.cfg.view_range);
+    let blip = |p: Vec3| eyes.iter().any(|e| geo::chord(world.cfg.radius, *e, p) < world.cfg.radar_range);
 
     for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
@@ -242,8 +249,15 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
         }
     }
 
-    for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive && (s.team == MY_TEAM || in_sight(s.pos))) {
+    for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive) {
         let Some(center) = view.at(ship.pos) else { continue };
+        if ship.team != MY_TEAM && !in_sight(ship.pos) {
+            // Hidden by the fog of war; the long-range radar still shows it as a blip.
+            if blip(ship.pos) {
+                stroke_shape(window, &polygon(center, 4.0, 4, 0.0), 1.0, team_color(ship.team));
+            }
+            continue;
+        }
         // Ships are drawn larger than life so they stay readable; higher tiers are bigger.
         let radius = (world.cfg.radius_of(ship) * scale * 1.8).max(7.0 * world.cfg.radius_of(ship) / world.cfg.ship_radius);
         let (fx, fy) = view.heading(ship.fwd);
@@ -256,7 +270,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
         let spotted = ship.team != MY_TEAM && on_radar(ship.pos);
         let mut color = team_color(ship.team);
         if ship.team != MY_TEAM && !spotted {
-            color.a = 0.4;
+            // Not seen clearly by the blue team: dimmer on its long-range radar, dimmest off it.
+            color.a = if blip(ship.pos) { 0.6 } else { 0.3 };
         }
         fill_shape(window, &[corner(0.0, 1.0), corner(2.5, 0.9), corner(-2.5, 0.9)], color);
         if spotted {
