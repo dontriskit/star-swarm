@@ -19,9 +19,9 @@ p.add_argument("out")
 p.add_argument("--seed", type=int, default=7)
 p.add_argument("--frame-skip", type=int, default=3)
 p.add_argument("--teams", type=int, default=3)
-p.add_argument("--ships-per-team", type=int, default=5)
-p.add_argument("--rocks", type=int, default=420)
-p.add_argument("--radius", type=float, default=1500.0)
+p.add_argument("--ships-per-team", type=int, default=7)
+p.add_argument("--rocks", type=int, default=270)
+p.add_argument("--radius", type=float, default=1200.0)
 p.add_argument("--max-ticks", type=int, default=18000)
 args = p.parse_args()
 
@@ -44,7 +44,7 @@ with torch.no_grad():
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0007")
+    f.write(b"SWRP0008")
     f.write(struct.pack("<QfHHII", args.seed, args.radius, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
     f.write(struct.pack("<Q", len(frames) // 2))
     f.write(frames)

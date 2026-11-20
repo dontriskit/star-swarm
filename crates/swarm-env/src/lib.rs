@@ -66,7 +66,7 @@ pub struct EpisodeStats {
     pub upgrades: [f32; 8],
     /// Share of team 0's ships at tier 1, 2 and 3 at the end.
     pub tiers: [f32; 3],
-    /// Share of the match team 0 spent under each plan, indexed by [`swarm_sim::Plan`]; the rest it had none.
+    /// Share of ship-time team 0 spent in each mode, indexed by [`swarm_sim::Plan`]; the rest in none.
     pub plans: [f32; 4],
 }
 
@@ -115,7 +115,7 @@ struct Slot {
     tape: Option<Vec<Tape>>,
     /// Whether the match in progress has been on the tape from its first tick.
     on_tape: bool,
-    /// Ticks team 0 has spent under each plan in the match in progress.
+    /// Ship-ticks team 0 has spent in each mode in the match in progress.
     planned: [u32; 4],
     world: World,
     commander: ScriptedCommander,
@@ -328,8 +328,8 @@ impl VecEnv {
                     }
                     // An upgrade is bought once, not once per held tick.
                     held.iter_mut().for_each(|a| a.buy = None);
-                    if let Some(plan) = slot.world.plans[0] {
-                        slot.planned[plan as usize] += 1;
+                    for mode in slot.world.ships.iter().filter(|s| s.team == 0).filter_map(|s| s.vote) {
+                        slot.planned[mode as usize] += 1;
                     }
                     if taped && slot.world.tick % LIVE_HASH_EVERY == 0 {
                         slot.tape.as_mut().unwrap().push(Tape::Hash(slot.world.state_hash()));
@@ -339,7 +339,7 @@ impl VecEnv {
                             (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win);
                         }
                         let mut stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
-                        stats.plans = slot.planned.map(|ticks| ticks as f32 / slot.world.tick.max(1) as f32);
+                        stats.plans = slot.planned.map(|ticks| ticks as f32 / (slot.world.tick.max(1) as usize * per_team) as f32);
                         slot.planned = [0; 4];
                         slot.episode += 1;
                         let next = Self::seed_of(seed, slot.index, slot.episode, envs);
@@ -434,8 +434,9 @@ mod tests {
         let agents = env.agents();
         let mut mask = vec![0u8; agents];
         env.controlled(&mut mask);
-        // 3 teams of 5: the first 5 ships of each match are the learner's.
-        assert_eq!(&mask[..15], &[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // 3 teams of 7: the first 7 ships of each match are the learner's.
+        assert_eq!(mask[..21].iter().map(|m| *m as usize).sum::<usize>(), 7);
+        assert!(mask[..7].iter().all(|m| *m == 1));
 
         // The learner team does nothing at all; the scripted teams must still play and finish matches.
         let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);

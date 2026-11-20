@@ -76,6 +76,18 @@ fn plan_name(plan: Option<Plan>) -> &'static str {
     }
 }
 
+/// How a team's ships split over the modes, e.g. "F3 O1 A2 B1" (farm, defend, attack A, attack B).
+fn mode_split(world: &World, team: u8) -> String {
+    let count = |mode: Plan| world.ships.iter().filter(|s| s.team == team && s.vote == Some(mode)).count();
+    let parts: Vec<String> = [("F", Plan::Farm), ("O", Plan::Defend), ("A", Plan::AttackA), ("B", Plan::AttackB)]
+        .iter()
+        .map(|(letter, mode)| (letter, count(*mode)))
+        .filter(|(_, n)| *n > 0)
+        .map(|(letter, n)| format!("{letter}{n}"))
+        .collect();
+    if parts.is_empty() { "brak".into() } else { parts.join(" ") }
+}
+
 fn order_name(kind: OrderKind) -> &'static str {
     match kind {
         OrderKind::Mine => "Kop",
@@ -540,7 +552,7 @@ impl Game {
                 .gap_2()
                 .child(div().size_3().rounded_sm().bg(rgb(TEAM_COLORS[t % TEAM_COLORS.len()])))
                 .child(div().flex_1().child(who))
-                .child(div().w(px(64.)).text_color(muted).child(if self.world.commanded[t] { "rozkazy" } else { plan_name(self.world.plans[t]) }))
+                .child(div().w(px(92.)).text_color(muted).child(if self.world.commanded[t] { "rozkazy".to_string() } else { mode_split(&self.world, t as u8) }))
                 .child(div().w(px(84.)).flex().justify_end().child(base_text))
                 .child(div().w(px(72.)).flex().justify_end().child(crystals.to_string()))
                 .child(div().w(px(56.)).flex().justify_end().child(self.team_score(t as u8).to_string()))
@@ -550,7 +562,7 @@ impl Game {
             .gap_2()
             .text_color(muted)
             .child(div().flex_1().child("Drużyna"))
-            .child(div().w(px(64.)).child("Plan"))
+            .child(div().w(px(92.)).child("Tryby"))
             .child(div().w(px(84.)).flex().justify_end().child("Baza (HP)"))
             .child(div().w(px(72.)).flex().justify_end().child("Kryształy"))
             .child(div().w(px(56.)).flex().justify_end().child("Wynik"));
@@ -640,13 +652,14 @@ impl Game {
                 .child(div().w(px(22.)).text_color(muted).child(format!("{}", i % cfg.ships_per_team + 1)))
                 .child(div().w(px(104.)).whitespace_nowrap().child(format!("{} T{}", class_name(ship.class), ship.tier)))
                 .child(div().w(px(40.)).text_color(muted).child(format!("♥{}", ship.lives)))
+                .child(div().w(px(52.)).text_color(muted).child(plan_name(ship.vote)))
                 .children(levels)
         });
 
         div()
             .id("panel")
             .overflow_y_scroll()
-            .w(px(540.))
+            .w(px(600.))
             .h_full()
             .flex()
             .flex_col()
@@ -756,7 +769,7 @@ impl Game {
                     .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
                     .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
             }))
-            .child(div().text_color(muted).child("Drzewko: typ, tier, życia i poziom każdego ulepszenia"))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, życia, tryb i poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
     }
@@ -772,6 +785,8 @@ impl Render for Game {
         let selected = self.selected.clone();
         let bounds = self.map_bounds.clone();
         let camera = self.camera;
+        // Playing, you see what your team sees. Watching training or a replay, you see everything.
+        let fog = self.watch.is_none() && self.playback.is_none();
         div()
             .size_full()
             .flex()
@@ -808,7 +823,7 @@ impl Render for Game {
                                 bounds.set(area);
                                 area
                             },
-                            move |area, _, window, _| map::paint(&world, &selected, camera, area, window),
+                            move |area, _, window, _| map::paint(&world, &selected, camera, fog, area, window),
                         )
                         .size_full(),
                     ),

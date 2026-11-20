@@ -19,7 +19,7 @@ from torch import nn
 
 from swarm_py import OBS_LEN, Env
 
-# Sizes of the six action heads: thrust, turn, fire, boost, buy, vote on the team plan.
+# Sizes of the six action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out to do).
 HEADS = (2, 3, 2, 2, 13, 5)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
 REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt")
@@ -121,7 +121,7 @@ def summarize(stats) -> dict:
         "classes": {name: round(float(s[:, 9 + i].mean()), 3) for i, name in enumerate(CLASSES)},
         "upgrades": {name: round(float(s[:, 14 + i].mean()), 2) for i, name in enumerate(UPGRADES)},
         "tiers": [round(float(s[:, 22 + i].mean()), 3) for i in range(3)],
-        # How much of a match the team spent under each plan it voted in.
+        # Share of ship-time spent in each mode.
         "plans": {name: round(float(s[:, 25 + i].mean()), 3) for i, name in enumerate(PLANS)},
     }
 
@@ -292,9 +292,9 @@ if __name__ == "__main__":
     # The match: the full game, three teams of five, up to five minutes, a decision every 0.1 s.
     p.add_argument("--frame-skip", type=int, default=3)
     p.add_argument("--teams", type=int, default=3)
-    p.add_argument("--ships-per-team", type=int, default=5)
-    p.add_argument("--rocks", type=int, default=420)
-    p.add_argument("--radius", type=float, default=1500.0, help="radius of the planet the match is played around")
+    p.add_argument("--ships-per-team", type=int, default=7)
+    p.add_argument("--rocks", type=int, default=270)
+    p.add_argument("--radius", type=float, default=1200.0, help="radius of the planet the match is played around")
     p.add_argument("--max-ticks", type=int, default=18000)
     p.add_argument("--base-hp", type=float, default=1000.0)
     p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")

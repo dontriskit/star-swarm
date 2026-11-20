@@ -9,9 +9,15 @@ pub const SHOTS: usize = 4;
 pub const BASES: usize = 2;
 const SELF_LEN: usize = 11 + CLASSES.len() + UPGRADES.len() + 4 + ORDER_KINDS + 2 + 2 * PLANS.len() + 2;
 const BASE_LEN: usize = 4;
+/// How many teammates a ship's team radar shows (the nearest ones).
+pub const MATES: usize = 6;
+const MATE_LEN: usize = 4 + PLANS.len();
+/// How many enemies spotted by teammates, out of the ship's own sight, its radar shows.
+pub const CONTACTS: usize = 4;
+const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
-pub const OBS_LEN: usize = SELF_LEN + BASES * BASE_LEN + (3 * NEAR + SHOTS) * NEAR_LEN;
+pub const OBS_LEN: usize = SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -29,7 +35,20 @@ pub struct Near {
     pub facing: Vec2,
 }
 
-/// A base as a ship knows it: bases are known map-wide, not only in view.
+/// A teammate on the team radar: teammates are known wherever they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MateObs {
+    /// In the ship's frame, world units.
+    pub pos: Vec2,
+    pub dist: f32,
+    /// Remaining hull as a fraction.
+    pub hull: f32,
+    /// What the teammate has set out to do.
+    pub mode: Option<Plan>,
+}
+
+/// A base as a ship knows it. Where bases are is known map-wide; an enemy base's health is
+/// what the ship's team last saw (fog of war).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BaseObs {
     /// In the ship's frame, world units.
@@ -66,14 +85,19 @@ pub struct Observation {
     pub base: BaseObs,
     pub order: OrderKind,
     pub target: Vec2,
-    /// The ship's own standing vote on the team plan.
+    /// The ship's own mode.
     pub vote: Option<Plan>,
-    /// Share of the team's living ships voting for each plan, indexed by [`Plan`].
+    /// Share of the team's living ships in each mode, indexed by [`Plan`].
     pub votes: [f32; 4],
     /// The middle of the ship's living teammates, in its own frame; zero when it has none.
     pub team: Vec2,
-    /// Enemy bases still standing, nearest first, at most [`BASES`].
+    /// Enemy bases the team believes are still standing, nearest first, at most [`BASES`].
     pub enemy_bases: Vec<BaseObs>,
+    /// Team radar: living teammates, nearest first, at most [`MATES`].
+    pub mates: Vec<MateObs>,
+    /// Team radar: enemies some teammate can see but this ship cannot, in its own frame,
+    /// nearest first, at most [`CONTACTS`].
+    pub contacts: Vec<Vec2>,
     /// Nearest first, at most [`NEAR`] each, within the view range.
     pub rocks: Vec<Near>,
     pub crystals: Vec<Near>,
@@ -110,18 +134,36 @@ pub fn observe(world: &World, ship: usize) -> Observation {
             facing: fwd.map_or(Vec2::default(), local),
         })
     };
+    // What the team last saw of each base, not necessarily how it is now.
+    let known = &world.seen_base_hp[me.team as usize];
     let base = |team: usize| {
-        let b = &world.bases[team];
-        let at = world.to_frame(me.pos, me.fwd, b.pos);
-        BaseObs { pos: at, dist: at.len(), hp: b.hp.max(0.0) / cfg.base_hp }
+        let at = world.to_frame(me.pos, me.fwd, world.bases[team].pos);
+        BaseObs { pos: at, dist: at.len(), hp: known[team] / cfg.base_hp }
     };
-    let mut enemy_bases: Vec<BaseObs> =
-        (0..world.bases.len()).filter(|t| *t != me.team as usize && world.bases[*t].alive()).map(base).collect();
+    let mut enemy_bases: Vec<BaseObs> = (0..world.bases.len()).filter(|t| *t != me.team as usize && known[*t] > 0.0).map(base).collect();
     enemy_bases.sort_by(|a, b| a.dist.total_cmp(&b.dist));
     enemy_bases.truncate(BASES);
     let mates = || world.ships.iter().enumerate().filter(|(i, s)| s.team == me.team && s.alive && *i != ship).map(|(_, s)| s);
     let voters = mates().count() + me.alive as usize;
     let middle = mates().fold(Vec3::default(), |sum, s| sum.add(s.pos));
+    let mut radar: Vec<MateObs> = mates()
+        .map(|s| {
+            let at = world.to_frame(me.pos, me.fwd, s.pos);
+            MateObs { pos: at, dist: at.len(), hull: s.hull.max(0.0) / cfg.hull_max(s), mode: s.vote }
+        })
+        .collect();
+    radar.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+    radar.truncate(MATES);
+    // Enemies in a teammate's sight but not in this ship's own.
+    let mut contacts: Vec<Vec2> = world
+        .ships
+        .iter()
+        .filter(|e| e.alive && e.team != me.team && geo::chord(cfg.radius, me.pos, e.pos) > cfg.view_range)
+        .filter(|e| mates().any(|m| geo::chord(cfg.radius, m.pos, e.pos) < cfg.view_range))
+        .map(|e| world.to_frame(me.pos, me.fwd, e.pos))
+        .collect();
+    contacts.sort_by(|a, b| a.len().total_cmp(&b.len()));
+    contacts.truncate(CONTACTS);
     Observation {
         alive: me.alive,
         hull: me.hull.max(0.0),
@@ -149,6 +191,8 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         }),
         team: if middle.len() > 1e-3 { world.to_frame(me.pos, me.fwd, middle.unit()) } else { Vec2::default() },
         enemy_bases,
+        mates: radar,
+        contacts,
         rocks: nearest(
             world
                 .rocks
@@ -235,6 +279,25 @@ impl Observation {
             match self.enemy_bases.get(slot) {
                 Some(b) => put(&[1.0, b.pos.x / half, b.pos.y / half, b.hp]),
                 None => put(&[0.0; BASE_LEN]),
+            }
+        }
+        for slot in 0..MATES {
+            match self.mates.get(slot) {
+                Some(m) => {
+                    let mut row = [0.0; MATE_LEN];
+                    row[..4].copy_from_slice(&[1.0, m.pos.x / half, m.pos.y / half, m.hull]);
+                    if let Some(mode) = m.mode {
+                        row[4 + mode as usize] = 1.0;
+                    }
+                    put(&row);
+                }
+                None => put(&[0.0; MATE_LEN]),
+            }
+        }
+        for slot in 0..CONTACTS {
+            match self.contacts.get(slot) {
+                Some(c) => put(&[1.0, c.x / half, c.y / half]),
+                None => put(&[0.0; CONTACT_LEN]),
             }
         }
         for (group, slots) in [(&self.rocks, NEAR), (&self.crystals, NEAR), (&self.ships, NEAR), (&self.shots, SHOTS)] {

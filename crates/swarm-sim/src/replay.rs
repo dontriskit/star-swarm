@@ -5,7 +5,7 @@ use crate::sim::{Action, Buy, Config, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0007";
+const MAGIC: &[u8; 8] = b"SWRP0008";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.

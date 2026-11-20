@@ -34,7 +34,7 @@ impl Env {
     /// base_hit, base_lost, win, lose, hurt. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
-    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=5, rock_count=420, radius=1500.0, max_ticks=18000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
+    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=7, rock_count=270, radius=1200.0, max_ticks=18000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         envs: usize,
@@ -110,7 +110,7 @@ impl Env {
     /// thrust | turn << 1 | fire << 3 | boost << 4 | buy << 5 | vote << 9,
     /// with turn in 0..=2 (right, straight, left); buy 0 for nothing, 1..=8 for an upgrade,
     /// 9..=12 for the next tier (as a Lancer, Twin, Scatter or Ram when leaving tier 1); and vote 0 to
-    /// keep the last vote or 1..=4 for farm, defend, attack A, attack B.
+    /// keep the ship's mode or 1..=4 to switch to farm, defend, attack A, attack B.
     /// Returns (rewards as float32, dones as uint8), one entry per agent.
     fn step<'py>(&mut self, py: Python<'py>, actions: &[u8]) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
         if actions.len() != self.inner.agents() * 2 {

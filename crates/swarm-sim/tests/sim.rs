@@ -52,8 +52,8 @@ fn bases_are_equally_far_apart() {
     let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
     let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
     let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
-    // A third of the way around a planet of radius 1500.
-    assert!((d01 - 3141.6).abs() < 1.0, "{d01}");
+    // A third of the way around a planet of radius 1200.
+    assert!((d01 - 2513.3).abs() < 1.0, "{d01}");
     assert!((d01 - d12).abs() < 1.0 && (d12 - d20).abs() < 1.0);
 }
 
@@ -229,6 +229,8 @@ fn a_team_without_a_base_gets_no_new_ships() {
     world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0 });
     world.plans.push(None);
     world.commanded.push(false);
+    world.seen_base_hp.iter_mut().for_each(|seen| seen.push(100.0));
+    world.seen_base_hp.push(vec![100.0; 3]);
     world.bases[1].hp = 0.0;
     world.ships[1].alive = false;
     world.ships[1].respawn = 1;
@@ -475,53 +477,95 @@ fn ships_take_up_room() {
 }
 
 #[test]
-fn the_plan_with_the_most_votes_becomes_the_teams_order() {
+fn each_ship_follows_its_own_mode_and_teammates_see_it() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 4);
     let n = world.ships.len();
-    let vote = |plans: [Option<Plan>; 5]| {
+    let per_team = world.cfg.ships_per_team;
+    let pick = |world: &mut World, modes: &[(usize, Plan)]| {
         let mut actions = vec![Action::default(); n];
-        for (i, plan) in plans.into_iter().enumerate() {
-            actions[i].vote = plan;
+        for (ship, mode) in modes {
+            actions[*ship].vote = Some(*mode);
         }
-        actions
-    };
-    let count = |world: &mut World, actions: &[Action]| {
         for _ in 0..world.cfg.plan_ticks {
-            world.step(actions);
+            world.step(&actions);
         }
     };
 
-    // Nobody has voted: no plan, orders untouched.
-    count(&mut world, &vote([None; 5]));
+    // Nobody has picked a mode: orders untouched.
+    pick(&mut world, &[]);
     assert_eq!(world.plans[0], None);
     assert!(world.ships.iter().all(|s| s.order.kind == OrderKind::Mine));
 
-    // Three of five vote to attack the first enemy base: the whole team gets that order.
-    count(&mut world, &vote([Some(Plan::AttackA), Some(Plan::AttackA), Some(Plan::AttackA), Some(Plan::Farm), None]));
-    assert_eq!(world.plans[0], Some(Plan::AttackA));
-    let target = world.bases[1].pos;
-    for s in world.ships.iter().filter(|s| s.team == 0) {
-        assert_eq!(s.order.kind, OrderKind::Attack);
-        assert!(world.dist(s.order.target, target) < 1.0);
+    // Three ships of team 0 go for the first enemy base, one defends, the rest stay as they were.
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackA), (3, Plan::Defend)]);
+    for i in 0..3 {
+        assert_eq!(world.ships[i].order.kind, OrderKind::Attack);
+        assert!(world.dist(world.ships[i].order.target, world.bases[1].pos) < 1.0);
     }
+    assert_eq!(world.ships[3].order.kind, OrderKind::Defend);
+    assert!(world.dist(world.ships[3].order.target, world.bases[0].pos) < 1.0);
+    assert!((4..per_team).all(|i| world.ships[i].order.kind == OrderKind::Mine), "ships without a mode keep their orders");
     assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
+    assert_eq!(world.plans[0], Some(Plan::AttackA), "the most common mode is the team's headline");
 
-    // Votes stand until changed; a ship sees how its team is voting.
+    // Team radar: a ship sees every teammate's mode, wherever they are, and how the team splits.
     let seen = observe(&world, 4);
     assert_eq!(seen.vote, None);
-    assert!((seen.votes[Plan::AttackA as usize] - 0.6).abs() < 1e-6 && (seen.votes[Plan::Farm as usize] - 0.2).abs() < 1e-6);
+    assert_eq!(seen.mates.len(), per_team - 1);
+    assert_eq!(seen.mates.iter().filter(|m| m.mode == Some(Plan::AttackA)).count(), 3);
+    assert_eq!(seen.mates.iter().filter(|m| m.mode == Some(Plan::Defend)).count(), 1);
+    assert!((seen.votes[Plan::AttackA as usize] - 3.0 / per_team as f32).abs() < 1e-6);
 
-    // The vote swings to defending the base, and to the second enemy base.
-    count(&mut world, &vote([Some(Plan::Defend); 5]));
-    assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| s.order.kind == OrderKind::Defend && world.dist(s.order.target, world.bases[0].pos) < 1.0));
-    count(&mut world, &vote([Some(Plan::AttackB); 5]));
-    assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| world.dist(s.order.target, world.bases[2].pos) < 1.0));
+    // A mode stands until changed; a second enemy base can be picked too.
+    pick(&mut world, &[(0, Plan::AttackB)]);
+    assert!(world.dist(world.ships[0].order.target, world.bases[2].pos) < 1.0);
+    assert!(world.dist(world.ships[1].order.target, world.bases[1].pos) < 1.0);
 
     // A team commanded from outside keeps the orders it was given.
     world.commanded[0] = true;
-    count(&mut world, &vote([Some(Plan::Farm); 5]));
-    assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| s.order.kind == OrderKind::Attack));
+    pick(&mut world, &[(1, Plan::Farm)]);
+    assert_eq!(world.ships[1].order.kind, OrderKind::Attack);
+}
+
+#[test]
+fn team_radar_reports_enemies_a_teammate_sees() {
+    let cfg = Config { teams: 2, ships_per_team: 2, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 4);
+    // Ship 0 at the pole; its teammate 1500 away with an enemy right next to it; the other enemy far off.
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 0.3, 1500.0);
+    world.ships[2].pos = world.offset(world.ships[1].pos, 1.0, 200.0);
+    world.ships[3].pos = world.offset(POLE, 3.4, 2500.0);
+    // A moved ship needs its nose back on the surface where it now is.
+    world.face(0, world.ships[1].pos);
+    world.face(1, world.ships[2].pos);
+    let seen = observe(&world, 0);
+    assert!(seen.ships.is_empty(), "nothing is within the ship's own sight");
+    assert_eq!(seen.mates.len(), 1);
+    assert!((seen.mates[0].dist - 1500.0).abs() < 1.0, "the teammate is on the radar at any distance");
+    assert_eq!(seen.contacts.len(), 1, "only the enemy a teammate can see is reported");
+    assert!((seen.contacts[0].len() - world.dist(POLE, world.ships[2].pos)).abs() < 1.0);
+    // The teammate sees that enemy itself, so for it the enemy is no radar contact.
+    let mate = observe(&world, 1);
+    assert_eq!((mate.ships.len(), mate.contacts.len()), (1, 0));
+}
+
+#[test]
+fn an_enemy_bases_health_is_only_known_from_what_the_team_has_seen() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 4);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = POLE;
+    world.bases[1].hp = 400.0;
+    world.step(&[Action::default(); 2]);
+    // Nobody of team 0 is near base 1: it still believes the base is whole. Team 1 knows its own base.
+    assert_eq!(observe(&world, 0).enemy_bases[0].hp, 1.0);
+    assert_eq!(observe(&world, 1).base.hp, 0.4);
+    // A scout within view range brings the news.
+    world.ships[0].pos = world.offset(world.bases[1].pos, 0.0, 300.0);
+    world.step(&[Action::default(); 2]);
+    assert_eq!(observe(&world, 0).enemy_bases[0].hp, 0.4);
 }
 
 /// Two enemy ships fly straight at each other from 300 apart; returns what each lost (shield and hull).

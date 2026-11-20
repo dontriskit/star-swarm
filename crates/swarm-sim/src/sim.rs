@@ -122,7 +122,8 @@ pub enum Buy {
 /// Ship tiers run from 1 to this.
 pub const TIERS: u8 = 3;
 
-/// What a team does together. Ships vote; the plan with the most votes becomes every ship's order.
+/// What a ship has set out to do. Each ship picks its own mode, which becomes its order, and
+/// its teammates can see it, so a team can settle on doing something together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Plan {
@@ -173,7 +174,7 @@ pub struct Action {
     /// Burn the boost tank for extra thrust and top speed.
     pub boost: bool,
     pub buy: Option<Buy>,
-    /// Vote for what the team should do; None keeps the ship's last vote.
+    /// Switch to a mode; None keeps the ship's current one.
     pub vote: Option<Plan>,
 }
 
@@ -194,7 +195,7 @@ pub struct Config {
     /// Share of the closing speed two basic enemy ships each take as damage when they collide;
     /// a class's [`Body`] scales what it deals and what it takes.
     pub ram_damage: f32,
-    /// Ticks between counts of the ships' votes on the team plan.
+    /// Ticks between turning the ships' modes into fresh orders (targets move).
     pub plan_ticks: u32,
     pub thrust_accel: f32,
     pub drag: f32,
@@ -272,11 +273,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            radius: 1500.0,
+            radius: 1200.0,
             dt: 1.0 / 30.0,
             teams: 3,
-            ships_per_team: 5,
-            rock_count: 420,
+            ships_per_team: 7,
+            rock_count: 270,
             max_ticks: 18000,
             ship_radius: 12.0,
             ship_radii: [12.0, 15.0, 19.0],
@@ -444,7 +445,7 @@ pub struct Ship {
     pub spill: f32,
     pub cargo: u32,
     pub levels: [u8; 8],
-    /// The ship's standing vote on the team plan.
+    /// The ship's mode; None until it picks one.
     pub vote: Option<Plan>,
     pub cooldown: u16,
     pub alive: bool,
@@ -537,8 +538,11 @@ pub struct World {
     pub shots: Vec<Shot>,
     /// One per team, indexed by team.
     pub bases: Vec<Base>,
-    /// The plan each team's ships last voted in, indexed by team; None until someone votes.
+    /// The mode most of each team's ships are in, indexed by team; None until one picks a mode.
     pub plans: Vec<Option<Plan>>,
+    /// Fog of war: the health each team last saw each base at, indexed by team, then by base.
+    /// A base is seen while a living ship of the team is within view range of it.
+    pub seen_base_hp: Vec<Vec<f32>>,
     /// Teams whose orders come from outside (a human commander): their votes are not counted.
     pub commanded: Vec<bool>,
     pub events: Vec<Event>,
@@ -563,6 +567,7 @@ impl World {
             crystals: Vec::new(),
             shots: Vec::new(),
             plans: vec![None; bases.len()],
+            seen_base_hp: vec![vec![cfg.base_hp; bases.len()]; bases.len()],
             commanded: vec![false; bases.len()],
             bases,
             events: Vec::new(),
@@ -628,8 +633,8 @@ impl World {
         self.ships[ship].order = order;
     }
 
-    /// Counts every team's votes and turns the winning plan into the order of all its ships.
-    /// Teams commanded from outside, and teams where nobody has voted, keep their orders.
+    /// Turns every ship's own mode into its order. Teams commanded from outside, and ships
+    /// that have not picked a mode, keep the orders they have.
     fn count_votes(&mut self) {
         for team in 0..self.bases.len() {
             if self.commanded[team] {
@@ -639,28 +644,45 @@ impl World {
             let mut middle = Vec3::default();
             for s in self.ships.iter().filter(|s| s.team as usize == team && s.alive) {
                 middle = middle.add(s.pos);
-                if let Some(vote) = s.vote {
-                    tally[vote as usize] += 1;
+                if let Some(mode) = s.vote {
+                    tally[mode as usize] += 1;
                 }
             }
             let most = *tally.iter().max().unwrap_or(&0);
-            if most == 0 {
-                continue;
-            }
-            // On a tie the standing plan stays if it is among the leaders.
-            let plan = self.plans[team].filter(|p| tally[*p as usize] == most).unwrap_or_else(|| PLANS[tally.iter().position(|n| *n == most).unwrap()]);
-            self.plans[team] = Some(plan);
+            self.plans[team] = (most > 0).then(|| PLANS[tally.iter().position(|n| *n == most).unwrap()]);
             let home = self.bases[team].pos;
-            // Enemy bases still standing, counting teams on from this one.
-            let enemies: Vec<Vec3> = (1..self.bases.len()).map(|k| &self.bases[(team + k) % self.bases.len()]).filter(|b| b.alive()).map(|b| b.pos).collect();
-            let order = match plan {
+            // Enemy bases this team believes are still standing, counting teams on from this one.
+            let enemies: Vec<Vec3> = (1..self.bases.len())
+                .map(|k| (team + k) % self.bases.len())
+                .filter(|b| self.seen_base_hp[team][*b] > 0.0)
+                .map(|b| self.bases[b].pos)
+                .collect();
+            let order_for = |mode: Plan| match mode {
                 // The team's own middle is the place to stay near.
                 Plan::Farm => Order { kind: OrderKind::Mine, target: if middle.len() > 1e-3 { middle.unit() } else { home } },
                 Plan::Defend => Order { kind: OrderKind::Defend, target: home },
                 Plan::AttackA => Order { kind: OrderKind::Attack, target: enemies.first().copied().unwrap_or(home) },
                 Plan::AttackB => Order { kind: OrderKind::Attack, target: enemies.get(1).or(enemies.first()).copied().unwrap_or(home) },
             };
-            self.ships.iter_mut().filter(|s| s.team as usize == team).for_each(|s| s.order = order);
+            for s in self.ships.iter_mut().filter(|s| s.team as usize == team) {
+                if let Some(mode) = s.vote {
+                    s.order = order_for(mode);
+                }
+            }
+        }
+    }
+
+    /// Fog of war: each team's knowledge of a base's health is refreshed while one of its
+    /// living ships is within view range of the base. A team always knows its own base.
+    fn look_at_bases(&mut self) {
+        for team in 0..self.bases.len() {
+            for (b, base) in self.bases.iter().enumerate() {
+                let in_sight = b == team
+                    || self.ships.iter().any(|s| s.team as usize == team && s.alive && geo::chord(self.cfg.radius, s.pos, base.pos) < self.cfg.view_range);
+                if in_sight {
+                    self.seen_base_hp[team][b] = base.hp.max(0.0);
+                }
+            }
         }
     }
 
@@ -765,8 +787,8 @@ impl World {
         let dt = self.cfg.dt;
         let radius = self.cfg.radius;
 
-        // Votes: a ship keeps its vote until it casts another; every so often each team's
-        // votes are counted and the winning plan becomes the order of all its ships.
+        // Modes: a ship keeps its mode until it picks another; every so often every ship's
+        // mode is turned into a fresh order, since the places they point at move.
         for (ship, act) in self.ships.iter_mut().zip(actions) {
             if act.vote.is_some() {
                 ship.vote = act.vote;
@@ -1091,6 +1113,7 @@ impl World {
             self.scatter(pos, dropped, 0.0, 30.0, false);
         }
 
+        self.look_at_bases();
         &self.events
     }
 

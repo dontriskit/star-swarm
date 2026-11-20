@@ -121,8 +121,13 @@ fn ring(world: &World, view: &View, around: Vec3, radius: f32, sides: usize) -> 
     (0..sides).filter_map(|i| view.at(world.offset(around, std::f32::consts::TAU * i as f32 / sides as f32, radius))).collect()
 }
 
-pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bounds<Pixels>, window: &mut Window) {
+/// With `fog`, only what the player's team can see is drawn: enemy ships, shots and crystals
+/// show within view range of one of its living ships, and enemy bases show the health the
+/// team last saw.
+pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: bool, area: Bounds<Pixels>, window: &mut Window) {
     let view = View::new(area, camera);
+    let eyes: Vec<Vec3> = world.ships.iter().filter(|s| s.team == MY_TEAM && s.alive).map(|s| s.pos).collect();
+    let in_sight = |p: Vec3| !fog || eyes.iter().any(|e| geo::chord(world.cfg.radius, *e, p) < world.cfg.view_range);
     // Pixels per world unit at the centre of the view.
     let scale = view.radius / world.cfg.radius;
     let middle = point(px(view.cx), px(view.cy));
@@ -166,7 +171,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bo
         if body.len() >= 3 {
             fill_shape(window, &body, color);
         }
-        let (width, health) = (36.0, (base.hp / world.cfg.base_hp).clamp(0.0, 1.0));
+        let known = if fog { world.seen_base_hp[MY_TEAM as usize][team] } else { base.hp };
+        let (width, health) = (36.0, (known / world.cfg.base_hp).clamp(0.0, 1.0));
         let bar = point(center.x - px(width / 2.0), center.y + px(world.cfg.base_radius * scale + 6.0));
         window.paint_quad(fill(Bounds::new(bar, size(px(width), px(4.0))), rgb(0x2a3040)));
         window.paint_quad(fill(Bounds::new(bar, size(px(width * health), px(4.0))), team_color(team as u8)));
@@ -179,7 +185,17 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bo
         }
     }
 
-    for crystal in &world.crystals {
+    // What your ships can see, faintly outlined.
+    if fog {
+        for eye in &eyes {
+            let reach = ring(world, &view, *eye, world.cfg.view_range, 40);
+            if reach.len() >= 3 {
+                stroke_shape(window, &reach, 1.0, rgba(0x4c9aff22));
+            }
+        }
+    }
+
+    for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
             // Boost cells are larger and orange.
             let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.2, rgb(0x8ef0c8)) };
@@ -187,7 +203,7 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bo
         }
     }
 
-    for shot in &world.shots {
+    for shot in world.shots.iter().filter(|s| s.team == MY_TEAM || in_sight(s.pos)) {
         if let Some(p) = view.at(shot.pos) {
             dot(window, p, 1.2, team_color(shot.team));
         }
@@ -202,7 +218,7 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bo
         }
     }
 
-    for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive) {
+    for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive && (s.team == MY_TEAM || in_sight(s.pos))) {
         let Some(center) = view.at(ship.pos) else { continue };
         // Ships are drawn larger than life so they stay readable; higher tiers are bigger.
         let radius = (world.cfg.radius_of(ship) * scale * 1.8).max(7.0 * world.cfg.radius_of(ship) / world.cfg.ship_radius);
