@@ -161,6 +161,8 @@ struct Slot {
     record: Option<swarm_sim::Replay>,
     razed: bool,
     keep: Option<(&'static str, swarm_sim::Replay)>,
+    /// Crystals team 0 had handed over in the match waiting in `keep`.
+    kept_score: u32,
 }
 
 pub struct VecEnv {
@@ -176,6 +178,8 @@ pub struct VecEnv {
     /// Where recordings of team 0's good matches go, and how many have been written.
     highlights: Option<std::path::PathBuf>,
     saved: usize,
+    /// The most crystals team 0 has handed over in a recorded match so far.
+    best: u32,
 }
 
 impl VecEnv {
@@ -205,16 +209,18 @@ impl VecEnv {
                     record: None,
                     razed: false,
                     keep: None,
+                    kept_score: 0,
                 }
             })
             .collect();
-        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new(), live: None, highlights: None, saved: 0 }
+        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new(), live: None, highlights: None, saved: 0, best: 0 }
     }
 
     /// Records the matches of the first `slots` slots and keeps, as replay files in `dir`,
     /// the ones in which team 0 got somewhere: it won (`wygrana`), it destroyed an enemy base
-    /// (`zburzona-baza`), or time ran out with its base standing and the most crystals handed
-    /// over (`pierwsze-miejsce`). The newest fifteen of each kind are kept.
+    /// (`zburzona-baza`), time ran out with its base standing and the most crystals handed
+    /// over (`pierwsze-miejsce`), or, failing all that, it handed over clearly more crystals
+    /// than in any recorded match before (`rekord`). The newest fifteen of each kind are kept.
     pub fn keep_highlights(&mut self, dir: impl AsRef<std::path::Path>, slots: usize) -> std::io::Result<()> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
@@ -228,10 +234,16 @@ impl VecEnv {
     }
 
     fn write_highlights(&mut self) {
-        let Self { slots, highlights, saved, learners, .. } = self;
+        let Self { slots, highlights, saved, learners, best, .. } = self;
         let Some(dir) = highlights else { return };
         for slot in slots.iter_mut() {
             let Some((kind, replay)) = slot.keep.take() else { continue };
+            // A record has to beat the best so far by a twentieth, or every match would be one.
+            let record = slot.kept_score as f32 > *best as f32 * 1.05;
+            *best = (*best).max(slot.kept_score);
+            if kind == "rekord" && !record {
+                continue;
+            }
             *saved += 1;
             // Numbered in the order they ended, and stamped so that runs do not overwrite each other.
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -512,7 +524,8 @@ impl VecEnv {
                                 None if first => Some("pierwsze-miejsce"),
                                 _ => None,
                             };
-                            slot.keep = kind.map(|kind| (kind, replay));
+                            slot.keep = Some((kind.unwrap_or("rekord"), replay));
+                            slot.kept_score = bases[0].deposited;
                         }
                         slot.razed = false;
                         let mut stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);

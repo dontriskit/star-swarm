@@ -590,6 +590,8 @@ impl Game {
             "wygrana"
         } else if name.contains("zburzona-baza") {
             "zburzona baza wroga"
+        } else if name.contains("rekord") {
+            "rekord oddanych kryształów (mecz przegrany lub nierozstrzygnięty)"
         } else {
             "pierwsze miejsce po czasie"
         };
