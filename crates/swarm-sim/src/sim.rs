@@ -306,10 +306,10 @@ pub struct Config {
     pub boost_regen: f32,
     /// Chance that a crystal dropped by a rock is a boost cell, which refills the tank.
     pub boost_cell_chance: f32,
-    /// Deaths before a ship is demoted: tier 2 falls to tier 1, tier 1 loses its upgrades.
+    /// Lives of a ship above tier 1, renewed with every tier; see the deaths in [`World::step`].
     pub lives: u8,
-    /// Once the shields are down, carried crystals take the damage before the hull does:
-    /// each crystal soaks up this many points and is knocked out of the hold. 0 switches this off.
+    /// Above 0, an enemy hit that gets past the shields bursts the hold open and the whole
+    /// load falls out. 0 switches this off.
     pub crystal_armor: f32,
 
     pub rock_radius: f32,
@@ -1174,32 +1174,19 @@ impl World {
         ship.last_hit_by = None;
     }
 
-    /// Shields soak up damage first; then, when an enemy did it, the crystals in the hold; and
-    /// only then the hull. Returns how many crystals were knocked out of the hold. Flying into
-    /// a rock is no attack: it goes from the shields straight to the hull.
+    /// Shields soak up damage first; what gets past them reaches the hull. When an enemy did
+    /// it, the hold bursts open as well: everything the ship carries falls out at once, and
+    /// the number of crystals lost is returned. Flying into a rock is no attack and spills nothing.
     fn hurt(cfg: &Config, ship: &mut Ship, damage: f32, attacked: bool) -> u32 {
         let absorbed = ship.shield.min(damage);
         ship.shield -= absorbed;
         ship.shield_wait = cfg.shield_delay;
-        let mut left = damage - absorbed;
-        let mut dropped = 0;
-        if attacked && cfg.crystal_armor > 0.0 && ship.cargo > 0 && left > 0.0 {
-            ship.spill += left / cfg.crystal_armor;
-            let loose = ship.spill.floor();
-            if loose as u32 > ship.cargo {
-                // More than the hold could take: the rest reaches the hull.
-                left = (ship.spill - ship.cargo as f32) * cfg.crystal_armor;
-                dropped = ship.cargo;
-                ship.spill = 0.0;
-            } else {
-                left = 0.0;
-                dropped = loose as u32;
-                ship.spill -= loose;
-            }
-            ship.cargo -= dropped;
-        }
+        let left = damage - absorbed;
         ship.hull -= left;
-        dropped
+        if attacked && cfg.crystal_armor > 0.0 && left > 0.0 {
+            return std::mem::take(&mut ship.cargo);
+        }
+        0
     }
 
     fn new_rock(cfg: &Config, bases: &[Base], farms: &[Farm], farm: Option<u16>, rng: &mut Rng) -> Rock {
@@ -1769,8 +1756,13 @@ impl World {
         }
 
         // Spilled crystals land a little way off, out of the ship's own reach, for anyone to pick up.
-        for (at, count) in spilled {
-            self.drop_pack(at, count, 90.0, 140.0);
+        // A burst hold scatters its crystals in packs around the ship, out of its own reach.
+        for (at, mut count) in spilled {
+            while count > 0 {
+                let part = count.min(60);
+                self.drop_pack(at, part, 90.0, 170.0);
+                count -= part;
+            }
         }
         for at in shed {
             self.drop_pack(at, self.cfg.base_pack, self.cfg.base_radius + 20.0, self.cfg.base_radius + 120.0);

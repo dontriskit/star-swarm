@@ -243,7 +243,7 @@ impl Controller for ScriptedBot {
 }
 
 /// Hand-written commander for teams no human leads: one ship guards the base,
-/// ships that have upgraded enough raid the nearest enemy base still standing,
+/// ships that have grown enough raid an enemy base still standing,
 /// the rest keep mining.
 #[derive(Clone, Debug)]
 pub struct ScriptedCommander {
@@ -253,8 +253,9 @@ pub struct ScriptedCommander {
 }
 
 impl ScriptedCommander {
-    /// Upgrade levels a ship needs before it is sent to fight.
-    const RAID_LEVELS: u32 = 5;
+    /// How much a ship has to have grown before it is sent to fight: a tier counts as four
+    /// upgrade levels, so a tier-3 ship goes, and a tier-2 one with four upgrades.
+    const RAID_LEVELS: u32 = 8;
 
     pub fn new(seed: u64) -> Self {
         ScriptedCommander { rng: Rng::new(seed), raiding: Vec::new() }
@@ -276,7 +277,7 @@ impl ScriptedCommander {
         let guards_home = world.bases[team as usize].alive();
         let (mut raiders, mut guard_set) = (0, false);
         for ship in world.ships.iter_mut().filter(|s| s.team == team) {
-            let levels: u32 = ship.levels.iter().map(|l| *l as u32).sum();
+            let levels: u32 = ship.levels.iter().map(|l| *l as u32).sum::<u32>() + 4 * (ship.tier as u32 - 1);
             ship.order = if guards_home && !guard_set {
                 guard_set = true;
                 Order { kind: OrderKind::Defend, target: home }

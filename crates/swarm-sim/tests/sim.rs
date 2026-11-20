@@ -640,31 +640,37 @@ fn a_hunter_fires_in_bursts_and_every_class_is_built_differently() {
 }
 
 #[test]
-fn carried_crystals_take_damage_before_the_hull_and_fall_out() {
+fn a_ship_hit_through_its_shields_drops_everything_it_carries() {
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    let first_hit = |world: &mut World| while !world.step(&fire).iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })) {};
+
+    // While the shields hold, the hold is safe.
+    let mut world = duel(Config::default(), 150.0);
+    world.ships[1].cargo = 130;
+    first_hit(&mut world);
+    assert_eq!((world.ships[1].cargo, world.ships[1].hull), (130, 100.0));
+    assert!(world.ships[1].shield < 100.0);
+
+    // Shields down: the first hit takes hull, and the whole load falls out at once.
     let mut world = duel(Config::default(), 150.0);
     world.ships[1].shield = 0.0;
     world.ships[1].shield_wait = u16::MAX;
-    world.ships[1].cargo = 10;
-    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
-
-    // The first hits cost crystals, not hull.
-    let mut hits = 0;
-    while hits < 3 {
-        hits += world.step(&fire).iter().filter(|e| matches!(e, Event::Hit { victim: 1, .. })).count();
-    }
-    assert_eq!(world.ships[1].hull, 100.0);
-    assert!(world.ships[1].cargo < 10 && world.ships[1].cargo >= 4, "cargo {}", world.ships[1].cargo);
-    assert!(!world.crystals.is_empty(), "the lost crystals lie on the map");
-    // They land outside the ship's own reach, so it does not simply scoop them back up.
-    let ship = &world.ships[1];
-    assert!(world.crystals.iter().all(|c| world.dist(c.pos, ship.pos) > world.cfg.pickup_reach(world.cfg.radius_of(ship), c.value)));
-
-    // Keep firing: the hull starts to go only once the hold is empty.
-    for _ in 0..150 {
-        world.step(&fire);
-    }
+    world.ships[1].cargo = 130;
+    first_hit(&mut world);
     assert_eq!(world.ships[1].cargo, 0);
     assert!(world.ships[1].hull < 100.0);
+    let packs: Vec<&Crystal> = world.crystals.iter().filter(|c| !c.boost_cell).collect();
+    assert_eq!(packs.iter().map(|c| c.full).sum::<u32>(), 130, "all of it lies on the map");
+    assert!(packs.len() >= 3, "in several packs");
+    // They land outside the ship's own reach, so it does not simply scoop them back up, and
+    // from then on they fade like any crystals.
+    let ship = &world.ships[1];
+    assert!(packs.iter().all(|c| world.dist(c.pos, ship.pos) > world.cfg.pickup_reach(world.cfg.radius_of(ship), c.value)));
+    let before: u32 = world.crystals.iter().map(|c| c.value).sum();
+    for _ in 0..60 {
+        world.step(&[Action::default(); 2]);
+    }
+    assert!(world.crystals.iter().map(|c| c.value).sum::<u32>() < before);
 }
 
 #[test]

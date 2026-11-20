@@ -30,7 +30,7 @@ A team space game where a human commands a fleet of AI-flown ships. Ships break 
 - A ship sees clearly out to 1040, with detail enough to aim: the twelve nearest rocks and the six nearest crystal packs, ships and enemy shots.
 - Long-range radar: beyond its clear sight and up to 1500 away a ship still knows where enemy ships are, though not enough to aim, and how much rock lies in each of eight directions around it.
 - Fog of war: beyond its own view range a ship sees nothing else, and a team knows an enemy base's health only from the last time one of its ships was near it. When you play, the window shows only what your team sees.
-- Once its shields are down, a ship loses the crystals in its hold before it loses hull; they fall out and anyone can pick them up.
+- A ship's hold is safe while its shields hold. The first enemy hit that gets past them bursts the hold open: everything it carries falls out at once, in packs around it, for anyone to pick up before they fade.
 - Shots do full damage over the first 60% of their range and then fade evenly to nothing at the end of it. Every laser fired costs one round of ammo, which comes back over time.
 - A boost tank gives extra thrust and top speed for two seconds and refills slowly; boost cells dropped by rocks refill it at once.
 
