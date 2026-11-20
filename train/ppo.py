@@ -22,7 +22,7 @@ from swarm_py import OBS_LEN, Env
 # Sizes of the six action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out to do).
 HEADS = (2, 3, 2, 2, 15, 5)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
-REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level")
+REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level", "rock_hit", "edge")
 CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
 UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
 

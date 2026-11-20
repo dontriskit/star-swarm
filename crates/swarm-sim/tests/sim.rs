@@ -481,11 +481,12 @@ fn ships_take_up_room() {
 }
 
 #[test]
-fn each_ship_follows_its_own_mode_and_teammates_see_it() {
+fn attacking_is_a_team_decision_and_farming_the_default() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 4);
     let n = world.ships.len();
     let per_team = world.cfg.ships_per_team;
+    assert_eq!(per_team, 7);
     let pick = |world: &mut World, modes: &[(usize, Plan)]| {
         let mut actions = vec![Action::default(); n];
         for (ship, mode) in modes {
@@ -495,41 +496,44 @@ fn each_ship_follows_its_own_mode_and_teammates_see_it() {
             world.step(&actions);
         }
     };
+    let kinds = |world: &World| world.ships[..per_team].iter().map(|s| s.order.kind).collect::<Vec<_>>();
 
-    // Nobody has picked a mode: orders untouched.
+    // Nobody on any team has picked a mode: orders untouched, as for scripted teams.
     pick(&mut world, &[]);
     assert_eq!(world.plans[0], None);
-    assert!(world.ships.iter().all(|s| s.order.kind == OrderKind::Mine));
 
-    // Three ships of team 0 go for the first enemy base, one defends, the rest stay as they were.
-    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackA), (3, Plan::Defend)]);
-    for i in 0..3 {
-        assert_eq!(world.ships[i].order.kind, OrderKind::Attack);
-        assert!(world.dist(world.ships[i].order.target, world.bases[1].pos) < 1.0);
-    }
+    // One ship defends: it guards the base; the rest, having picked nothing, farm near the team.
+    pick(&mut world, &[(3, Plan::Defend)]);
     assert_eq!(world.ships[3].order.kind, OrderKind::Defend);
     assert!(world.dist(world.ships[3].order.target, world.bases[0].pos) < 1.0);
-    assert!((4..per_team).all(|i| world.ships[i].order.kind == OrderKind::Mine), "ships without a mode keep their orders");
-    assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
-    assert_eq!(world.plans[0], Some(Plan::AttackA), "the most common mode is the team's headline");
+    assert!(kinds(&world).iter().enumerate().all(|(i, k)| i == 3 || *k == OrderKind::Mine));
 
-    // Team radar: a ship sees every teammate's mode, wherever they are, and how the team splits.
-    let seen = observe(&world, 4);
-    assert_eq!(seen.vote, None);
+    // Three of seven want to attack: not half the team, so nobody attacks.
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB)]);
+    assert!(kinds(&world).iter().all(|k| *k != OrderKind::Attack), "{:?}", kinds(&world));
+
+    // A fourth joins: the whole team attacks, defender included, at the base most of them picked.
+    pick(&mut world, &[(4, Plan::AttackA)]);
+    assert!(kinds(&world).iter().all(|k| *k == OrderKind::Attack), "{:?}", kinds(&world));
+    assert!(world.ships[..per_team].iter().all(|s| world.dist(s.order.target, world.bases[1].pos) < 1.0));
+    assert_eq!(world.plans[0], Some(Plan::AttackA));
+    assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
+
+    // Team radar: a ship sees every teammate's mode and how the team splits.
+    let seen = observe(&world, 6);
     assert_eq!(seen.mates.len(), per_team - 1);
     assert_eq!(seen.mates.iter().filter(|m| m.mode == Some(Plan::AttackA)).count(), 3);
-    assert_eq!(seen.mates.iter().filter(|m| m.mode == Some(Plan::Defend)).count(), 1);
     assert!((seen.votes[Plan::AttackA as usize] - 3.0 / per_team as f32).abs() < 1e-6);
 
-    // A mode stands until changed; a second enemy base can be picked too.
-    pick(&mut world, &[(0, Plan::AttackB)]);
-    assert!(world.dist(world.ships[0].order.target, world.bases[2].pos) < 1.0);
-    assert!(world.dist(world.ships[1].order.target, world.bases[1].pos) < 1.0);
+    // Two change their minds: the attack is off, and everyone is back to their own mode.
+    pick(&mut world, &[(0, Plan::Farm), (1, Plan::Farm)]);
+    assert_eq!(world.ships[3].order.kind, OrderKind::Defend);
+    assert_eq!(world.ships[4].order.kind, OrderKind::Mine);
 
     // A team commanded from outside keeps the orders it was given.
     world.commanded[0] = true;
-    pick(&mut world, &[(1, Plan::Farm)]);
-    assert_eq!(world.ships[1].order.kind, OrderKind::Attack);
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackA), (4, Plan::AttackA)]);
+    assert_eq!(world.ships[0].order.kind, OrderKind::Mine);
 }
 
 #[test]

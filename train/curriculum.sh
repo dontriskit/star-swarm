@@ -24,13 +24,17 @@ for i in "${!stages[@]}"; do
   scale() { awk "BEGIN{print $1 * $starter * $share}"; }
   # The reward for a whole base stays the same however many hit points it has.
   # At full starter reward: 0.15 for every crystal picked up (a small pack pays about 1.7, an
-  # XXL one about 20), 0.2 per size for a rock broken, 1 for anything bought.
+  # XXL one about 20), 0.2 per size for a rock broken, 0.2 per point of damage to a small rock
+  # (2 for breaking one), 1 for anything bought.
+  # Fighting: dying costs 10; damage to an enemy ship pays 0.05 a point, and 0.3 more while the
+  # team is attacking and the attacker has the upper hand; a kill pays 5.
   $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --entropy-end "$entropy_end" --log-every 20 --eval-envs 64 \
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 \
     --reward time=0.00083 --reward draw=30 \
     --reward deposit=0.1 --reward base_level=25 \
+    --reward death=10 --reward hit=0.05 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
-    --reward collect="$(scale 0.15)" --reward rock="$(scale 0.2)" --reward buy="$(scale 1)"
+    --reward collect="$(scale 0.15)" --reward rock="$(scale 0.2)" --reward buy="$(scale 1)" --reward rock_hit="$(scale 0.2)"
   init="runs/$run/policy.pt"
 done

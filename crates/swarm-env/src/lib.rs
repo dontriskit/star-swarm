@@ -45,11 +45,17 @@ pub struct Rewards {
     pub deposit: f32,
     /// To every ship of a team when its base reaches a new level.
     pub base_level: f32,
+    /// Per point of damage a ship's shots do to a rock of the smallest size.
+    pub rock_hit: f32,
+    /// Extra per point of damage dealt to an enemy ship while the team is attacking and the
+    /// attacker has the upper hand: the enemy has less hull and shield left than the attacker,
+    /// is outnumbered around itself, or has drones to be taken.
+    pub edge: f32,
 }
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0 }
     }
 }
 
@@ -314,7 +320,21 @@ impl VecEnv {
                     if taped {
                         slot.tape.as_mut().unwrap().push(Tape::Tick(held.iter().map(replay::encode).collect()));
                     }
-                    for event in slot.world.step(&held) {
+                    slot.world.step(&held);
+                    // The events are judged against the world as the tick left it.
+                    let world = &slot.world;
+                    let upper_hand = |by: usize, victim: usize, damage: f32| {
+                        let (a, v) = (&world.ships[by], &world.ships[victim]);
+                        if a.order.kind != swarm_sim::OrderKind::Attack {
+                            return false;
+                        }
+                        let near = |team: u8| world.ships.iter().filter(|s| s.alive && s.team == team && world.dist(s.pos, v.pos) < 400.0).count();
+                        // As the enemy stood before this hit.
+                        v.hull + v.shield + damage < a.hull + a.shield
+                            || near(a.team) > near(v.team)
+                            || world.drones.iter().any(|d| d.owner == Some(victim as u16))
+                    };
+                    for event in &world.events {
                         match *event {
                             Event::BaseHit { by, team, damage } => {
                                 rewards[by as usize] += pay.base_hit * damage;
@@ -330,7 +350,13 @@ impl VecEnv {
                             Event::Hit { by, victim, damage } => {
                                 rewards[victim as usize] -= pay.hurt * damage;
                                 if let Some(by) = by {
-                                    rewards[by as usize] += pay.hit * damage;
+                                    let bonus = if upper_hand(by as usize, victim as usize, damage) { pay.edge } else { 0.0 };
+                                    rewards[by as usize] += (pay.hit + bonus) * damage;
+                                }
+                            }
+                            Event::RockHit { by, size, damage } => {
+                                if size == 1 {
+                                    rewards[by as usize] += pay.rock_hit * damage;
                                 }
                             }
                             Event::Demoted { .. } => {}
@@ -495,5 +521,68 @@ mod tests {
         env.step(&actions, &mut rewards, &mut dones);
         assert!(dones.iter().all(|d| *d == 1));
         assert!(rewards.iter().all(|r| (*r + 5.03).abs() < 1e-5), "the draw is charged to everyone: {:?}", &rewards[..3]);
+    }
+
+    /// One ship a side, ship 0 pointing at ship 1 from 150 away, far from the bases; returns
+    /// what ship 0 was paid by the time its first shot landed.
+    fn first_hit_pay(pay: Rewards, attacking: bool, victim_hull: f32) -> f32 {
+        let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+        let mut env = VecEnv::new(cfg, 1, 3, 1, pay);
+        let world = &mut env.slots[0].world;
+        let pole = swarm_sim::Vec3::new(0.0, 0.0, 1.0);
+        world.ships[1].pos = pole;
+        world.ships[1].hull = victim_hull;
+        world.ships[0].pos = world.offset(pole, 0.3, 150.0);
+        world.face(0, pole);
+        // Orders are given from outside in this test, so the ships' modes do not overwrite them.
+        world.commanded = vec![true, true];
+        if attacking {
+            world.ships[0].order = swarm_sim::Order { kind: swarm_sim::OrderKind::Attack, target: pole };
+        }
+        let fire = replay::encode(&Action { fire: true, ..Action::default() });
+        let (mut rewards, mut dones) = (vec![0f32; 2], vec![0u8; 2]);
+        let mut paid = 0.0;
+        for _ in 0..60 {
+            env.step(&[fire, 0], &mut rewards, &mut dones);
+            paid += rewards[0];
+            if env.world(0).ships[1].shield < 40.0 {
+                break;
+            }
+        }
+        paid
+    }
+
+    #[test]
+    fn attacking_with_the_upper_hand_pays_extra() {
+        let pay = Rewards { hit: 1.0, edge: 3.0, crash: 0.0, death: 0.0, ..Rewards::default() };
+        // The same single hit of a little under 1 damage in each case.
+        let plain = first_hit_pay(pay, false, 100.0);
+        let even = first_hit_pay(pay, true, 100.0);
+        let weaker = first_hit_pay(pay, true, 50.0);
+        assert!(plain > 0.5 && plain < 1.0, "a plain hit pays its damage: {plain}");
+        assert!((even - plain).abs() < 1e-4, "attacking an equal pays no more: {even}");
+        assert!((weaker - 4.0 * plain).abs() < 1e-3, "attacking a weaker enemy pays hit plus edge: {weaker}");
+        // Farming ships get no bonus for shooting a weaker enemy either.
+        assert!((first_hit_pay(pay, false, 50.0) - plain).abs() < 1e-4);
+    }
+
+    #[test]
+    fn shooting_a_small_rock_pays_and_a_big_one_does_not() {
+        let pay = Rewards { rock_hit: 2.0, rock: 0.0, crash: 0.0, death: 0.0, collect: 0.0, ..Rewards::default() };
+        let paid_for = |size: u8| {
+            let cfg = Config { teams: 1, ships_per_team: 1, rock_count: 0, ..Config::default() };
+            let mut env = VecEnv::new(cfg, 1, 3, 1, pay);
+            let world = &mut env.slots[0].world;
+            let pole = swarm_sim::Vec3::new(0.0, 0.0, 1.0);
+            world.ships[0].pos = pole;
+            let spot = world.offset(pole, 0.3, 200.0);
+            world.face(0, spot);
+            world.rocks.push(swarm_sim::Rock { pos: spot, vel: swarm_sim::Vec3::default(), size, hp: 500.0, last_hit_by: None });
+            let fire = replay::encode(&Action { fire: true, ..Action::default() });
+            let (mut rewards, mut dones) = (vec![0f32; 1], vec![0u8; 1]);
+            (0..60).map(|_| { env.step(&[fire], &mut rewards, &mut dones); rewards[0] }).sum::<f32>()
+        };
+        assert!(paid_for(1) > 1.0, "hits on a small rock pay: {}", paid_for(1));
+        assert_eq!(paid_for(3), 0.0);
     }
 }

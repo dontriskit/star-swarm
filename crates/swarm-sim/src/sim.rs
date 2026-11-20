@@ -130,8 +130,9 @@ pub const ROCK_SIZES: u8 = 5;
 /// Ship tiers run from 1 to this.
 pub const TIERS: u8 = 3;
 
-/// What a ship has set out to do. Each ship picks its own mode, which becomes its order, and
-/// its teammates can see it, so a team can settle on doing something together.
+/// What a ship has set out to do, which its teammates can see. Farming is the default, and
+/// defending is each ship's own choice. Attacking is a team decision: when at least half of a
+/// team's living ships pick an attack, the whole team attacks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Plan {
@@ -606,6 +607,8 @@ impl Base {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     RockDestroyed { by: Option<u16>, size: u8 },
+    /// A ship's shot (or its drone's) hit a rock.
+    RockHit { by: u16, size: u8, damage: f32 },
     /// A ship (or its drone) picked up this many crystals.
     Collected { ship: u16, amount: u32 },
     Bought { ship: u16, what: Buy },
@@ -730,23 +733,27 @@ impl World {
         self.ships[ship].order = order;
     }
 
-    /// Turns every ship's own mode into its order. Teams commanded from outside, and ships
-    /// that have not picked a mode, keep the orders they have.
+    /// Turns the ships' modes into orders. Farming is the default and defending is a ship's own
+    /// choice; when at least half of a team's living ships pick an attack, the whole team
+    /// attacks the base most of them picked. Teams commanded from outside, and teams where no
+    /// ship has ever picked a mode (scripted ones), keep the orders they have.
     fn count_votes(&mut self) {
         for team in 0..self.bases.len() {
-            if self.commanded[team] {
+            if self.commanded[team] || !self.ships.iter().any(|s| s.team as usize == team && s.vote.is_some()) {
                 continue;
             }
             let mut tally = [0u32; PLANS.len()];
             let mut middle = Vec3::default();
+            let mut living = 0;
             for s in self.ships.iter().filter(|s| s.team as usize == team && s.alive) {
                 middle = middle.add(s.pos);
-                if let Some(mode) = s.vote {
-                    tally[mode as usize] += 1;
-                }
+                living += 1;
+                tally[s.vote.unwrap_or(Plan::Farm) as usize] += 1;
             }
+            let (a, b) = (tally[Plan::AttackA as usize], tally[Plan::AttackB as usize]);
+            let attack = (living > 0 && (a + b) * 2 >= living).then(|| if b > a { Plan::AttackB } else { Plan::AttackA });
             let most = *tally.iter().max().unwrap_or(&0);
-            self.plans[team] = (most > 0).then(|| PLANS[tally.iter().position(|n| *n == most).unwrap()]);
+            self.plans[team] = attack.or_else(|| (most > 0).then(|| PLANS[tally.iter().position(|n| *n == most).unwrap()]));
             let home = self.bases[team].pos;
             // Enemy bases this team believes are still standing, counting teams on from this one.
             let enemies: Vec<Vec3> = (1..self.bases.len())
@@ -754,17 +761,16 @@ impl World {
                 .filter(|b| self.seen_base_hp[team][*b] > 0.0)
                 .map(|b| self.bases[b].pos)
                 .collect();
-            let order_for = |mode: Plan| match mode {
-                // The team's own middle is the place to stay near.
-                Plan::Farm => Order { kind: OrderKind::Mine, target: if middle.len() > 1e-3 { middle.unit() } else { home } },
-                Plan::Defend => Order { kind: OrderKind::Defend, target: home },
-                Plan::AttackA => Order { kind: OrderKind::Attack, target: enemies.first().copied().unwrap_or(home) },
-                Plan::AttackB => Order { kind: OrderKind::Attack, target: enemies.get(1).or(enemies.first()).copied().unwrap_or(home) },
+            let farm = Order { kind: OrderKind::Mine, target: if middle.len() > 1e-3 { middle.unit() } else { home } };
+            let order_for = |mode: Plan| match (attack, mode) {
+                (Some(Plan::AttackB), _) => Order { kind: OrderKind::Attack, target: enemies.get(1).or(enemies.first()).copied().unwrap_or(home) },
+                (Some(_), _) => Order { kind: OrderKind::Attack, target: enemies.first().copied().unwrap_or(home) },
+                (None, Plan::Defend) => Order { kind: OrderKind::Defend, target: home },
+                // Without the team behind it, a ship that wants to attack keeps farming.
+                (None, _) => farm,
             };
             for s in self.ships.iter_mut().filter(|s| s.team as usize == team) {
-                if let Some(mode) = s.vote {
-                    s.order = order_for(mode);
-                }
+                s.order = order_for(s.vote.unwrap_or(Plan::Farm));
             }
         }
     }
@@ -1118,6 +1124,9 @@ impl World {
             {
                 rock.hp -= damage;
                 rock.last_hit_by = shot.owner;
+                if let Some(by) = shot.owner {
+                    self.events.push(Event::RockHit { by, size: rock.size, damage });
+                }
                 shot.ticks = 0;
                 continue;
             }
