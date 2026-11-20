@@ -8,7 +8,7 @@ fn main() -> std::io::Result<()> {
     let path = args.next().unwrap_or_else(|| format!("star-swarm-{seed}.replay"));
     let mut world = World::new(Config::default(), seed);
     let mut replay = Replay::new(seed, &world.cfg);
-    let mut bot = ScriptedBot;
+    let mut bots: Vec<ScriptedBot> = (0..world.ships.len()).map(ScriptedBot::for_ship).collect();
     let mut commander = ScriptedCommander::new(seed);
     let mut raids = 0;
     while !world.done() {
@@ -17,7 +17,7 @@ fn main() -> std::io::Result<()> {
                 raids += commander.command(&mut world, team);
             }
         }
-        let actions: Vec<Action> = (0..world.ships.len()).map(|i| bot.act(&observe(&world, i), &world.cfg)).collect();
+        let actions: Vec<Action> = (0..world.ships.len()).map(|i| bots[i].act(&observe(&world, i), &world.cfg)).collect();
         world.step(&actions);
         replay.record(&world, &actions);
     }

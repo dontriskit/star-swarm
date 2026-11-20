@@ -103,7 +103,9 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, area: Bounds<Pixels>, wi
     }
 
     for crystal in &world.crystals {
-        dot(window, view.at(crystal.pos), 1.5, rgb(0x8ef0c8));
+        // Boost cells are larger and orange.
+        let (half, color) = if crystal.boost_cell { (2.5, rgb(0xff9f43)) } else { (1.5, rgb(0x8ef0c8)) };
+        dot(window, view.at(crystal.pos), half, color);
     }
 
     for shot in &world.shots {

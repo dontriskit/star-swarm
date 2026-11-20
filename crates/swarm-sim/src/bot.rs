@@ -1,6 +1,6 @@
 use crate::obs::{BaseObs, Near, Observation};
 use crate::rng::Rng;
-use crate::sim::{Action, Buy, Config, Order, OrderKind, TIERS, UPGRADES, Upgrade, Vec2, World};
+use crate::sim::{Action, Buy, Class, Config, Order, OrderKind, TIER2, TIERS, UPGRADES, Upgrade, Vec2, World};
 
 /// Anything that flies a ship: a human's input, a scripted bot, a trained
 /// policy, a remote agent.
@@ -10,12 +10,31 @@ pub trait Controller {
 
 /// Hand-written baseline that follows commander orders. Training stages are
 /// measured against it.
-#[derive(Clone, Debug, Default)]
-pub struct ScriptedBot;
+#[derive(Clone, Debug)]
+pub struct ScriptedBot {
+    /// The class this bot picks when it moves up to tier 2.
+    pub prefers: Class,
+}
+
+impl Default for ScriptedBot {
+    fn default() -> Self {
+        ScriptedBot { prefers: Class::Twin }
+    }
+}
 
 /// Upgrades in the order the bot prefers them when levels are tied.
-const PRIORITY: [Upgrade; 6] =
-    [Upgrade::Attack, Upgrade::FireRate, Upgrade::Speed, Upgrade::Shield, Upgrade::Health, Upgrade::Regen];
+const PRIORITY: [Upgrade; 8] = [
+    Upgrade::Attack,
+    Upgrade::FireRate,
+    Upgrade::Speed,
+    Upgrade::Shield,
+    Upgrade::Ammo,
+    Upgrade::Health,
+    Upgrade::Agility,
+    Upgrade::Regen,
+];
+/// Farther than this from where it is going, a bot burns its boost tank.
+const BOOST_FROM: f32 = 450.0;
 
 const AIM: f32 = 0.1;
 const FIGHT_RANGE: f32 = 260.0;
@@ -23,6 +42,11 @@ const FIGHT_RANGE: f32 = 260.0;
 const RETREAT: f32 = 0.35;
 
 impl ScriptedBot {
+    /// Bots for a whole fleet: ship `i` gets its tier-2 class by turns, so every class shows up.
+    pub fn for_ship(i: usize) -> Self {
+        ScriptedBot { prefers: TIER2[i % TIER2.len()] }
+    }
+
     fn turn_to(angle: f32) -> i8 {
         if angle > 0.05 { 1 } else if angle < -0.05 { -1 } else { 0 }
     }
@@ -36,6 +60,8 @@ impl ScriptedBot {
             turn: Self::turn_to(angle),
             // With nothing to keep clear of (a crystal, a waypoint) arrive at speed.
             thrust: angle.abs() < 0.6 && (keep == 0.0 || to.len() - keep > coast),
+            // Boost only on a long, clear run: at boost speed a rock is fatal.
+            boost: angle.abs() < 0.3 && to.len() - keep > BOOST_FROM && obs.rocks.first().is_none_or(|r| r.dist > 320.0),
             ..Action::default()
         }
     }
@@ -56,7 +82,7 @@ impl ScriptedBot {
             }
             let away = if miss.len() > 1.0 { miss.scale(-1.0) } else { Vec2::new(-rock.vel.y, rock.vel.x) };
             let angle = away.y.atan2(away.x);
-            return Some(Action { turn: Self::turn_to(angle), thrust: angle.abs() < 0.8, ..Action::default() });
+            return Some(Action { turn: Self::turn_to(angle), thrust: angle.abs() < 0.8, boost: false, ..Action::default() });
         }
         None
     }
@@ -64,7 +90,7 @@ impl ScriptedBot {
     /// Closes to `keep` from a target of the given radius and fires once lined up and in range.
     fn shoot_at(pos: Vec2, dist: f32, radius: f32, keep: f32, obs: &Observation, cfg: &Config) -> Action {
         let mut act = Self::fly(pos, radius + keep, obs, cfg);
-        act.fire = pos.y.atan2(pos.x).abs() < AIM.max((radius / dist.max(1.0)).atan()) && dist < cfg.shot_range() * 0.9;
+        act.fire = pos.y.atan2(pos.x).abs() < AIM.max((radius / dist.max(1.0)).atan()) && dist < cfg.weapon(obs.class).range * 0.9;
         act
     }
 
@@ -77,10 +103,10 @@ impl ScriptedBot {
     }
 
     fn mine(obs: &Observation, cfg: &Config) -> Action {
-        if obs.cargo < obs.cargo_max {
-            if let Some(c) = obs.crystals.first() {
-                return Self::fly(c.pos, 0.0, obs, cfg);
-            }
+        // A crystal needs cargo room; a boost cell (hp 1) is only worth it with a tank that is not full.
+        let wanted = |c: &&Near| if c.hp > 0.5 { obs.boost < 0.95 } else { obs.cargo < obs.cargo_max };
+        if let Some(c) = obs.crystals.iter().find(wanted) {
+            return Self::fly(c.pos, 0.0, obs, cfg);
         }
         match obs.rocks.first() {
             Some(rock) => Self::shoot(rock, 140.0, obs, cfg),
@@ -91,12 +117,12 @@ impl ScriptedBot {
 
     /// Buys one level of everything, then saves up for the next tier, then spreads
     /// crystals evenly over the upgrades.
-    fn shop(obs: &Observation, cfg: &Config) -> Option<Buy> {
+    fn shop(&self, obs: &Observation, cfg: &Config) -> Option<Buy> {
         let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
         let lowest = obs.levels[next as usize];
         match cfg.cost(lowest, obs.tier) {
             Some(cost) if lowest == 0 || obs.tier == TIERS => (obs.cargo >= cost).then_some(Buy::Upgrade(next)),
-            _ => (obs.tier < TIERS && obs.cargo >= cfg.tier_cost).then_some(Buy::Tier),
+            _ => (obs.tier < TIERS && obs.cargo >= cfg.tier_cost).then_some(Buy::Tier(self.prefers)),
         }
     }
 }
@@ -141,7 +167,7 @@ impl Controller for ScriptedBot {
         if let Some(dodge) = Self::dodge(obs, cfg) {
             act = Action { fire: act.fire, ..dodge };
         }
-        act.buy = Self::shop(obs, cfg);
+        act.buy = self.shop(obs, cfg);
         debug_assert_eq!(UPGRADES.len(), PRIORITY.len());
         act
     }

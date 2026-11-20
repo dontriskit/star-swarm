@@ -1,4 +1,4 @@
-use crate::sim::{Config, ORDER_KINDS, OrderKind, TIERS, Vec2, World};
+use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, TIERS, UPGRADES, Vec2, World};
 
 /// How many of each kind of nearby object a ship sees.
 pub const NEAR: usize = 6;
@@ -6,7 +6,7 @@ pub const NEAR: usize = 6;
 pub const SHOTS: usize = 4;
 /// How many enemy bases a ship knows about (the nearest ones still standing).
 pub const BASES: usize = 2;
-const SELF_LEN: usize = 8 + 6 + 4 + ORDER_KINDS + 2;
+const SELF_LEN: usize = 11 + CLASSES.len() + UPGRADES.len() + 4 + ORDER_KINDS + 2;
 const BASE_LEN: usize = 4;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
@@ -20,7 +20,7 @@ pub struct Near {
     pub vel: Vec2,
     pub dist: f32,
     pub radius: f32,
-    /// Remaining health as a fraction; 0 for crystals.
+    /// Remaining health as a fraction; for crystals 0, or 1 when it is a boost cell.
     pub hp: f32,
     pub enemy: bool,
     /// Where another ship is pointing, as a unit vector in this ship's frame;
@@ -50,10 +50,17 @@ pub struct Observation {
     pub cargo: u32,
     pub cargo_max: u32,
     pub vel: Vec2,
-    /// The guns have cooled down.
+    /// The guns have cooled down and there is ammo for a volley.
     pub ready: bool,
     pub tier: u8,
-    pub levels: [u8; 6],
+    pub class: Class,
+    /// Deaths left before the ship is demoted.
+    pub lives: u8,
+    pub ammo: f32,
+    pub ammo_max: f32,
+    /// Boost tank, 0 to 1.
+    pub boost: f32,
+    pub levels: [u8; 8],
     /// The ship's own base; `hp` is 0 once it has been destroyed.
     pub base: BaseObs,
     pub order: OrderKind,
@@ -108,8 +115,13 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         cargo: me.cargo,
         cargo_max: cfg.cargo_max(me),
         vel: me.vel.into_frame(me.heading),
-        ready: me.cooldown == 0,
+        ready: me.cooldown == 0 && me.ammo >= cfg.weapon(me.class).lasers as f32,
         tier: me.tier,
+        class: me.class,
+        lives: me.lives,
+        ammo: me.ammo,
+        ammo_max: cfg.ammo_max(me),
+        boost: me.boost,
         levels: me.levels,
         base: base(me.team as usize),
         order: me.order.kind,
@@ -124,7 +136,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
             NEAR,
         ),
         crystals: nearest(
-            world.crystals.iter().filter_map(|c| see(c.pos, Vec2::default(), 0.0, 0.0, false, None)).collect(),
+            world.crystals.iter().filter_map(|c| see(c.pos, Vec2::default(), 0.0, c.boost_cell as u8 as f32, false, None)).collect(),
             NEAR,
         ),
         ships: nearest(
@@ -142,7 +154,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
                 .shots
                 .iter()
                 .filter(|s| s.team != me.team)
-                .filter_map(|s| see(s.pos, s.vel, 0.0, s.damage / cfg.hull, true, None))
+                .filter_map(|s| see(s.pos, s.vel, 0.0, s.damage_now(cfg.shot_falloff) / cfg.hull, true, None))
                 .collect(),
             SHOTS,
         ),
@@ -176,7 +188,13 @@ impl Observation {
             self.vel.y / speed,
             self.ready as u8 as f32,
             (self.tier - 1) as f32 / (TIERS - 1) as f32,
+            self.ammo / self.ammo_max,
+            self.boost,
+            self.lives as f32 / cfg.lives.max(1) as f32,
         ]);
+        let mut class = [0.0; CLASSES.len()];
+        class[self.class as usize] = 1.0;
+        put(&class);
         put(&self.levels.map(|l| l as f32 / cfg.top_level() as f32));
         put(&[self.base.pos.x / half, self.base.pos.y / half, self.base.hp, (self.base.hp > 0.0) as u8 as f32]);
         let mut order = [0.0; ORDER_KINDS];

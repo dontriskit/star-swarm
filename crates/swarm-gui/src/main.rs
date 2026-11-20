@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{Selectable, Sizable, Theme, ThemeMode};
+use gpui_kit::component::{Icon, Selectable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
-use swarm_sim::{Config, Controller, HybridBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, World, observe};
+use swarm_sim::{Class, Config, Controller, HybridBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, UPGRADES, Upgrade, World, observe};
 #[cfg(test)]
 use swarm_sim::Vec2;
 
@@ -25,6 +25,37 @@ const SPEEDS: [u32; 4] = [1, 2, 4, 8];
 
 pub const TEAM_COLORS: [u32; 6] = [0x4c9aff, 0xff8a3d, 0x5fd38d, 0xd67bff, 0xf2d04b, 0xff6b81];
 const TEAM_NAMES: [&str; 6] = ["Niebiescy", "Pomarańczowi", "Zieloni", "Fioletowi", "Żółci", "Czerwoni"];
+
+fn class_name(class: Class) -> &'static str {
+    match class {
+        Class::Basic => "Podstawowy",
+        Class::Lancer => "Lanca",
+        Class::Twin => "Bliźniak",
+        Class::Scatter => "Rozrzut",
+    }
+}
+
+/// The icon (our own drawing, as SVG) and Polish name of an upgrade.
+fn upgrade_look(upgrade: Upgrade) -> (&'static [u8], &'static str) {
+    match upgrade {
+        // A blade.
+        Upgrade::Attack => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 L19 5 M14 5 H19 V10 M6 14 L10 18"/></svg>"#, "atak"),
+        // A heart.
+        Upgrade::Health => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20 L4 12 A4.5 4.5 0 0 1 12 6 A4.5 4.5 0 0 1 20 12 Z"/></svg>"#, "zdrowie"),
+        // Three chevrons.
+        Upgrade::FireRate => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6 L9 12 L4 18 M10 6 L15 12 L10 18 M16 6 L21 12 L16 18"/></svg>"#, "szybkostrzelność"),
+        // A shield.
+        Upgrade::Shield => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 L20 6 V12 C20 17 16 20 12 21 C8 20 4 17 4 12 V6 Z"/></svg>"#, "tarcze"),
+        // A dial with a needle.
+        Upgrade::Speed => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17 A8 8 0 1 1 20 17 M12 17 L16 10"/></svg>"#, "prędkość"),
+        // An arrow going round.
+        Upgrade::Regen => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12 A8 8 0 1 1 17 6 M17 2 V6 H13"/></svg>"#, "regeneracja tarcz"),
+        // A U-turn.
+        Upgrade::Agility => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8 H14 A4 4 0 0 1 14 16 H8 M11 13 L8 16 L11 19"/></svg>"#, "zwinność"),
+        // Two rounds.
+        Upgrade::Ammo => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20 V9 L8 5 L10 9 V20 Z M14 20 V9 L16 5 L18 9 V20 Z"/></svg>"#, "amunicja"),
+    }
+}
 
 fn order_name(kind: OrderKind) -> &'static str {
     match kind {
@@ -81,7 +112,7 @@ impl Game {
                 Some(r) => format!("Powtórka: {} s gry.", (r.ticks() as f32 * world.cfg.dt) as u32),
                 None => "Wybierz rozkaz, potem kliknij punkt na mapie.".into(),
             },
-            pilots: world.ships.iter().map(|_| Box::new(ScriptedBot) as Box<dyn Controller>).collect(),
+            pilots: (0..world.ships.len()).map(|i| Box::new(ScriptedBot::for_ship(i)) as Box<dyn Controller>).collect(),
             model: None,
             world,
             seed,
@@ -281,14 +312,13 @@ impl Game {
             .text_color(muted)
             .child(column(72., "Statek".into()))
             .child(column(72., "Kadłub".into()))
-            .child(column(60., "Tarcza".into()))
+            .child(column(64., "Tarcza".into()))
             .child(column(68., "Ładunek".into()))
-            .child(column(40., "Tier".into()))
-            .child(column(56., "Ulepsz.".into()))
+            .child(column(56., "Amun.".into()))
+            .child(column(64., "Dopalacz".into()))
             .child("Rozkaz");
         let fleet = self.my_ships().enumerate().map(|(n, i)| {
             let ship = &self.world.ships[i];
-            let levels: u32 = ship.levels.iter().map(|l| *l as u32).sum();
             let picked = self.selected.contains(&i);
             let row = div()
                 .id(("ship", i))
@@ -308,10 +338,10 @@ impl Game {
             let row = row.debug_selector(move || format!("ship-{n}"));
             if ship.alive {
                 row.child(column(72., format!("{:.0}/{:.0}", ship.hull.max(0.0), cfg.hull_max(ship))))
-                    .child(column(60., format!("{:.0}/{:.0}", ship.shield, cfg.shield_max(ship))))
+                    .child(column(64., format!("{:.0}/{:.0}", ship.shield, cfg.shield_max(ship))))
                     .child(column(68., format!("{}/{}", ship.cargo, cfg.cargo_max(ship))))
-                    .child(column(40., ship.tier.to_string()))
-                    .child(column(56., format!("{levels}/{}", 6 * cfg.max_level(ship.tier) as u32)))
+                    .child(column(56., format!("{:.0}/{:.0}", ship.ammo, cfg.ammo_max(ship))))
+                    .child(column(64., format!("{:.0}%", ship.boost * 100.0)))
                     .child(order_name(ship.order.kind))
             } else if self.world.bases[MY_TEAM as usize].alive() {
                 row.child(div().text_color(muted).child("odradza się"))
@@ -320,8 +350,42 @@ impl Game {
             }
         });
 
+        // What every ship has become: class, tier, lives, and the level of each upgrade.
+        let legend = div().flex().flex_wrap().gap_x_3().text_xs().text_color(muted).children(UPGRADES.iter().map(|u| {
+            let (icon, name) = upgrade_look(*u);
+            div().flex().items_center().gap_1().child(Icon::default().data(icon).xsmall()).child(name)
+        }));
+        let tech = self.world.ships.iter().enumerate().map(|(i, ship)| {
+            let color = rgb(TEAM_COLORS[ship.team as usize % TEAM_COLORS.len()]);
+            let cap = cfg.max_level(ship.tier);
+            let levels = UPGRADES.iter().map(|u| {
+                let level = ship.levels[*u as usize];
+                // Dim when nothing was bought, bright at this tier's cap.
+                let tone = if level == 0 { rgb(0x4a5263) } else if level >= cap { rgb(0xf2d04b) } else { rgb(0xd7dce5) };
+                div()
+                    .w(px(36.))
+                    .flex()
+                    .items_center()
+                    .gap_0p5()
+                    .text_color(tone)
+                    .child(Icon::default().data(upgrade_look(*u).0).xsmall())
+                    .child(level.to_string())
+            });
+            div()
+                .flex()
+                .items_center()
+                .text_xs()
+                .child(div().size_2().mr_1().rounded_sm().bg(color))
+                .child(div().w(px(22.)).text_color(muted).child(format!("{}", i % cfg.ships_per_team + 1)))
+                .child(div().w(px(104.)).whitespace_nowrap().child(format!("{} T{}", class_name(ship.class), ship.tier)))
+                .child(div().w(px(40.)).text_color(muted).child(format!("♥{}", ship.lives)))
+                .children(levels)
+        });
+
         div()
-            .w(px(470.))
+            .id("panel")
+            .overflow_y_scroll()
+            .w(px(540.))
             .h_full()
             .flex()
             .flex_col()
@@ -389,6 +453,9 @@ impl Game {
                 "Bez zaznaczenia rozkaz dostaje cała flota. Kliknij statek na mapie albo na liście, żeby dowodzić wybranymi.",
             ))
             .child(div().child(self.status.clone()))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, życia i poziom każdego ulepszenia"))
+            .child(legend)
+            .child(div().flex().flex_col().children(tech))
     }
 }
 
@@ -582,9 +649,9 @@ mod window_tests {
                 let expected = if i == picked[0] { OrderKind::Regroup } else { OrderKind::Mine };
                 assert_eq!(ship.order.kind, expected, "ship {i}");
             }
-            // The map is the 730 px square in the 730 x 800 area left of the 470 px panel.
-            let scale = g.world.cfg.world_size / 730.0;
-            let expected = Vec2::new(300.0 * scale, (400.0 - 35.0) * scale);
+            // The map is the 660 px square in the 660 x 800 area left of the 540 px panel.
+            let scale = g.world.cfg.world_size / 660.0;
+            let expected = Vec2::new(300.0 * scale, (400.0 - 70.0) * scale);
             let target = g.world.ships[picked[0]].order.target;
             assert!(g.world.delta(target, expected).len() < 2.0, "target {target:?}");
         });

@@ -10,7 +10,7 @@ fn main() {
     let cfg = Config { teams: 1, ships_per_team: 4, rock_count: 40, world_size: 1400.0, max_ticks: 5400, ..Config::default() };
     let mut env = VecEnv::new(cfg, matches, 1_000_000, frame_skip, Rewards::default());
     let agents = env.agents();
-    let (mut actions, mut rewards, mut dones) = (vec![0u8; agents], vec![0f32; agents], vec![0u8; agents]);
+    let (mut actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
     let mut stats = Vec::new();
     while stats.len() < matches {
         env.scripted(&mut actions);

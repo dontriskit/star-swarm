@@ -51,17 +51,63 @@ pub enum Upgrade {
     Speed,
     /// How fast shields grow back.
     Regen,
+    /// How fast the ship turns.
+    Agility,
+    /// How many shots the ship carries and how fast they come back.
+    Ammo,
 }
 
-pub const UPGRADES: [Upgrade; 6] =
-    [Upgrade::Attack, Upgrade::Health, Upgrade::FireRate, Upgrade::Shield, Upgrade::Speed, Upgrade::Regen];
+pub const UPGRADES: [Upgrade; 8] = [
+    Upgrade::Attack,
+    Upgrade::Health,
+    Upgrade::FireRate,
+    Upgrade::Shield,
+    Upgrade::Speed,
+    Upgrade::Regen,
+    Upgrade::Agility,
+    Upgrade::Ammo,
+];
+
+/// What kind of ship it is. Every ship starts as a Basic; moving to tier 2 means picking one of the others.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Class {
+    /// Tier 1: one laser, middling in everything.
+    #[default]
+    Basic,
+    /// Tier 2: one fast, hard-hitting laser with a long reach and a slow rate of fire.
+    Lancer,
+    /// Tier 2: two lasers side by side.
+    Twin,
+    /// Tier 2: three lasers in a fan, short reach, fast fire.
+    Scatter,
+}
+
+pub const CLASSES: [Class; 4] = [Class::Basic, Class::Lancer, Class::Twin, Class::Scatter];
+/// The classes a tier-1 ship can become.
+pub const TIER2: [Class; 3] = [Class::Lancer, Class::Twin, Class::Scatter];
+
+/// A class's guns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weapon {
+    pub lasers: u8,
+    /// Angle between neighbouring lasers, radians; 0 fires them side by side.
+    pub fan: f32,
+    /// How far a shot flies.
+    pub range: f32,
+    pub speed: f32,
+    /// Ticks between volleys.
+    pub cooldown: u16,
+    /// Damage per laser at the muzzle.
+    pub damage: f32,
+}
 
 /// What a ship can spend crystals on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Buy {
     Upgrade(Upgrade),
-    /// Move up to the next ship tier: stronger hull, shields and guns, higher upgrade cap.
-    Tier,
+    /// Move up to tier 2 as the given class: stronger hull and shields, new guns, higher upgrade cap.
+    Tier(Class),
 }
 
 /// Ship tiers run from 1 to this.
@@ -98,6 +144,8 @@ pub struct Action {
     /// -1 turns right, 1 turns left, 0 holds.
     pub turn: i8,
     pub fire: bool,
+    /// Burn the boost tank for extra thrust and top speed.
+    pub boost: bool,
     pub buy: Option<Buy>,
 }
 
@@ -143,10 +191,23 @@ pub struct Config {
     /// Ticks between turret shots.
     pub turret_cooldown: u16,
 
-    pub shot_damage: f32,
-    pub shot_speed: f32,
-    pub shot_ticks: u16,
-    pub shot_cooldown: u16,
+    /// Guns per class, indexed by [`Class`].
+    pub weapons: [Weapon; 4],
+    /// Share of its damage a shot still does at the end of its range; it fades linearly on the way.
+    pub shot_falloff: f32,
+    /// Shots carried and shots regained per second, before upgrades.
+    pub ammo: f32,
+    pub ammo_regen: f32,
+    /// Thrust and top-speed multipliers while boosting.
+    pub boost_thrust: f32,
+    pub boost_speed: f32,
+    /// Share of the boost tank burned and regained per second.
+    pub boost_drain: f32,
+    pub boost_regen: f32,
+    /// Chance that a crystal dropped by a rock is a boost cell, which refills the tank.
+    pub boost_cell_chance: f32,
+    /// Deaths before a ship is demoted: tier 2 falls to tier 1, tier 1 loses its upgrades.
+    pub lives: u8,
 
     pub rock_radius: f32,
     pub rock_hp: f32,
@@ -172,7 +233,7 @@ impl Default for Config {
             teams: 3,
             ships_per_team: 5,
             rock_count: 90,
-            max_ticks: 9000,
+            max_ticks: 18000,
             ship_radius: 12.0,
             thrust_accel: 220.0,
             drag: 0.6,
@@ -193,10 +254,21 @@ impl Default for Config {
             turret_range: 380.0,
             turret_damage: 15.0,
             turret_cooldown: 8,
-            shot_damage: 10.0,
-            shot_speed: 520.0,
-            shot_ticks: 27,
-            shot_cooldown: 8,
+            weapons: [
+                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 520.0, cooldown: 8, damage: 10.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 800.0, cooldown: 14, damage: 30.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 560.0, cooldown: 8, damage: 11.0 },
+                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 480.0, cooldown: 5, damage: 8.0 },
+            ],
+            shot_falloff: 0.4,
+            ammo: 30.0,
+            ammo_regen: 4.0,
+            boost_thrust: 2.5,
+            boost_speed: 1.6,
+            boost_drain: 0.5,
+            boost_regen: 0.1,
+            boost_cell_chance: 0.15,
+            lives: 3,
             rock_radius: 18.0,
             rock_hp: 30.0,
             rock_speed: 12.0,
@@ -225,12 +297,27 @@ impl Config {
     pub fn shield_max(&self, s: &Ship) -> f32 {
         self.shield * self.power(s) * self.boost(s, Upgrade::Shield)
     }
-    pub fn damage(&self, s: &Ship) -> f32 {
-        self.shot_damage * self.power(s) * self.boost(s, Upgrade::Attack)
+    pub fn weapon(&self, class: Class) -> &Weapon {
+        &self.weapons[class as usize]
     }
-    /// Ticks between shots.
+    /// Damage per laser at the muzzle.
+    pub fn damage(&self, s: &Ship) -> f32 {
+        self.weapon(s.class).damage * self.boost(s, Upgrade::Attack)
+    }
+    /// Ticks between volleys.
     pub fn cooldown(&self, s: &Ship) -> u16 {
-        ((self.shot_cooldown as f32 / self.boost(s, Upgrade::FireRate)).round() as u16).max(2)
+        ((self.weapon(s.class).cooldown as f32 / self.boost(s, Upgrade::FireRate)).round() as u16).max(2)
+    }
+    pub fn ammo_max(&self, s: &Ship) -> f32 {
+        self.ammo * self.boost(s, Upgrade::Ammo)
+    }
+    pub fn turn_rate_of(&self, s: &Ship) -> f32 {
+        self.turn_rate * self.boost(s, Upgrade::Agility)
+    }
+    /// How many ticks a shot of this class flies.
+    pub fn shot_ticks(&self, class: Class) -> u16 {
+        let w = self.weapon(class);
+        ((w.range / (w.speed * self.dt)).round() as u16).max(1)
     }
     pub fn cargo_max(&self, s: &Ship) -> u32 {
         self.cargo[s.tier as usize - 1]
@@ -251,11 +338,8 @@ impl Config {
     pub fn price(&self, s: &Ship, buy: Buy) -> Option<u32> {
         match buy {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
-            Buy::Tier => (s.tier < TIERS).then_some(self.tier_cost),
+            Buy::Tier(class) => (s.tier < TIERS && class != Class::Basic).then_some(self.tier_cost),
         }
-    }
-    pub fn shot_range(&self) -> f32 {
-        self.shot_speed * self.shot_ticks as f32 * self.dt
     }
     pub fn rock_radius_of(&self, size: u8) -> f32 {
         self.rock_radius * size as f32
@@ -277,8 +361,15 @@ pub struct Ship {
     pub shield_wait: u16,
     /// 1 or 2.
     pub tier: u8,
+    pub class: Class,
+    /// Deaths left before the ship is demoted.
+    pub lives: u8,
+    /// Shots on board.
+    pub ammo: f32,
+    /// Boost tank, 0 to 1.
+    pub boost: f32,
     pub cargo: u32,
-    pub levels: [u8; 6],
+    pub levels: [u8; 8],
     pub cooldown: u16,
     pub alive: bool,
     pub respawn: u16,
@@ -303,17 +394,30 @@ pub struct Rock {
 pub struct Crystal {
     pub pos: Vec2,
     pub ticks: u16,
+    /// A boost cell refills the boost tank instead of going into the cargo hold.
+    pub boost_cell: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Shot {
     pub pos: Vec2,
     pub vel: Vec2,
+    /// Ticks left, and the ticks it started with.
     pub ticks: u16,
+    pub life: u16,
+    /// Damage at the muzzle; see [`Shot::damage_now`].
     pub damage: f32,
     /// The ship that fired it; None for a base turret.
     pub owner: Option<u16>,
     pub team: u8,
+}
+
+impl Shot {
+    /// Damage fades linearly to `falloff` of the muzzle damage over the shot's range.
+    pub fn damage_now(&self, falloff: f32) -> f32 {
+        let flown = 1.0 - self.ticks as f32 / self.life.max(1) as f32;
+        self.damage * (1.0 - (1.0 - falloff) * flown)
+    }
 }
 
 /// A team's home: where its ships appear and get repaired. Losing it loses the match.
@@ -339,6 +443,8 @@ pub enum Event {
     Bought { ship: u16, what: Buy },
     BaseHit { by: u16, team: u8, damage: f32 },
     BaseDestroyed { by: u16, team: u8 },
+    /// Out of lives: a tier-2 ship fell back to tier 1, or a tier-1 ship lost its upgrades.
+    Demoted { ship: u16 },
     /// `by` is None when a base turret did it.
     Hit { by: Option<u16>, victim: u16, damage: f32 },
     Crashed { ship: u16, damage: f32 },
@@ -395,8 +501,12 @@ impl World {
                     shield: 0.0,
                     shield_wait: 0,
                     tier: 1,
+                    class: Class::Basic,
+                    lives: world.cfg.lives,
+                    ammo: 0.0,
+                    boost: 1.0,
                     cargo: 0,
-                    levels: [0; 6],
+                    levels: [0; 8],
                     cooldown: 0,
                     alive: true,
                     respawn: 0,
@@ -455,6 +565,8 @@ impl World {
         ship.hull = cfg.hull_max(ship);
         ship.shield = cfg.shield_max(ship);
         ship.shield_wait = 0;
+        ship.ammo = cfg.ammo_max(ship);
+        ship.boost = 1.0;
         ship.cooldown = 0;
         ship.alive = true;
         ship.last_hit_by = None;
@@ -481,10 +593,12 @@ impl World {
         Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None }
     }
 
-    fn scatter(&mut self, at: Vec2, count: u32, spread: f32) {
+    /// Drops crystals around a point; `cells` lets some of them be boost cells.
+    fn scatter(&mut self, at: Vec2, count: u32, spread: f32, cells: bool) {
         for _ in 0..count {
             let offset = Vec2::from_angle(self.rng.range(0.0, std::f32::consts::TAU)).scale(self.rng.range(0.0, spread));
-            self.crystals.push(Crystal { pos: wrap(self.cfg.world_size, at.add(offset)), ticks: self.cfg.crystal_ticks });
+            let boost_cell = cells && self.rng.unit() < self.cfg.boost_cell_chance;
+            self.crystals.push(Crystal { pos: wrap(self.cfg.world_size, at.add(offset)), ticks: self.cfg.crystal_ticks, boost_cell });
         }
     }
 
@@ -517,8 +631,9 @@ impl World {
                     ship.cargo -= cost;
                     match what {
                         Buy::Upgrade(u) => ship.levels[u as usize] += 1,
-                        Buy::Tier => {
+                        Buy::Tier(class) => {
                             ship.tier += 1;
+                            ship.class = class;
                             ship.hull = cfg.hull_max(ship);
                             ship.shield = cfg.shield_max(ship);
                         }
@@ -526,14 +641,18 @@ impl World {
                     self.events.push(Event::Bought { ship: i as u16, what });
                 }
             }
-            ship.heading += act.turn.clamp(-1, 1) as f32 * cfg.turn_rate * dt;
+            ship.heading += act.turn.clamp(-1, 1) as f32 * cfg.turn_rate_of(ship) * dt;
             ship.heading = ship.heading.rem_euclid(std::f32::consts::TAU);
             let speed_boost = cfg.boost(ship, Upgrade::Speed);
+            // Boosting burns the tank and needs the engine on; otherwise the tank slowly refills.
+            let boosting = act.boost && act.thrust && ship.boost > 0.0;
+            ship.boost = if boosting { (ship.boost - cfg.boost_drain * dt).max(0.0) } else { (ship.boost + cfg.boost_regen * dt).min(1.0) };
+            let (push, top) = if boosting { (cfg.boost_thrust, cfg.boost_speed) } else { (1.0, 1.0) };
             if act.thrust {
-                ship.vel = ship.vel.add(Vec2::from_angle(ship.heading).scale(cfg.thrust_accel * speed_boost * dt));
+                ship.vel = ship.vel.add(Vec2::from_angle(ship.heading).scale(cfg.thrust_accel * speed_boost * push * dt));
             }
             ship.vel = ship.vel.scale(1.0 - cfg.drag * dt);
-            let (speed, cap) = (ship.vel.len(), cfg.max_speed * speed_boost);
+            let (speed, cap) = (ship.vel.len(), cfg.max_speed * speed_boost * top);
             if speed > cap {
                 ship.vel = ship.vel.scale(cap / speed);
             }
@@ -546,18 +665,29 @@ impl World {
             if home.alive() && delta(size, home.pos, ship.pos).len() < cfg.base_heal_radius {
                 ship.hull = (ship.hull + cfg.base_heal * dt).min(cfg.hull_max(ship));
             }
+            ship.ammo = (ship.ammo + cfg.ammo_regen * cfg.boost(ship, Upgrade::Ammo) * dt).min(cfg.ammo_max(ship));
             ship.cooldown = ship.cooldown.saturating_sub(1);
-            if act.fire && ship.cooldown == 0 {
+            let weapon = *cfg.weapon(ship.class);
+            if act.fire && ship.cooldown == 0 && ship.ammo >= weapon.lasers as f32 {
                 ship.cooldown = cfg.cooldown(ship);
-                let dir = Vec2::from_angle(ship.heading);
-                self.shots.push(Shot {
-                    pos: wrap(size, ship.pos.add(dir.scale(cfg.ship_radius))),
-                    vel: ship.vel.add(dir.scale(cfg.shot_speed)),
-                    ticks: cfg.shot_ticks,
-                    damage: cfg.damage(ship),
-                    owner: Some(i as u16),
-                    team: ship.team,
-                });
+                ship.ammo -= weapon.lasers as f32;
+                let life = cfg.shot_ticks(ship.class);
+                let side = Vec2::from_angle(ship.heading + std::f32::consts::FRAC_PI_2);
+                for laser in 0..weapon.lasers {
+                    // Lasers sit symmetrically around the nose: fanned out, or side by side.
+                    let slot = laser as f32 - (weapon.lasers - 1) as f32 / 2.0;
+                    let dir = Vec2::from_angle(ship.heading + slot * weapon.fan);
+                    let offset = if weapon.fan == 0.0 { side.scale(slot * 14.0) } else { Vec2::default() };
+                    self.shots.push(Shot {
+                        pos: wrap(size, ship.pos.add(dir.scale(cfg.ship_radius)).add(offset)),
+                        vel: ship.vel.add(dir.scale(weapon.speed)),
+                        ticks: life,
+                        life,
+                        damage: cfg.damage(ship),
+                        owner: Some(i as u16),
+                        team: ship.team,
+                    });
+                }
             }
         }
 
@@ -576,13 +706,16 @@ impl World {
                     .filter(|(d, _)| d.len() < self.cfg.turret_range)
                     .min_by(|a, b| a.0.len().total_cmp(&b.0.len()));
                 if let Some((to, vel)) = target {
-                    let lead = to.add(vel.scale(to.len() / self.cfg.shot_speed));
+                    let gun = self.cfg.weapon(Class::Basic);
+                    let lead = to.add(vel.scale(to.len() / gun.speed));
                     let dir = lead.scale(1.0 / lead.len().max(1e-3));
+                    let life = self.cfg.shot_ticks(Class::Basic);
                     base.cooldown = self.cfg.turret_cooldown;
                     self.shots.push(Shot {
                         pos: wrap(size, base.pos.add(dir.scale(self.cfg.base_radius))),
-                        vel: dir.scale(self.cfg.shot_speed),
-                        ticks: self.cfg.shot_ticks,
+                        vel: dir.scale(gun.speed),
+                        ticks: life,
+                        life,
                         damage: self.cfg.turret_damage,
                         owner: None,
                         team: team as u8,
@@ -592,15 +725,17 @@ impl World {
         }
 
         // Shots: move, then hit the first rock or enemy ship they touch.
+        let falloff = self.cfg.shot_falloff;
         for shot in &mut self.shots {
             shot.pos = wrap(size, shot.pos.add(shot.vel.scale(dt)));
             shot.ticks -= 1;
+            let damage = shot.damage_now(falloff);
             if let Some(rock) = self
                 .rocks
                 .iter_mut()
                 .find(|r| r.hp > 0.0 && delta(size, r.pos, shot.pos).len() < self.cfg.rock_radius * r.size as f32)
             {
-                rock.hp -= shot.damage;
+                rock.hp -= damage;
                 rock.last_hit_by = shot.owner;
                 shot.ticks = 0;
                 continue;
@@ -609,9 +744,9 @@ impl World {
                 s.alive && s.team != shot.team && delta(size, s.pos, shot.pos).len() < self.cfg.ship_radius
             });
             if let Some(v) = hit {
-                Self::hurt(&self.cfg, &mut self.ships[v], shot.damage);
+                Self::hurt(&self.cfg, &mut self.ships[v], damage);
                 self.ships[v].last_hit_by = shot.owner;
-                self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage: shot.damage });
+                self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage });
                 shot.ticks = 0;
                 continue;
             }
@@ -619,8 +754,9 @@ impl World {
             let Some(owner) = shot.owner else { continue };
             let base = self.bases.iter().position(|b| b.alive() && delta(size, b.pos, shot.pos).len() < self.cfg.base_radius);
             if let Some(team) = base.filter(|team| *team as u8 != shot.team) {
-                let damage = shot.damage.min(self.bases[team].hp);
-                self.bases[team].hp -= shot.damage;
+                let dealt = damage.min(self.bases[team].hp);
+                self.bases[team].hp -= damage;
+                let damage = dealt;
                 self.events.push(Event::BaseHit { by: owner, team: team as u8, damage });
                 if !self.bases[team].alive() {
                     self.events.push(Event::BaseDestroyed { by: owner, team: team as u8 });
@@ -664,7 +800,7 @@ impl World {
             }
             let (pos, rock_size, by) = (self.rocks[r].pos, self.rocks[r].size, self.rocks[r].last_hit_by);
             self.events.push(Event::RockDestroyed { by, size: rock_size });
-            self.scatter(pos, CRYSTALS_PER_SIZE[rock_size as usize], self.cfg.rock_radius * rock_size as f32);
+            self.scatter(pos, CRYSTALS_PER_SIZE[rock_size as usize], self.cfg.rock_radius * rock_size as f32, true);
             self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
         }
 
@@ -676,7 +812,9 @@ impl World {
             c.ticks -= 1;
             let mut best: Option<(usize, f32)> = None;
             for (i, s) in ships.iter().enumerate() {
-                if !s.alive || s.cargo >= cfg.cargo_max(s) {
+                // A boost cell is worth picking up until the tank is full; a crystal needs cargo room.
+                let wanted = if c.boost_cell { s.boost < 1.0 } else { s.cargo < cfg.cargo_max(s) };
+                if !s.alive || !wanted {
                     continue;
                 }
                 let dist = delta(size, s.pos, c.pos).len();
@@ -685,6 +823,10 @@ impl World {
                 }
             }
             if let Some((i, _)) = best {
+                if c.boost_cell {
+                    ships[i].boost = 1.0;
+                    return false;
+                }
                 ships[i].cargo += 1;
                 ships[i].collected += 1;
                 ships[i].score += 1;
@@ -705,12 +847,25 @@ impl World {
             ship.respawn = self.cfg.respawn_ticks;
             ship.cargo = 0;
             ship.deaths += 1;
+            ship.lives = ship.lives.saturating_sub(1);
+            if ship.lives == 0 {
+                ship.lives = self.cfg.lives;
+                if ship.tier > 1 {
+                    ship.tier -= 1;
+                    ship.class = Class::Basic;
+                    let cap = self.cfg.max_level(ship.tier);
+                    ship.levels.iter_mut().for_each(|l| *l = (*l).min(cap));
+                } else {
+                    ship.levels = [0; 8];
+                }
+                self.events.push(Event::Demoted { ship: i as u16 });
+            }
             if let Some(k) = by {
                 self.ships[k as usize].kills += 1;
                 self.ships[k as usize].score += self.cfg.kill_score;
             }
             self.events.push(Event::Killed { by, victim: i as u16 });
-            self.scatter(pos, dropped, 30.0);
+            self.scatter(pos, dropped, 30.0, false);
         }
 
         &self.events
@@ -731,6 +886,10 @@ impl World {
                 put(f.to_bits());
             }
             put(s.tier as u32);
+            put(s.class as u32);
+            put(s.lives as u32);
+            put(s.ammo.to_bits());
+            put(s.boost.to_bits());
             put(s.cargo);
             put(s.score);
             put(s.alive as u32);

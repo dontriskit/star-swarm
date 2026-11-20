@@ -6,10 +6,13 @@ fn main() {
     let matches: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let cfg = Config::default();
     let mut wins = vec![0u32; cfg.teams];
-    let (mut draws, mut minutes, mut levels, mut tier2) = (0u32, 0.0f64, 0.0f64, 0u32);
+    let (mut draws, mut minutes, mut levels) = (0u32, 0.0f64, 0.0f64);
+    let mut classes = [0u32; 4];
+    let mut per_upgrade = [0f64; 8];
+    let mut ships = 0u32;
     for seed in 1..=matches {
         let mut world = World::new(cfg.clone(), seed);
-        let mut bot = ScriptedBot;
+        let mut bots: Vec<ScriptedBot> = (0..world.ships.len()).map(ScriptedBot::for_ship).collect();
         let mut commander = ScriptedCommander::new(seed);
         while !world.done() {
             if world.tick % 450 == 0 {
@@ -17,7 +20,7 @@ fn main() {
                     commander.command(&mut world, team);
                 }
             }
-            let actions: Vec<Action> = (0..world.ships.len()).map(|i| bot.act(&observe(&world, i), &world.cfg)).collect();
+            let actions: Vec<Action> = (0..world.ships.len()).map(|i| bots[i].act(&observe(&world, i), &world.cfg)).collect();
             world.step(&actions);
         }
         match world.winner() {
@@ -26,9 +29,15 @@ fn main() {
         }
         minutes += world.tick as f64 * cfg.dt as f64 / 60.0;
         levels += world.ships.iter().flat_map(|s| s.levels).map(f64::from).sum::<f64>() / world.ships.len() as f64;
-        tier2 += world.ships.iter().filter(|s| s.tier == 2).count() as u32;
+        for s in &world.ships {
+            classes[s.class as usize] += 1;
+            s.levels.iter().enumerate().for_each(|(u, l)| per_upgrade[u] += *l as f64);
+            ships += 1;
+        }
     }
     let m = matches as f64;
     println!("{matches} matches: wins per team {wins:?}, no winner in time {draws}");
-    println!("  {:.1} min per match, {:.1} upgrade levels per ship at the end, {:.1} tier-2 ships per match", minutes / m, levels / m, tier2 as f64 / m);
+    println!("  {:.1} min per match, {:.1} upgrade levels per ship at the end", minutes / m, levels / m);
+    println!("  ships at the end by class: {:?}", CLASSES.iter().zip(classes).map(|(c, n)| format!("{c:?} {:.0}%", 100.0 * n as f64 / ships as f64)).collect::<Vec<_>>());
+    println!("  mean level per upgrade: {:?}", UPGRADES.iter().zip(per_upgrade).map(|(u, l)| format!("{u:?} {:.1}", l / ships as f64)).collect::<Vec<_>>());
 }

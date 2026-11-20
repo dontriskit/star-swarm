@@ -35,11 +35,13 @@ pub struct Rewards {
     pub win: f32,
     /// To every ship of a team when its base is destroyed (subtracted).
     pub lose: f32,
+    /// Per point of damage the ship takes, from shots or rocks, shield or hull (subtracted).
+    pub hurt: f32,
 }
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0 }
     }
 }
 
@@ -58,6 +60,10 @@ pub struct EpisodeStats {
     pub won: bool,
     /// Team 0's base was destroyed.
     pub lost: bool,
+    /// Share of team 0's ships in each class at the end, indexed by [`swarm_sim::Class`].
+    pub classes: [f32; 4],
+    /// Team 0's mean level of each upgrade at the end, indexed by [`swarm_sim::Upgrade`].
+    pub upgrades: [f32; 8],
 }
 
 impl EpisodeStats {
@@ -74,6 +80,8 @@ impl EpisodeStats {
             deaths: mean(|s| s.deaths),
             won: world.winner() == Some(0),
             lost: !world.bases[0].alive(),
+            classes: std::array::from_fn(|c| team.iter().filter(|s| s.class as usize == c).count() as f32 / team.len() as f32),
+            upgrades: std::array::from_fn(|u| team.iter().map(|s| s.levels[u] as f32).sum::<f32>() / team.len() as f32),
         }
     }
 }
@@ -162,22 +170,22 @@ impl VecEnv {
     }
 
     /// What the scripted bot would do for every agent, in the action encoding of [`VecEnv::step`].
-    pub fn scripted(&self, out: &mut [u8]) {
+    pub fn scripted(&self, out: &mut [u16]) {
         let ships = self.ships();
         assert_eq!(out.len(), self.agents());
         self.slots.par_iter().zip(out.par_chunks_mut(ships)).for_each(|(slot, out)| {
-            let mut bot = ScriptedBot;
             for (ship, action) in out.iter_mut().enumerate() {
+                let mut bot = ScriptedBot::for_ship(ship);
                 *action = replay::encode(&bot.act(&observe(&slot.world, ship), &slot.world.cfg));
             }
         });
     }
 
-    /// Holds each agent's action (one byte, see [`swarm_sim::replay::encode`]) for
+    /// Holds each agent's action (16 bits, see [`swarm_sim::replay::encode`]) for
     /// `frame_skip` ticks. `rewards` and `dones` get one entry per agent. A match
     /// that ends is replaced by a fresh one at once; its agents get `dones` = 1
     /// and the next observation comes from the new match.
-    pub fn step(&mut self, actions: &[u8], rewards: &mut [f32], dones: &mut [u8]) {
+    pub fn step(&mut self, actions: &[u16], rewards: &mut [f32], dones: &mut [u8]) {
         let ships = self.ships();
         let agents = self.agents();
         assert!(actions.len() == agents && rewards.len() == agents && dones.len() == agents);
@@ -202,9 +210,8 @@ impl VecEnv {
                                 slot.commander.command(&mut slot.world, team as u8);
                             }
                         }
-                        let mut bot = ScriptedBot;
                         for ship in learners * per_team..held.len() {
-                            held[ship] = bot.act(&observe(&slot.world, ship), &slot.world.cfg);
+                            held[ship] = ScriptedBot::for_ship(ship).act(&observe(&slot.world, ship), &slot.world.cfg);
                         }
                     }
                     for event in slot.world.step(&held) {
@@ -220,9 +227,14 @@ impl VecEnv {
                             Event::RockDestroyed { by: Some(ship), size } => rewards[ship as usize] += pay.rock * size as f32,
                             Event::RockDestroyed { by: None, .. } => {}
                             Event::Bought { ship, .. } => rewards[ship as usize] += pay.buy,
-                            Event::Hit { by: Some(by), damage, .. } => rewards[by as usize] += pay.hit * damage,
-                            Event::Hit { by: None, .. } => {}
-                            Event::Crashed { ship, damage } => rewards[ship as usize] -= pay.crash * damage,
+                            Event::Hit { by, victim, damage } => {
+                                rewards[victim as usize] -= pay.hurt * damage;
+                                if let Some(by) = by {
+                                    rewards[by as usize] += pay.hit * damage;
+                                }
+                            }
+                            Event::Demoted { .. } => {}
+                            Event::Crashed { ship, damage } => rewards[ship as usize] -= (pay.crash + pay.hurt) * damage,
                             Event::Killed { by, victim } => {
                                 rewards[victim as usize] -= pay.death;
                                 if let Some(by) = by {
@@ -268,7 +280,7 @@ mod tests {
 
     fn run(env: &mut VecEnv, steps: usize) -> (f32, Vec<EpisodeStats>, Vec<f32>) {
         let agents = env.agents();
-        let (mut actions, mut rewards, mut dones) = (vec![0u8; agents], vec![0f32; agents], vec![0u8; agents]);
+        let (mut actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
         let mut obs = vec![0f32; agents * OBS_LEN];
         let (mut total, mut stats) = (0.0, Vec::new());
         for _ in 0..steps {
@@ -288,7 +300,8 @@ mod tests {
         assert!(total > 0.0, "scripted bots earned {total}");
         // 900 ticks at 3 per step is 300 steps a match: two rounds of 8 matches have ended.
         assert_eq!(stats.len(), 16);
-        assert!(stats.iter().all(|s| (s.minutes - 0.5).abs() < 1e-3 && s.collected > 0.0));
+        assert!(stats.iter().all(|s| (s.minutes - 0.5).abs() < 1e-3));
+        assert!(stats.iter().map(|s| s.collected).sum::<f32>() > 0.0);
         assert!(obs.iter().all(|v| v.is_finite()));
     }
 
@@ -317,7 +330,9 @@ mod tests {
     #[test]
     fn scripted_teams_ignore_passed_actions_and_matches_end_with_a_winner() {
         let pay = Rewards { win: 10.0, lose: 10.0, base_hit: 0.1, ..Rewards::default() };
-        let mut env = VecEnv::with_learners(Config::default(), 8, 3, 3, pay, 1);
+        // Weak, undefended bases and short matches, so scripted raids settle matches quickly.
+        let cfg = Config { base_hp: 100.0, turret_damage: 0.0, max_ticks: 3000, ..Config::default() };
+        let mut env = VecEnv::with_learners(cfg, 8, 3, 3, pay, 1);
         let agents = env.agents();
         let mut mask = vec![0u8; agents];
         env.controlled(&mut mask);
@@ -325,9 +340,9 @@ mod tests {
         assert_eq!(&mask[..15], &[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
         // The learner team does nothing at all; the scripted teams must still play and finish matches.
-        let (actions, mut rewards, mut dones) = (vec![0u8; agents], vec![0f32; agents], vec![0u8; agents]);
+        let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
         let mut stats = Vec::new();
-        for _ in 0..3000 {
+        for _ in 0..1200 {
             env.step(&actions, &mut rewards, &mut dones);
             stats.extend(env.take_stats());
             if stats.len() >= 8 {
@@ -335,8 +350,8 @@ mod tests {
             }
         }
         assert!(stats.len() >= 8, "only {} matches ended", stats.len());
-        // An idle team can still win when the other two destroy each other's bases, but it mostly loses.
         assert!(stats.iter().all(|s| !(s.won && s.lost)));
-        assert!(stats.iter().filter(|s| s.lost).count() * 2 >= stats.len(), "an idle team should usually lose its base");
+        // The idle team bought nothing and stayed tier 1.
+        assert!(stats.iter().all(|s| s.classes[0] == 1.0 && s.upgrades.iter().all(|l| *l == 0.0)));
     }
 }

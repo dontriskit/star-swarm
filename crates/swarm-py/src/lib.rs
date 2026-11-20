@@ -23,14 +23,15 @@ struct Env {
     obs: Vec<f32>,
     rewards: Vec<f32>,
     dones: Vec<u8>,
-    scripted: Vec<u8>,
+    scripted: Vec<u16>,
+    actions: Vec<u16>,
     controlled: Vec<u8>,
 }
 
 #[pymethods]
 impl Env {
     /// `rewards` overrides reward weights by name: collect, rock, buy, hit, kill, crash, death,
-    /// base_hit, base_lost, win, lose. Teams `0..learners` take the actions passed to `step`;
+    /// base_hit, base_lost, win, lose, hurt. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
     #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=1, ships_per_team=4, rock_count=40, world_size=1400.0, max_ticks=1800, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
@@ -70,6 +71,7 @@ impl Env {
                 "base_lost" => &mut pay.base_lost,
                 "win" => &mut pay.win,
                 "lose" => &mut pay.lose,
+                "hurt" => &mut pay.hurt,
                 other => return Err(PyValueError::new_err(format!("unknown reward weight: {other}"))),
             };
             *slot = value;
@@ -79,7 +81,7 @@ impl Env {
         let agents = inner.agents();
         let mut controlled = vec![0; agents];
         inner.controlled(&mut controlled);
-        Ok(Env { obs: vec![0.0; agents * OBS_LEN], rewards: vec![0.0; agents], dones: vec![0; agents], scripted: vec![0; agents], controlled, inner })
+        Ok(Env { obs: vec![0.0; agents * OBS_LEN], rewards: vec![0.0; agents], dones: vec![0; agents], scripted: vec![0; agents], actions: vec![0; agents], controlled, inner })
     }
 
     #[getter]
@@ -104,21 +106,26 @@ impl Env {
         PyBytes::new(py, bytes_of(&self.obs))
     }
 
-    /// Takes one action byte per agent: thrust | turn << 1 | fire << 3 | buy << 4, with
-    /// turn in 0..=2 (right, straight, left) and buy 0 for nothing or 1..=8 for an upgrade.
+    /// Takes one little-endian uint16 per agent: thrust | turn << 1 | fire << 3 | boost << 4 | buy << 5,
+    /// with turn in 0..=2 (right, straight, left) and buy 0 for nothing, 1..=8 for an upgrade,
+    /// 9..=11 for tier 2 as a Lancer, Twin or Scatter.
     /// Returns (rewards as float32, dones as uint8), one entry per agent.
     fn step<'py>(&mut self, py: Python<'py>, actions: &[u8]) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        if actions.len() != self.inner.agents() {
-            return Err(PyValueError::new_err(format!("expected {} actions, got {}", self.inner.agents(), actions.len())));
+        if actions.len() != self.inner.agents() * 2 {
+            return Err(PyValueError::new_err(format!("expected {} uint16 actions, got {} bytes", self.inner.agents(), actions.len())));
         }
-        self.inner.step(actions, &mut self.rewards, &mut self.dones);
+        for (slot, bytes) in self.actions.iter_mut().zip(actions.chunks_exact(2)) {
+            *slot = u16::from_le_bytes([bytes[0], bytes[1]]);
+        }
+        self.inner.step(&self.actions, &mut self.rewards, &mut self.dones);
         Ok((PyBytes::new(py, bytes_of(&self.rewards)), PyBytes::new(py, &self.dones)))
     }
 
-    /// The scripted bot's action byte for every agent in the current state.
+    /// The scripted bot's action for every agent in the current state, as little-endian uint16.
     fn scripted<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
         self.inner.scripted(&mut self.scripted);
-        PyBytes::new(py, &self.scripted)
+        let bytes: Vec<u8> = self.scripted.iter().flat_map(|a| a.to_le_bytes()).collect();
+        PyBytes::new(py, &bytes)
     }
 
     /// uint8 per agent: 1 where `step` uses the action passed in, 0 where the ship is scripted.
@@ -126,14 +133,20 @@ impl Env {
         PyBytes::new(py, &self.controlled)
     }
 
-    /// Matches finished since the last call, seen from team 0: per-ship averages
-    /// (minutes, crystals collected, upgrade levels, kills, deaths), won and lost as 0 or 1,
-    /// then the slot the match ran in and how many matches that slot had finished before it.
-    fn take_stats(&mut self) -> Vec<(f32, f32, f32, f32, f32, f32, f32, u32, u32)> {
+    /// Matches finished since the last call, seen from team 0, one list of floats each:
+    /// minutes, crystals, upgrade levels, kills, deaths (per-ship averages), won, lost (0 or 1),
+    /// slot, matches that slot had finished before, then the share of ships in each class
+    /// (Basic, Lancer, Twin, Scatter) and the mean level of each of the eight upgrades.
+    fn take_stats(&mut self) -> Vec<Vec<f32>> {
         self.inner
             .take_stats()
             .into_iter()
-            .map(|s| (s.minutes, s.collected, s.levels, s.kills, s.deaths, s.won as u8 as f32, s.lost as u8 as f32, s.env, s.episode))
+            .map(|s| {
+                let mut row = vec![s.minutes, s.collected, s.levels, s.kills, s.deaths, s.won as u8 as f32, s.lost as u8 as f32, s.env as f32, s.episode as f32];
+                row.extend(s.classes);
+                row.extend(s.upgrades);
+                row
+            })
             .collect()
     }
 }

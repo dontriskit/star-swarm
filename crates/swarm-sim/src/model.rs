@@ -9,9 +9,9 @@ use crate::bot::Controller;
 use crate::obs::{OBS_LEN, Observation};
 use crate::sim::{Action, Config};
 
-const MAGIC: &[u8; 8] = b"SWPOL002";
-/// Action heads in the order the trainer uses: thrust, turn, fire, buy.
-const HEADS: [usize; 4] = [2, 3, 2, 8];
+const MAGIC: &[u8; 8] = b"SWPOL003";
+/// Action heads in the order the trainer uses: thrust, turn, fire, boost, buy.
+const HEADS: [usize; 5] = [2, 3, 2, 2, crate::replay::BUY_CODES];
 
 struct Layer {
     inputs: usize,
@@ -91,7 +91,8 @@ impl Net {
             thrust: pick[0] == 1,
             turn: pick[1] as i8 - 1,
             fire: pick[2] == 1,
-            buy: crate::replay::buy_of(pick[3] as u8),
+            boost: pick[3] == 1,
+            buy: crate::replay::buy_of(pick[4] as u8),
         }
     }
 }
@@ -144,7 +145,7 @@ impl HybridBot {
     const THREAT_RANGE: f32 = 260.0;
 
     pub fn new(net: Arc<Net>, self_defence: bool) -> Self {
-        HybridBot { model: ModelBot::new(net, ModelBot::HOLD), script: crate::bot::ScriptedBot, self_defence }
+        HybridBot { model: ModelBot::new(net, ModelBot::HOLD), script: crate::bot::ScriptedBot::default(), self_defence }
     }
 }
 

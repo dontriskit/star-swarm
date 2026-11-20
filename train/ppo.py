@@ -3,7 +3,7 @@
 Usage (from the repo root, after `maturin develop --release` in crates/swarm-py):
 
     .venv/bin/python train/ppo.py --name win --updates 300 \\
-        --reward win=20 --reward lose=20 --reward base_hit=0.2 --reward base_lost=0.05 --reward kill=3 --reward hit=0.02
+        --reward win=50 --reward lose=50 --reward base_hit=0.05 --reward base_lost=0.02 --reward hurt=0.02
 
 Writes runs/<name>/metrics.jsonl and runs/<name>/policy.pt.
 """
@@ -19,8 +19,11 @@ from torch import nn
 
 from swarm_py import OBS_LEN, Env
 
-# Sizes of the four action heads: thrust, turn, fire, buy.
-HEADS = (2, 3, 2, 8)
+# Sizes of the five action heads: thrust, turn, fire, boost, buy.
+HEADS = (2, 3, 2, 2, 12)
+REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt")
+CLASSES = ("basic", "lancer", "twin", "scatter")
+UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
 
 
 class Policy(nn.Module):
@@ -67,9 +70,10 @@ def forget(policy: Policy, how: str, device, hidden: int):
 
 
 def pack(actions: torch.Tensor) -> bytes:
-    """One byte per agent, the encoding Env.step expects."""
+    """One little-endian uint16 per agent, the encoding Env.step expects."""
     a = actions
-    return (a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4)).to(torch.uint8).cpu().numpy().tobytes()
+    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5)
+    return code.cpu().numpy().astype("<u2").tobytes()
 
 
 def observe(env: Env, device) -> torch.Tensor:
@@ -86,8 +90,9 @@ def make_env(args, envs: int, seed: int, learners: int | None = None) -> Env:
         rock_count=args.rocks,
         world_size=args.world_size,
         max_ticks=args.max_ticks,
-        rewards={name: float(weight) for name, weight in (pair.split("=") for pair in args.reward)},
-        learners=args.learners if learners is None else learners,
+        # Nothing is rewarded unless asked for with --reward.
+        rewards={**dict.fromkeys(REWARDS, 0.0), **{name: float(weight) for name, weight in (pair.split("=") for pair in args.reward)}},
+        learners=learners,
         base_hp=args.base_hp,
         turret_damage=args.turret_damage,
     )
@@ -111,6 +116,9 @@ def summarize(stats) -> dict:
         "levels": float(s[:, 2].mean()),
         "kills": float(s[:, 3].mean()),
         "deaths": float(s[:, 4].mean()),
+        # What the ships turned into: share of each class and mean level of each upgrade at the end.
+        "classes": {name: round(float(s[:, 9 + i].mean()), 3) for i, name in enumerate(CLASSES)},
+        "upgrades": {name: round(float(s[:, 13 + i].mean()), 2) for i, name in enumerate(UPGRADES)},
     }
 
 
@@ -150,11 +158,17 @@ def train(args):
     baseline = play(args, scripted, args.eval_envs, 1_000_000, device)
     record({"kind": "scripted", **baseline})
 
-    env = make_env(args, args.envs, args.seed)
-    # Only the ships we fly are kept on the GPU; scripted ships get a dummy action.
-    ours = controlled(env, device).nonzero().squeeze(-1)
+    # Against "self" every team takes actions from us: team 0 from the policy being trained,
+    # the others from a frozen earlier copy of it. Against "scripted" only team 0 is ours.
+    self_play = args.opponent == "self"
+    env = make_env(args, args.envs, args.seed, learners=args.teams if self_play else 1)
+    team = torch.arange(env.agents, device=device) % env.ships // args.ships_per_team
+    ours = (team == 0).nonzero().squeeze(-1)
+    theirs = (team != 0).nonzero().squeeze(-1)
     n, steps = len(ours), args.steps
     everyone = torch.zeros(env.agents, len(HEADS), dtype=torch.long, device=device)
+    rival = Policy(args.hidden).to(device)
+    past = []
     policy = Policy(args.hidden).to(device)
     if args.init:
         policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
@@ -168,20 +182,28 @@ def train(args):
     rew_buf = torch.zeros(steps, n, device=device)
     done_buf = torch.zeros(steps, n, device=device)
 
-    obs = observe(env, device)[ours]
+    full = observe(env, device)
+    obs = full[ours]
     stats, started, samples = [], time.time(), 0
     for update in range(1, args.updates + 1):
         # Exploration bonus fades linearly, so the policy ends up decisive.
         entropy_coef = args.entropy_coef + (args.entropy_end - args.entropy_coef) * (update - 1) / max(args.updates - 1, 1)
+        if self_play and (update - 1) % args.snapshot_every == 0:
+            # Keep a few earlier versions and play this stretch against one of them, mostly the newest.
+            past = (past + [{k: v.clone() for k, v in policy.state_dict().items()}])[-args.snapshots:]
+            rival.load_state_dict(past[-1] if torch.rand(()) < 0.5 else past[int(torch.randint(len(past), ()))])
         with torch.no_grad():
             for t in range(steps):
                 actions, logp, value = policy.act(obs)
                 everyone[ours] = actions
+                if self_play:
+                    everyone[theirs] = rival.act(full[theirs])[0]
                 rewards, dones = env.step(pack(everyone))
                 obs_buf[t], act_buf[t], logp_buf[t], val_buf[t] = obs, actions, logp, value
                 rew_buf[t] = torch.tensor(np.frombuffer(rewards, dtype=np.float32), device=device)[ours]
                 done_buf[t] = torch.tensor(np.frombuffer(dones, dtype=np.uint8), device=device)[ours].float()
-                obs = observe(env, device)[ours]
+                full = observe(env, device)
+                obs = full[ours]
             stats.extend(env.take_stats())
 
             # Generalised advantage estimation; a finished match cuts the return.
@@ -267,10 +289,13 @@ if __name__ == "__main__":
     p.add_argument("--ships-per-team", type=int, default=5)
     p.add_argument("--rocks", type=int, default=90)
     p.add_argument("--world-size", type=float, default=2400.0)
-    p.add_argument("--max-ticks", type=int, default=9000)
+    p.add_argument("--max-ticks", type=int, default=18000)
     p.add_argument("--base-hp", type=float, default=1000.0)
     p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")
-    p.add_argument("--learners", type=int, default=1, help="teams flown by the policy in training; the rest are scripted")
+    p.add_argument("--opponent", default="self", choices=["self", "scripted"],
+                   help="who flies the other teams in training: earlier copies of the policy, or the scripted bot")
+    p.add_argument("--snapshot-every", type=int, default=10, help="updates between new frozen copies for self-play")
+    p.add_argument("--snapshots", type=int, default=6, help="how many frozen copies to keep")
     p.add_argument("--reward", action="append", default=[], metavar="NAME=WEIGHT", help="override a reward weight, e.g. --reward buy=4")
     args = p.parse_args()
     if args.entropy_end is None:

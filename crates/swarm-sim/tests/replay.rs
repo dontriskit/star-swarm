@@ -3,12 +3,14 @@ use swarm_sim::*;
 
 #[test]
 fn every_action_survives_encoding() {
+    let buys: Vec<Option<Buy>> = std::iter::once(None)
+        .chain(UPGRADES.iter().copied().map(Buy::Upgrade).chain(TIER2.iter().copied().map(Buy::Tier)).map(Some))
+        .collect();
     for thrust in [false, true] {
         for turn in [-1, 0, 1] {
-            for fire in [false, true] {
-                let buys = UPGRADES.iter().copied().map(Buy::Upgrade).chain([Buy::Tier]).map(Some);
-                for buy in std::iter::once(None).chain(buys) {
-                    let a = Action { thrust, turn, fire, buy };
+            for (fire, boost) in [(false, false), (false, true), (true, false), (true, true)] {
+                for &buy in &buys {
+                    let a = Action { thrust, turn, fire, boost, buy };
                     assert_eq!(decode(encode(&a)), a);
                 }
             }
@@ -21,7 +23,7 @@ fn saved_replay_reproduces_the_match() {
     let seed = 11;
     let mut world = World::new(Config::default(), seed);
     let mut replay = Replay::new(seed, &world.cfg);
-    let mut bot = ScriptedBot;
+    let mut bot = ScriptedBot::default();
     let mut commander = ScriptedCommander::new(seed);
     for tick in 0..1500 {
         if tick % 450 == 0 {

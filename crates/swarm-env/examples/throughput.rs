@@ -9,7 +9,7 @@ fn main() {
     let frame_skip = 3;
     let mut env = VecEnv::new(cfg, envs, 1, frame_skip, Rewards::default());
     let agents = env.agents();
-    let (mut actions, mut rewards, mut dones) = (vec![0u8; agents], vec![0f32; agents], vec![0u8; agents]);
+    let (mut actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
     let mut obs = vec![0f32; agents * OBS_LEN];
     let steps = 600;
     let start = Instant::now();

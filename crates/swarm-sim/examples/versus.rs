@@ -21,9 +21,10 @@ fn main() -> std::io::Result<()> {
             let mut pilots: Vec<Box<dyn Controller>> = world
                 .ships
                 .iter()
-                .map(|s| match (s.team == 0, pilot) {
+                .enumerate()
+                .map(|(i, s)| match (s.team == 0, pilot) {
                     (true, "model") => Box::new(ModelBot::new(net.clone(), ModelBot::HOLD)) as Box<dyn Controller>,
-                    _ => Box::new(ScriptedBot),
+                    _ => Box::new(ScriptedBot::for_ship(i)),
                 })
                 .collect();
             while !world.done() {
