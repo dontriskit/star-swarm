@@ -208,8 +208,9 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
         }
         let reach = ring(world, &view, *eye, world.cfg.view_range, 48);
         if reach.len() >= 3 {
-            fill_shape(window, &reach, rgba(0x4c9aff0a));
-            stroke_shape(window, &reach, 1.0, rgba(0x4c9aff38));
+            // Very faint: nine of these overlap around a team.
+            fill_shape(window, &reach, rgba(0x4c9aff03));
+            stroke_shape(window, &reach, 1.0, rgba(0x4c9aff2a));
         }
     }
     // Seen clearly: within sight of one of the blue team's living ships. On the radar: within
@@ -220,8 +221,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
     for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
             // Boost cells are larger and orange.
-            // Bigger packs are drawn bigger.
-            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.2 + (crystal.value as f32).sqrt() * 0.22, rgb(0x8ef0c8)) };
+            // A pack is drawn at its true size, which is what a ship has to reach; never too small to see.
+            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { ((world.cfg.crystal_radius(crystal.value) * scale).max(1.8), rgb(0x8ef0c8)) };
             dot(window, p, half, color);
         }
     }

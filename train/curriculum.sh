@@ -19,15 +19,15 @@ py=.venv/bin/python
 
 # base HP, turret damage, updates, entropy bonus at the end of the stage, share of the starter reward
 # Each update is 2048 matches x 64 decisions: about 900 thousand samples for the ships being trained.
-stages=("100 0 30 0.01 1" "300 5 50 0.01 1" "600 10 75 0.01 0.5" "1000 15 150 0.002 0.2")
+stages=("100 0 30 0.01 1" "300 5 50 0.01 1" "600 10 75 0.01 0.8" "1000 15 150 0.002 0.5")
 for i in "${!stages[@]}"; do
   [ $((i + 1)) -ge "$first" ] || continue
   read -r hp turret updates entropy_end share <<<"${stages[$i]}"
   run="$name-s$((i + 1))"
   scale() { awk "BEGIN{print $1 * $starter * $share}"; }
   # The reward for a whole base stays the same however many hit points it has.
-  # At full starter reward: 0.15 for every crystal picked up (a small pack pays about 1.7, an
-  # XXL one about 20), 0.2 per size for a rock broken, 0.2 per point of damage to a small rock
+  # At full starter reward: 0.4 for every crystal picked up (a small pack pays about 4.5, an
+  # XXL one about 50), 0.2 per size for a rock broken, 0.2 per point of damage to a small rock
   # (2 for breaking one), 1 for anything bought.
   # Fighting: dying costs 10; damage to an enemy ship pays 0.05 a point, and 0.3 more while the
   # team is attacking and the attacker has the upper hand; a kill pays 5.
@@ -39,6 +39,6 @@ for i in "${!stages[@]}"; do
     --reward deposit=0.1 --reward base_level=25 \
     --reward death=10 --reward hit=0.05 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
-    --reward collect="$(scale 0.15)" --reward rock="$(scale 0.2)" --reward buy="$(scale 1)" --reward rock_hit="$(scale 0.2)"
+    --reward collect="$(scale 0.4)" --reward rock="$(scale 0.2)" --reward buy="$(scale 1)" --reward rock_hit="$(scale 0.2)"
   init="runs/$run/policy.pt"
 done
