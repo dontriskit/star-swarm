@@ -455,9 +455,9 @@ if __name__ == "__main__":
     p.add_argument("--frame-skip", type=int, default=3)
     p.add_argument("--teams", type=int, default=3)
     p.add_argument("--ships-per-team", type=int, default=9)
-    p.add_argument("--rocks", type=int, default=780)
-    p.add_argument("--radius", type=float, default=3200.0, help="radius of the planet the match is played around")
-    p.add_argument("--max-ticks", type=int, default=36000)
+    p.add_argument("--rocks", type=int, default=1100)
+    p.add_argument("--radius", type=float, default=3800.0, help="radius of the planet the match is played around")
+    p.add_argument("--max-ticks", type=int, default=54000)
     p.add_argument("--base-hp", type=float, default=1000.0)
     p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")
     p.add_argument("--opponent", default="self", choices=["self", "mirror", "scripted"],

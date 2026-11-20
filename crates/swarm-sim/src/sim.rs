@@ -264,6 +264,9 @@ pub struct Config {
     pub cargo: [u32; TIERS as usize],
     /// Highest upgrade level per tier.
     pub tier_levels: [u8; TIERS as usize],
+    /// How much more a ship's shots (and its ramming) do to rocks than to anything else, by
+    /// tier: big ships clear rock fast, the biggest a rock of any size in a second or two.
+    pub rock_bonus: [f32; TIERS as usize],
     /// Crystals to move up from tier 1, and from tier 2.
     pub tier_cost: [u32; TIERS as usize - 1],
     /// How much one level of each upgrade adds, indexed by [`Upgrade`].
@@ -400,18 +403,18 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            radius: 3200.0,
-            farm_kinds: [(1, 2, 10), (3, 3, 7), (4, 5, 5), (1, 5, 1)],
+            radius: 3800.0,
+            farm_kinds: [(1, 2, 6), (3, 3, 7), (4, 5, 9), (1, 5, 1)],
             home_zone: 1500.0,
             contest_margin: 1000.0,
             home_farm: 600.0,
-            rock_regrow: 12000,
-            farm_radius: 200.0,
+            rock_regrow: 6000,
+            farm_radius: 280.0,
             dt: 1.0 / 20.0,
             teams: 3,
             ships_per_team: 9,
-            rock_count: 780,
-            max_ticks: 36000,
+            rock_count: 1100,
+            max_ticks: 54000,
             ship_radius: 20.0,
             ship_radii: [20.0, 25.0, 30.0, 36.0, 42.0, 50.0, 60.0],
             ram_damage: 0.1,
@@ -427,7 +430,8 @@ impl Default for Config {
             shield_regen: 1.0,
             shield_delay: 40,
             cargo: [150, 300, 500, 750, 1000, 1300, 1600],
-            tier_levels: [3, 4, 5, 6, 7, 8, 9],
+            tier_levels: [3, 4, 5, 6, 7, 8, 0],
+            rock_bonus: [1.0, 1.2, 1.6, 2.0, 2.5, 3.0, 4.0],
             tier_cost: [150, 300, 600, 1000, 1500, 2200],
             // Attack, health, fire rate, shield, speed, regen, agility, ammo: fighting stats grow
             // fast, mobility slowly.
@@ -468,7 +472,7 @@ impl Default for Config {
             crystal_armor: 1.0,
             rock_radius: 26.0,
             rock_hp: 20.0,
-            rock_packs: [(12, 22), (24, 60), (62, 105), (107, 165), (167, 225)],
+            rock_packs: [(8, 15), (17, 42), (43, 74), (75, 116), (117, 158)],
             rock_weights: [35, 28, 20, 11, 6],
             base_levels: 6,
             base_level_at: [2000, 5000, 10000, 16000, 24000, 0],
@@ -521,7 +525,10 @@ impl Config {
     }
     /// A ship's multiplier in one stat: its tier's starting point, raised by its upgrade level.
     pub fn boost(&self, ship: &Ship, u: Upgrade) -> f32 {
-        self.tier_base(u, ship.tier) * (1.0 + self.tier_gain(u) * ship.levels[u as usize] as f32 / self.max_level(ship.tier) as f32)
+        let cap = self.max_level(ship.tier);
+        // A tier without upgrades (the last) is the finished ship: everything at its best.
+        let share = if cap == 0 { 1.0 } else { ship.levels[u as usize] as f32 / cap as f32 };
+        self.tier_base(u, ship.tier) * (1.0 + self.tier_gain(u) * share)
     }
     pub fn radius_of(&self, s: &Ship) -> f32 {
         self.ship_radii[s.tier as usize - 1]
@@ -585,7 +592,7 @@ impl Config {
     }
     /// The highest upgrade level any ship can reach.
     pub fn top_level(&self) -> u8 {
-        self.tier_levels[TIERS as usize - 1]
+        self.tier_levels.iter().copied().max().unwrap_or(1).max(1)
     }
     /// Price of the next level of an upgrade for a ship of this tier, or None at the cap.
     pub fn cost(&self, level: u8, tier: u8) -> Option<u32> {
@@ -1070,7 +1077,12 @@ impl World {
                             }
                         }
                         // One farm in six is a straggler, a single rock of any size, wherever it lies.
-                        (pos, if rng.below(6) == 0 { 3 } else { kind_at(&world.cfg, pos) })
+                        let kind = if rng.below(6) == 0 { 3 } else { kind_at(&world.cfg, pos) };
+                        // Around a base farms are few as well as poor: every other one is left out.
+                        if kind == 0 && rng.below(2) == 0 {
+                            continue;
+                        }
+                        (pos, kind)
                     }
                 };
                 let kind = kind % world.cfg.farm_kinds.len();
@@ -1640,6 +1652,8 @@ impl World {
                 }
             });
             if let Some(rock) = touched.map(|i| &mut self.rocks[i]) {
+                // Bigger ships are better miners: their shots do more to rock than to anything else.
+                let damage = damage * shot.owner.map_or(1.0, |o| self.cfg.rock_bonus[self.ships[o as usize].tier as usize - 1]);
                 rock.hp -= damage;
                 rock.last_hit_by = shot.owner;
                 if let Some(by) = shot.owner {
@@ -1753,7 +1767,7 @@ impl World {
                     self.events.push(Event::Crashed { ship: i as u16, damage });
                     // The rock takes the blow too: flying into rocks breaks them faster than
                     // shooting, for a ship with shields to spare.
-                    let blow = -closing * self.cfg.ram_rock;
+                    let blow = -closing * self.cfg.ram_rock * self.cfg.rock_bonus[ship.tier as usize - 1];
                     rock.hp -= blow;
                     rock.last_hit_by = Some(i as u16);
                     self.events.push(Event::RockHit { by: i as u16, size: rock.size, damage: blow });

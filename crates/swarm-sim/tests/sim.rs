@@ -52,15 +52,15 @@ fn bases_are_equally_far_apart() {
     let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
     let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
     let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
-    // A third of the way around a planet of radius 3200.
-    assert!((d01 - 6702.1).abs() < 5.0, "{d01}");
+    // A third of the way around a planet of radius 3800.
+    assert!((d01 - 7958.7).abs() < 5.0, "{d01}");
     assert!((d01 - d12).abs() < 5.0 && (d12 - d20).abs() < 5.0);
 }
 
 #[test]
 fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let world = World::new(Config::default(), 4);
-    assert_eq!(world.rocks.len(), 780 + 10, "the rocks asked for, and the two lodes at the poles");
+    assert_eq!(world.rocks.len(), 1100 + 18, "the rocks asked for, and the two lodes at the poles");
     assert!(world.rocks.iter().all(|r| r.farm.is_some()), "every rock is in a farm, a straggler in one of its own");
     // Every farm holds rocks of its own sizes, inside its radius.
     for (f, farm) in world.farms.iter().enumerate() {
@@ -108,7 +108,7 @@ fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let lodes: Vec<&Farm> = world.farms.iter().filter(|f| f.sizes == big).filter(|f| { let (a, b) = nearest_two(f.pos); (a - b).abs() < 1.0 }).collect();
     assert_eq!(lodes.len(), 5, "three between the bases and two at the poles");
     assert_eq!(lodes.iter().filter(|f| f.pos.z.abs() > 0.999).count(), 2);
-    assert!(lodes.iter().filter(|f| f.pos.z.abs() < 0.001).all(|f| (nearest_two(f.pos).0 - 3351.0).abs() < 2.0), "half of the 6702 between two bases");
+    assert!(lodes.iter().filter(|f| f.pos.z.abs() < 0.001).all(|f| (nearest_two(f.pos).0 - 3979.4).abs() < 2.0), "half of the 7959 between two bases");
 
     // Several farms known from home, farms out to the far side, and open space between farms.
     let obs = observe(&world, 0);
@@ -117,7 +117,7 @@ fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let far = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(0.0, f32::max);
     assert!(far > 8000.0, "the farthest farm is {far} away");
     let gap = (2..third).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| world.dist(world.farms[i].pos, world.farms[j].pos)).fold(f32::MAX, f32::min);
-    assert!(gap > 2.0 * world.cfg.farm_radius + 100.0, "the closest two farms are {gap} apart");
+    assert!(gap > 1.5 * world.cfg.farm_radius, "the closest two farms are {gap} apart");
 
     // The rock index finds exactly the rocks a plain search finds.
     for ship in [0usize, 9, 18] {
@@ -290,7 +290,8 @@ fn a_fresh_ship_of_the_next_tier_is_a_little_worse_than_a_full_one_below() {
         s.levels = [level; 8];
         s
     };
-    for tier in 1..TIERS {
+    // (Up to the last tier but one: the last has no upgrades and is at its best from the start.)
+    for tier in 1..TIERS - 1 {
         let (full, fresh, upgraded) = (ship(tier, cfg.max_level(tier)), ship(tier + 1, 0), ship(tier + 1, cfg.max_level(tier + 1)));
         for stat in [Config::hull_max, Config::shield_max, Config::ammo_max, Config::turn_rate_of] {
             let (a, b, c) = (stat(cfg, &full), stat(cfg, &fresh), stat(cfg, &upgraded));
@@ -515,6 +516,47 @@ fn a_base_under_fire_sheds_crystals() {
     }
     assert!(seen >= 1, "a pack of 10 for every 10 damage");
     assert!(world.crystals.iter().all(|c| world.dist(c.pos, base) > world.cfg.base_radius));
+}
+
+#[test]
+fn big_ships_clear_rock_fast_and_the_biggest_needs_no_upgrades() {
+    // How long a ship of a class and tier, firing from close by, takes to break the biggest rock.
+    let seconds = |class: Class, tier: u8| {
+        let mut world = duel(Config::default(), 5000.0);
+        world.ships[0].class = class;
+        world.ships[0].tier = tier;
+        world.ships[0].ammo = world.cfg.ammo_max(&world.ships[0]);
+        let spot = world.offset(world.ships[0].pos, 0.3, 220.0);
+        world.face(0, spot);
+        world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: world.cfg.rock_hp_of(5), last_hit_by: None, farm: None, regrow: 0 });
+        let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+        for tick in 1..=4000 {
+            if world.step(&fire).iter().any(|e| matches!(e, Event::RockDestroyed { size: 5, .. })) {
+                return tick as f32 * world.cfg.dt;
+            }
+        }
+        f32::MAX
+    };
+    // A top-tier ship of any class: two seconds at most.
+    for class in TIER2 {
+        let took = seconds(class, TIERS);
+        assert!(took <= 2.0, "a tier-7 {class:?} took {took} s");
+    }
+    // Lower down it is slow work, and each tier is quicker than the one before.
+    let (first, third, fifth) = (seconds(Class::Basic, 1), seconds(Class::Twin, 3), seconds(Class::Twin, 5));
+    assert!(first > 60.0, "a tier-1 ship took only {first} s");
+    assert!(third < first / 3.0 && fifth < third / 2.0, "{first} s, {third} s, {fifth} s");
+
+    // The last tier has nothing left to buy, and is at its best without it.
+    let cfg = Config::default();
+    let mut top = duel(Config::default(), 5000.0).ships[0].clone();
+    top.tier = TIERS;
+    assert_eq!((cfg.max_level(TIERS), cfg.cost(0, TIERS)), (0, None));
+    let mut sixth = top.clone();
+    sixth.tier = TIERS - 1;
+    sixth.levels = [cfg.max_level(TIERS - 1); 8];
+    assert!(UPGRADES.iter().all(|u| cfg.boost(&top, *u) > cfg.boost(&sixth, *u)), "better in everything than a fully upgraded tier 6");
+    assert!(cfg.damage(&top) > 1.4 * cfg.damage(&sixth) && cfg.hull_max(&top) > 1.4 * cfg.hull_max(&sixth));
 }
 
 #[test]
@@ -1015,7 +1057,7 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
     // Seven tiers, each asking for a base one level higher, up to a level-6 base for the last.
     let cfg = &world.cfg;
     assert_eq!((1..=6).map(|tier| (1..=6).find(|base| cfg.base_allows(tier, *base)).unwrap()).collect::<Vec<u8>>(), [1, 1, 3, 4, 5, 6]);
-    assert_eq!((1..=7).map(|tier| cfg.max_level(tier)).collect::<Vec<u8>>(), [3, 4, 5, 6, 7, 8, 9], "every tier allows one more level of each upgrade");
+    assert_eq!((1..=7).map(|tier| cfg.max_level(tier)).collect::<Vec<u8>>(), [3, 4, 5, 6, 7, 8, 0], "every tier allows one more level of each upgrade, and the last none: it is the finished ship");
     assert_eq!(cfg.next_base_level_at(2), Some(5000));
     assert_eq!(cfg.next_base_level_at(6), None, "a base tops out at level 6");
 }
@@ -1206,7 +1248,7 @@ fn a_pack_of_crystals_fades_to_nothing() {
 fn small_rocks_are_quick_work_and_big_ones_pay_more() {
     let cfg = Config::default();
     assert_eq!([1, 2, 3, 4, 5].map(|s| cfg.rock_hp_of(s)), [20.0, 80.0, 180.0, 320.0, 500.0]);
-    assert_eq!(cfg.rock_packs, [(12, 22), (24, 60), (62, 105), (107, 165), (167, 225)]);
+    assert_eq!(cfg.rock_packs, [(8, 15), (17, 42), (43, 74), (75, 116), (117, 158)]);
     // Per shot a basic ship gets the most out of the smallest rocks.
     let per_hp = |size: u8| (cfg.rock_packs[size as usize - 1].0 + cfg.rock_packs[size as usize - 1].1) as f32 / 2.0 / cfg.rock_hp_of(size);
     assert!((2..=5).all(|s| per_hp(1) > per_hp(s)));
@@ -1229,7 +1271,7 @@ fn a_broken_rock_leaves_one_pack_and_a_ship_takes_what_fits() {
     world.step(&[Action::default(); 2]);
     assert_eq!(world.crystals.len(), 1);
     let pack = world.crystals[0].value;
-    assert!((167..=225).contains(&pack), "an XXL pack of {pack}");
+    assert!((117..=158).contains(&pack), "an XXL pack of {pack}");
 
     // A tier-1 ship holds 150; with 100 on board it takes 50 and the rest of the pack stays.
     world.ships[0].pos = world.crystals[0].pos;

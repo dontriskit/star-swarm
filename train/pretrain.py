@@ -35,7 +35,7 @@ def main():
     p.add_argument("--name", default="pre")
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--envs", type=int, default=256)
-    p.add_argument("--steps", type=int, default=12000, help="decisions per match side; 12000 is one whole 20-minute match")
+    p.add_argument("--steps", type=int, default=18000, help="decisions per match side; 18000 is one whole 45-minute match")
     p.add_argument("--hidden", type=int, default=1024)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--every", type=int, default=32, help="decisions gathered between lessons")
