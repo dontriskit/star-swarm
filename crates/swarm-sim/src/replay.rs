@@ -5,7 +5,7 @@ use crate::sim::{Action, Buy, Config, DroneKind, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP000A";
+const MAGIC: &[u8; 8] = b"SWRP000B";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
@@ -47,11 +47,11 @@ pub const VOTE_CODES: usize = 1 + PLANS.len();
 
 /// Packs an action into 16 bits: thrust (bit 0), turn (bits 1-2: right, straight, left),
 /// fire (bit 3), boost (bit 4), what to buy (bits 5-9, see [`buy_code`]), the mode (bits 10-12:
-/// 0 keeps the current one, 1 to 4 farm, defend, attack A, attack B), and deposit (bit 13).
+/// 0 keeps the current one, 1 to 4 farm, defend, attack A, attack B), deposit (bit 13), and brake (bit 14).
 pub fn encode(a: &Action) -> u16 {
     let buy = buy_code(a.buy) as u16;
     let vote = a.vote.map_or(0, |p| p as u16 + 1);
-    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5 | vote << 10 | (a.deposit as u16) << 13
+    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5 | vote << 10 | (a.deposit as u16) << 13 | (a.brake as u16) << 14
 }
 
 pub fn decode(b: u16) -> Action {
@@ -63,6 +63,7 @@ pub fn decode(b: u16) -> Action {
         buy: buy_of(((b >> 5) & 31) as u8),
         vote: (((b >> 10) & 7) as usize).checked_sub(1).and_then(|i| PLANS.get(i).copied()),
         deposit: b & (1 << 13) != 0,
+        brake: b & (1 << 14) != 0,
     }
 }
 

@@ -22,8 +22,8 @@ fn every_action_survives_encoding() {
             for (fire, boost) in [(false, false), (false, true), (true, false), (true, true)] {
                 for &buy in &buys {
                     for &vote in &votes {
-                        for deposit in [false, true] {
-                            let a = Action { thrust, turn, fire, boost, deposit, buy, vote };
+                        for (deposit, brake) in [(false, false), (false, true), (true, false), (true, true)] {
+                            let a = Action { thrust, brake, turn, fire, boost, deposit, buy, vote };
                             assert_eq!(decode(encode(&a)), a);
                         }
                     }

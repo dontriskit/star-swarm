@@ -33,6 +33,9 @@ for i in "${!stages[@]}"; do
   # (1 for breaking one), 1 for anything bought.
   # When time runs out everybody pays 30, and the standing bases are ranked by crystals handed
   # over: 20 back for the first, 20 more off for the last. Destroying the others still pays best.
+  # Growing pays at every stage: 0.2 for a crystal handed over, 4 for an upgrade, a drone or a
+  # tier bought, 60 to every ship of the team when the base gains a level. Rocks pay nothing to
+  # a ship with a full hold unless a teammate with room is within 500.
   # Hull is precious: every point lost costs 0.3 (shields are free to spend), so flying into
   # rocks pays only while the shields hold. A pack fades to nothing in 10 s, so the 0.2 a
   # crystal is paid on what is left of it.
@@ -46,9 +49,9 @@ for i in "${!stages[@]}"; do
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
     --reward time=0.00083 --reward draw=30 --reward place=20 \
-    --reward deposit=0.1 --reward base_level=25 \
+    --reward deposit=0.2 --reward base_level=60 --reward buy=4 \
     --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
-    --reward collect="$(scale 0.2)" --reward rock="$(scale 0.1)" --reward buy="$(scale 1)" --reward rock_hit="$(scale 0.1)"
+    --reward collect="$(scale 0.2)" --reward rock="$(scale 0.1)" --reward rock_hit="$(scale 0.1)"
   init="runs/$run/policy.pt"
 done

@@ -346,6 +346,14 @@ impl VecEnv {
                             || near(a.team) > near(v.team)
                             || world.drones.iter().any(|d| d.owner == Some(victim as u16))
                     };
+                    // Breaking rocks with a full hold only makes sense for a teammate close by with
+                    // room for the crystals: otherwise the rock rewards are not paid.
+                    let useful = |ship: usize| {
+                        let me = &world.ships[ship];
+                        me.cargo < world.cfg.cargo_max(me)
+                            || me.hull < world.cfg.hull_max(me)
+                            || world.ships.iter().any(|s| s.alive && s.team == me.team && s.cargo < world.cfg.cargo_max(s) && !std::ptr::eq(s, me) && world.dist(s.pos, me.pos) < 500.0)
+                    };
                     for event in &world.events {
                         match *event {
                             Event::BaseHit { by, team, damage } => {
@@ -356,7 +364,11 @@ impl VecEnv {
                                 (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] -= pay.lose);
                             }
                             Event::Collected { ship, amount } => rewards[ship as usize] += pay.collect * amount as f32,
-                            Event::RockDestroyed { by: Some(ship), size } => rewards[ship as usize] += pay.rock * size as f32,
+                            Event::RockDestroyed { by: Some(ship), size } => {
+                                if useful(ship as usize) {
+                                    rewards[ship as usize] += pay.rock * size as f32;
+                                }
+                            }
                             Event::RockDestroyed { by: None, .. } => {}
                             Event::Bought { ship, .. } => rewards[ship as usize] += pay.buy,
                             Event::Hit { by, victim, damage } => {
@@ -369,7 +381,7 @@ impl VecEnv {
                                 }
                             }
                             Event::RockHit { by, size, damage } => {
-                                if size == 1 {
+                                if size == 1 && useful(by as usize) {
                                     rewards[by as usize] += pay.rock_hit * damage;
                                 }
                             }

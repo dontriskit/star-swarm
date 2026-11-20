@@ -541,6 +541,40 @@ fn boosting_is_faster_until_the_tank_is_empty() {
 }
 
 #[test]
+fn a_ship_has_inertia_drifts_and_can_brake() {
+    let mut world = duel(Config::default(), 5000.0);
+    let cfg = world.cfg.clone();
+    let step = |world: &mut World, act: Action, ticks: u32| (0..ticks).for_each(|_| { world.step(&[act, Action::default()]); });
+    let go = Action { thrust: true, ..Action::default() };
+
+    // Speed builds up over a couple of seconds.
+    step(&mut world, go, 30);
+    let after_a_second = world.ships[0].vel.len();
+    assert!(after_a_second > 50.0 && after_a_second < 0.6 * cfg.max_speed, "a second of thrust gives {after_a_second}");
+    step(&mut world, go, 60);
+    assert!((world.ships[0].vel.len() - cfg.max_speed).abs() < 2.0, "top speed after three");
+
+    // Engine off, nose turned away: the ship keeps going the way it was going, hardly slower.
+    let way = world.ships[0].vel.unit();
+    step(&mut world, Action { turn: 1, ..Action::default() }, 30);
+    let ship = &world.ships[0];
+    assert!(ship.vel.len() > 0.9 * cfg.max_speed, "it drifts at {}", ship.vel.len());
+    assert!(ship.vel.unit().dot(geo::tangent(ship.pos, way).unit()) > 0.99, "still on its old course");
+    assert!(ship.fwd.dot(ship.vel.unit()) < 0.0, "with its nose pointing back");
+
+    // Thrust the new way: the course comes round little by little, not at once.
+    step(&mut world, go, 15);
+    let ship = &world.ships[0];
+    assert!(ship.vel.unit().dot(ship.fwd) < 0.5, "half a second is not enough to turn the course around");
+    assert!(ship.vel.len() < 0.9 * cfg.max_speed, "pushing against the drift slows it first");
+
+    // Brakes stop it within a second and a half, whichever way the nose points.
+    step(&mut world, go, 90);
+    step(&mut world, Action { brake: true, thrust: true, ..Action::default() }, 45);
+    assert_eq!(world.ships[0].vel.len(), 0.0, "braking wins over thrust and brings the ship to rest");
+}
+
+#[test]
 fn each_class_fires_its_own_volley() {
     for (class, lasers) in [(Class::Basic, 1), (Class::Lancer, 1), (Class::Twin, 2), (Class::Scatter, 3), (Class::Ram, 1)] {
         let mut world = duel(Config::default(), 150.0);
@@ -740,7 +774,7 @@ fn ram(first: Class, second: Class) -> (f32, f32) {
     }
     let full: Vec<f32> = world.ships.iter().map(|s| s.hull + s.shield).collect();
     let go = [Action { thrust: true, ..Action::default() }; 2];
-    for _ in 0..50 {
+    for _ in 0..120 {
         if world.step(&go).iter().any(|e| matches!(e, Event::Crashed { .. })) {
             break;
         }
@@ -812,7 +846,7 @@ fn at_home(cargo: u32) -> World {
     world
 }
 
-const UNLOAD: Action = Action { thrust: false, turn: 0, fire: false, boost: false, deposit: true, buy: None, vote: None };
+const UNLOAD: Action = Action { thrust: false, brake: false, turn: 0, fire: false, boost: false, deposit: true, buy: None, vote: None };
 
 #[test]
 fn crystals_are_handed_over_inside_the_base_a_tenth_of_a_hold_a_second() {

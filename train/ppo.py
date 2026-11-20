@@ -21,7 +21,7 @@ from swarm_py import OBS_LEN, Env
 
 # Sizes of the seven action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out
 # to do), deposit (hand crystals over while inside the base).
-HEADS = (2, 3, 2, 2, 18, 5, 2)
+HEADS = (2, 3, 2, 2, 18, 5, 2, 2)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
 REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level", "rock_hit", "edge", "hull", "bare", "place")
 CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
@@ -74,7 +74,7 @@ def forget(policy: Policy, how: str, device, hidden: int):
 def pack(actions: torch.Tensor) -> bytes:
     """One little-endian uint16 per agent, the encoding Env.step expects."""
     a = actions
-    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 10) | (a[:, 6] << 13)
+    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 10) | (a[:, 6] << 13) | (a[:, 7] << 14)
     return code.cpu().numpy().astype("<u2").tobytes()
 
 
@@ -211,6 +211,10 @@ def train(args):
                 for i, size in enumerate(HEADS):
                     was = old_heads[i] if i < len(old_heads) else 0
                     grown[at_new : at_new + min(was, size)] = saved[key][at_old : at_old + min(was, size)]
+                    if was == 0 and key == "logits.bias":
+                        # A head that did not exist starts out mostly on its first choice ("no"),
+                        # so the policy flies as it did before it had the choice.
+                        grown[at_new] = 2.0
                     at_old, at_new = at_old + was, at_new + size
                 saved[key] = grown
         first = "trunk.0.weight"

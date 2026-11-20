@@ -57,11 +57,17 @@ impl ScriptedBot {
     /// alone will carry the ship to within `keep` of it.
     fn fly(to: Vec2, keep: f32, obs: &Observation, cfg: &Config) -> Action {
         let angle = to.y.atan2(to.x);
-        let coast = obs.vel.len() / cfg.drag;
+        // How far the ship still goes if it brakes now.
+        let speed = obs.vel.len();
+        let stop = speed * speed / (2.0 * cfg.brake_accel) + speed * 0.2;
+        // Drifting the wrong way: stop first, a ship keeps going the way it was going.
+        let astray = speed > 40.0 && obs.vel.dot(to) < 0.3 * speed * to.len();
+        let arriving = keep > 0.0 && to.len() - keep <= stop;
         Action {
             turn: Self::turn_to(angle),
             // With nothing to keep clear of (a crystal, a waypoint) arrive at speed.
-            thrust: angle.abs() < 0.6 && (keep == 0.0 || to.len() - keep > coast),
+            thrust: angle.abs() < 0.6 && !arriving,
+            brake: (arriving && speed > 15.0) || astray,
             // Boost only on a long, clear run: at boost speed a rock is fatal.
             boost: angle.abs() < 0.3 && to.len() - keep > BOOST_FROM && obs.rocks.first().is_none_or(|r| r.dist > 320.0),
             ..Action::default()
@@ -79,7 +85,7 @@ impl ScriptedBot {
             let t = -rock.pos.dot(rock.vel) / (speed * speed);
             let miss = rock.pos.add(rock.vel.scale(t));
             let reach = rock.radius + cfg.ship_radius + 15.0;
-            if t <= 0.0 || miss.len() > reach || rock.dist - reach > speed / cfg.drag {
+            if t <= 0.0 || miss.len() > reach || rock.dist - reach > speed * 2.5 {
                 continue;
             }
             let away = if miss.len() > 1.0 { miss.scale(-1.0) } else { Vec2::new(-rock.vel.y, rock.vel.x) };
@@ -182,10 +188,10 @@ impl Controller for ScriptedBot {
         let full = obs.base_docked >= obs.base_slots && !obs.in_base;
         let mut act = if unload && (obs.in_base || obs.base.dist < cfg.base_radius * 0.6) {
             // Docked, or inside and coming to rest: sit still, hand the crystals over, buy.
-            Action::default()
+            Action { brake: true, ..Action::default() }
         } else if unload && full && obs.base.dist < cfg.base_heal_radius {
             // Every place in the base is taken: wait just outside for one to come free.
-            Action::default()
+            Action { brake: true, ..Action::default() }
         } else if unload && obs.base.dist > cfg.base_radius * 0.5 {
             // Badly hurt or loaded up: back to the base, right into it.
             Self::fly(obs.base.pos, if unload { cfg.base_radius * 0.3 } else { 0.0 }, obs, cfg)

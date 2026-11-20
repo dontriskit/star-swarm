@@ -197,6 +197,8 @@ pub struct Order {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Action {
     pub thrust: bool,
+    /// Slow down, whichever way the nose points. Braking wins over thrust.
+    pub brake: bool,
     /// -1 turns right, 1 turns left, 0 holds.
     pub turn: i8,
     pub fire: bool,
@@ -229,8 +231,16 @@ pub struct Config {
     pub ram_damage: f32,
     /// Ticks between turning the ships' modes into fresh orders (targets move).
     pub plan_ticks: u32,
+    /// A ship has inertia: the engine pushes along the nose and the speed builds up over a
+    /// couple of seconds; with the engine off the ship drifts on the way it was going, losing
+    /// speed only slowly (`drag`, the share lost per second), wherever its nose points.
     pub thrust_accel: f32,
     pub drag: f32,
+    /// Speed taken off per second while braking.
+    pub brake_accel: f32,
+    /// Inside its own base a ship with the engine off is caught and slowed: the share of its
+    /// speed lost per second there.
+    pub base_drag: f32,
     pub max_speed: f32,
     pub turn_rate: f32,
     pub hull: f32,
@@ -391,8 +401,10 @@ impl Default for Config {
             ship_radii: [12.0, 15.0, 19.0],
             ram_damage: 0.1,
             plan_ticks: 30,
-            thrust_accel: 130.0,
-            drag: 0.6,
+            thrust_accel: 75.0,
+            brake_accel: 150.0,
+            base_drag: 3.0,
+            drag: 0.08,
             max_speed: 150.0,
             turn_rate: 3.2,
             hull: 100.0,
@@ -1300,13 +1312,22 @@ impl World {
             ship.fwd = geo::turn(ship.pos, ship.fwd, act.turn.clamp(-1, 1) as f32 * cfg.turn_rate_of(ship) * dt);
             let speed_boost = cfg.boost(ship, Upgrade::Speed);
             // Boosting burns the tank and needs the engine on; otherwise the tank slowly refills.
-            let boosting = act.boost && act.thrust && ship.boost > 0.0;
+            let thrust = act.thrust && !act.brake;
+            let boosting = act.boost && thrust && ship.boost > 0.0;
             ship.boost = if boosting { (ship.boost - cfg.boost_drain * dt).max(0.0) } else { (ship.boost + cfg.boost_regen * dt).min(1.0) };
             let (push, top) = if boosting { (cfg.boost_thrust, cfg.boost_speed) } else { (1.0, 1.0) };
-            if act.thrust {
+            if thrust {
                 ship.vel = ship.vel.add(ship.fwd.scale(cfg.thrust_accel * speed_boost * push * dt));
             }
-            ship.vel = ship.vel.scale(1.0 - cfg.drag * dt);
+            if act.brake {
+                let speed = ship.vel.len();
+                ship.vel = if speed > cfg.brake_accel * dt { ship.vel.scale(1.0 - cfg.brake_accel * dt / speed) } else { Vec3::default() };
+            }
+            let at_home = !thrust && {
+                let home = &self.bases[ship.team as usize];
+                home.alive() && geo::closer(radius, home.pos, ship.pos, cfg.base_radius)
+            };
+            ship.vel = ship.vel.scale(1.0 - if at_home { cfg.base_drag } else { cfg.drag } * dt);
             let (speed, cap) = (ship.vel.len(), cfg.max_speed * speed_boost * top);
             if speed > cap {
                 ship.vel = ship.vel.scale(cap / speed);
