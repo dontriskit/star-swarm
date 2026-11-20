@@ -38,6 +38,8 @@ const BOOST_FROM: f32 = 450.0;
 
 const AIM: f32 = 0.1;
 const FIGHT_RANGE: f32 = 260.0;
+/// How far a healthy mining ship goes to help a teammate that calls.
+const HELP_RANGE: f32 = 1500.0;
 /// Below this share of its hull a ship with a base to go to breaks off for repairs.
 const RETREAT: f32 = 0.35;
 /// With its hold this full a mining ship flies home to hand the crystals over.
@@ -206,8 +208,10 @@ impl Controller for ScriptedBot {
             Self::fly(obs.base.pos, if unload { cfg.base_radius * 0.3 } else { 0.0 }, obs, cfg)
         } else {
             match obs.order {
-                OrderKind::Mine => match enemy {
-                    Some(e) if e.dist < FIGHT_RANGE && healthy => Self::shoot(e, 160.0, obs, cfg),
+                OrderKind::Mine => match (enemy, obs.call) {
+                    (Some(e), _) if e.dist < FIGHT_RANGE && healthy => Self::shoot(e, 160.0, obs, cfg),
+                    // A teammate close by is calling for help: leave the rocks and go to it.
+                    (_, Some(call)) if healthy && call.dist < HELP_RANGE => Self::fly(call.pos, 200.0, obs, cfg),
                     _ => Self::mine(obs, cfg),
                 },
                 OrderKind::Attack => match (enemy, obs.enemy_bases.first()) {

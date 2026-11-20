@@ -57,6 +57,12 @@ pub struct Rewards {
     pub place: f32,
     /// For moving a ship up a tier, on top of `buy`.
     pub tier: f32,
+    /// Taken off for every hit on a rock while a teammate within 1500 is calling for help
+    /// (and the ship is not under attack itself): everyone mining nearby pays.
+    pub abandon: f32,
+    /// Extra for every point of damage to an enemy that has just been hitting a teammate who
+    /// is calling for help within 1500.
+    pub rescue: f32,
     /// Extra per point of damage dealt to an enemy ship while the team is attacking and the
     /// attacker has the upper hand: the enemy has less hull and shield left than the attacker,
     /// is outnumbered around itself, or has drones to be taken.
@@ -65,7 +71,7 @@ pub struct Rewards {
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0, place: 0.0, tier: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0, place: 0.0, tier: 0.0, abandon: 0.0, rescue: 0.0 }
     }
 }
 
@@ -438,6 +444,10 @@ impl VecEnv {
                             || me.hull < world.cfg.hull_max(me)
                             || world.ships.iter().any(|s| s.alive && s.team == me.team && s.cargo < world.cfg.cargo_max(s) && !std::ptr::eq(s, me) && world.dist(s.pos, me.pos) < 500.0)
                     };
+                    // A teammate calling for help within reach of this ship (or of a place).
+                    let called = |team: u8, at: swarm_sim::Vec3, but: usize| {
+                        world.ships.iter().enumerate().any(|(i, s)| i != but && s.alive && s.team == team && s.distress > 0 && world.dist(s.pos, at) < 1500.0)
+                    };
                     for event in &world.events {
                         match *event {
                             Event::BaseHit { by, team, damage } => {
@@ -464,12 +474,19 @@ impl VecEnv {
                                     let bonus = if upper_hand(by as usize, victim as usize, damage) { pay.edge } else { 0.0 };
                                     // With its shields down an enemy is losing crystals or hull.
                                     let bare = if world.ships[victim as usize].shield <= 0.0 { pay.bare } else { 0.0 };
-                                    rewards[by as usize] += (pay.hit + bonus + bare) * damage;
+                                    // Hitting the one who is hitting a teammate.
+                                    let foe = &world.ships[victim as usize];
+                                    let rescue = if foe.aggro > 0 && called(world.ships[by as usize].team, foe.pos, by as usize) { pay.rescue } else { 0.0 };
+                                    rewards[by as usize] += (pay.hit + bonus + bare + rescue) * damage;
                                 }
                             }
                             Event::RockHit { by, size, damage } => {
                                 if size == 1 && useful(by as usize) {
                                     rewards[by as usize] += pay.rock_hit * damage;
+                                }
+                                let miner = &world.ships[by as usize];
+                                if miner.distress == 0 && called(miner.team, miner.pos, by as usize) {
+                                    rewards[by as usize] -= pay.abandon;
                                 }
                             }
                             Event::Demoted { .. } => {}
@@ -750,6 +767,43 @@ mod tests {
             again.step(&kept.actions(again.tick).unwrap());
         }
         assert_eq!(again.state_hash(), last.state_hash());
+    }
+
+    #[test]
+    fn mining_next_to_a_teammate_under_attack_costs_and_helping_it_pays() {
+        let pay = Rewards { abandon: 1.0, rescue: 1.0, hit: 1.0, rock_hit: 0.0, rock: 0.0, crash: 0.0, death: 0.0, collect: 0.0, ..Rewards::default() };
+        let cfg = Config { teams: 2, ships_per_team: 2, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+        // Ship 1 shoots a rock, or the enemy; its teammate 0 is close by and, with `attacked`, calling.
+        let paid = |attacked: bool, at_enemy: bool| {
+            let mut env = VecEnv::new(cfg.clone(), 1, 3, 1, pay);
+            let world = &mut env.slots[0].world;
+            let pole = swarm_sim::Vec3::new(0.0, 0.0, 1.0);
+            world.ships[0].pos = pole;
+            world.ships[1].pos = world.offset(pole, 2.0, 500.0);
+            world.ships[2].pos = world.offset(world.ships[1].pos, 5.0, 300.0);
+            world.ships[3].pos = world.offset(pole, 4.0, 6000.0);
+            let rock = world.offset(world.ships[1].pos, 2.0, 150.0);
+            world.rocks.push(swarm_sim::Rock { pos: rock, vel: swarm_sim::Vec3::default(), size: 3, hp: 500.0, last_hit_by: None, farm: None, regrow: 0 });
+            let target = if at_enemy { world.ships[2].pos } else { rock };
+            world.face(1, target);
+            let fire = replay::encode(&Action { fire: true, ..Action::default() });
+            let (mut rewards, mut dones) = (vec![0f32; 4], vec![0u8; 4]);
+            for _ in 0..40 {
+                if attacked {
+                    env.slots[0].world.ships[0].distress = 100;
+                    env.slots[0].world.ships[2].aggro = 100;
+                }
+                env.step(&[0, fire, 0, 0], &mut rewards, &mut dones);
+                if rewards[1] != 0.0 {
+                    return rewards[1];
+                }
+            }
+            0.0
+        };
+        assert_eq!(paid(false, false), 0.0, "mining in peace costs nothing");
+        assert_eq!(paid(true, false), -1.0, "a shot at a rock while a teammate calls");
+        assert_eq!(paid(false, true), 2.0, "a hit on an enemy: its damage");
+        assert_eq!(paid(true, true), 4.0, "a hit on the one attacking a teammate: twice that");
     }
 
     #[test]

@@ -37,7 +37,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN + 6;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN + 6 + 7 + MATES;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -78,6 +78,17 @@ pub struct MateObs {
     /// Its shields and the crystals it carries, each as a share of what it can hold.
     pub shield: f32,
     pub cargo: f32,
+    /// Calling for help: an enemy has just hit it.
+    pub calling: bool,
+}
+
+/// A teammate's call for help, heard however far away it is: where it is in the ship's frame
+/// and how much hull it has left.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Call {
+    pub pos: Vec2,
+    pub dist: f32,
+    pub hull: f32,
 }
 
 /// A base as a ship knows it. Where bases are is known map-wide; an enemy base's health is
@@ -125,6 +136,11 @@ pub struct Observation {
     pub in_base: bool,
     /// What the ship did last: its own previous action.
     pub last: crate::sim::Action,
+    /// Whether this ship is calling for help itself, the nearest teammate that is, and whether
+    /// the team's base is sounding its alarm.
+    pub calling: bool,
+    pub call: Option<Call>,
+    pub base_alarm: bool,
     /// How many of the team's ships are docked in the base, this one included, and how many it takes.
     pub base_docked: u8,
     pub base_slots: u8,
@@ -331,6 +347,7 @@ impl<'a> Scan<'a> {
                 mode: s.vote,
                 shield: s.shield / cfg.shield_max(s),
                 cargo: s.cargo as f32 / cfg.cargo_max(s) as f32,
+                calling: s.distress > 0,
             };
             radar.offer(mate, at.len());
         }
@@ -450,6 +467,15 @@ impl<'a> Scan<'a> {
             drone_kinds: DRONE_KINDS.map(|k| world.drones.iter().filter(|d| d.owner == Some(ship as u16) && d.kind == k).count() as u8),
             in_base: me.docked,
             last: me.last,
+            calling: me.distress > 0,
+            call: mates()
+                .filter(|m| world.ships[*m].distress > 0)
+                .min_by(|a, b| self.apart[ship * n + a].total_cmp(&self.apart[ship * n + b]))
+                .map(|m| {
+                    let pos = world.to_frame(me.pos, me.fwd, world.ships[m].pos);
+                    Call { pos, dist: pos.len(), hull: world.ships[m].hull.max(0.0) / cfg.hull_max(&world.ships[m]) }
+                }),
+            base_alarm: world.bases[me.team as usize].alarm > 0,
             base_docked: world.ships.iter().filter(|s| s.team == me.team && s.docked).count() as u8,
             base_slots: cfg.base_slots as u8,
             base_level: home.level,
@@ -648,6 +674,20 @@ impl Observation {
         // The ship's own last action: thrust, turn, fire, boost, deposit, brake.
         let last = &self.last;
         put(&[last.thrust as u8 as f32, last.turn as f32, last.fire as u8 as f32, last.boost as u8 as f32, last.deposit as u8 as f32, last.brake as u8 as f32]);
+        // Calls for help: this ship's own, the base's alarm, the nearest calling teammate (which
+        // way, how far in views, how much hull it has left) and which of the teammates on the
+        // radar are calling.
+        put(&[self.calling as u8 as f32, self.base_alarm as u8 as f32]);
+        match &self.call {
+            Some(c) => {
+                let d = c.dist.max(1.0);
+                put(&[1.0, c.pos.x / d, c.pos.y / d, (c.dist / (4.0 * view)).min(4.0), c.hull]);
+            }
+            None => put(&[0.0; 5]),
+        }
+        for slot in 0..MATES {
+            put(&[self.mates.get(slot).map_or(0.0, |m| m.calling as u8 as f32)]);
+        }
         debug_assert_eq!(at, OBS_LEN);
     }
 }

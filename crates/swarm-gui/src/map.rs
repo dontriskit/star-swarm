@@ -333,6 +333,10 @@ fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: b
         if spotted {
             stroke_shape(window, &polygon(center, radius + 4.0, 4, std::f32::consts::FRAC_PI_4), 1.0, rgba(0xffffffb0));
         }
+        // A ship calling for help wears a red ring.
+        if ship.distress > 0 {
+            stroke_shape(window, &polygon(center, radius + 7.0, 20, 0.0), 1.5, rgb(0xff5a4a));
+        }
         if selected.contains(&i) {
             stroke_shape(window, &polygon(center, radius + 5.0, 24, 0.0), 1.5, rgb(0xffffff));
         }

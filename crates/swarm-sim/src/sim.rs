@@ -382,6 +382,8 @@ pub struct Config {
     pub upgrade_cost: u32,
 
     pub respawn_ticks: u16,
+    /// How long a ship that was hit keeps calling for help, and a base that was hit sounds its alarm.
+    pub distress_ticks: u16,
     pub kill_score: u32,
     /// What a destroyed ship loses of its points: this many, plus this share of what it had.
     /// With `lives` at 0 that is all a death costs besides the cargo and the drones.
@@ -501,6 +503,7 @@ impl Default for Config {
             pickup_radius: 26.0,
             upgrade_cost: 10,
             respawn_ticks: 60,
+            distress_ticks: 100,
             kill_score: 20,
             death_points: 20,
             death_share: 0.2,
@@ -676,6 +679,12 @@ pub struct Ship {
     pub streak: u32,
     /// Volleys of the current burst still to come.
     pub burst_left: u8,
+    /// Ticks left of its call for help: a ship an enemy has just hit calls, and every teammate
+    /// hears where it is.
+    pub distress: u16,
+    /// Ticks since it last hit an enemy ship, counted down from the same length: the mark of
+    /// an attacker.
+    pub aggro: u16,
     /// What the ship was told to do on the last tick. A ship is shown this back, so that it
     /// can keep to a course instead of deciding afresh every time.
     pub last: Action,
@@ -888,6 +897,8 @@ pub struct Base {
     pub deposited: u32,
     /// Damage taken that has not yet shaken a whole pack of crystals loose.
     pub spill: f32,
+    /// Ticks left of the alarm that goes off when the base is hit.
+    pub alarm: u16,
 }
 
 /// A mining helper. It follows its owner, breaks rocks near it and gathers crystals for it.
@@ -974,7 +985,7 @@ impl World {
         // Evenly spaced around the equator, so every team sees the same layout
         // from its own base and none starts closer to its enemies.
         let bases: Vec<Base> = (0..cfg.teams)
-            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0, level: 1, deposited: 0, spill: 0.0 })
+            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0, level: 1, deposited: 0, spill: 0.0, alarm: 0 })
             .collect();
         let mut world = World {
             tick: 0,
@@ -1012,6 +1023,8 @@ impl World {
                     streak: 0,
                     burst_left: 0,
                     last: Action::default(),
+                    distress: 0,
+                    aggro: 0,
                     saved: [[0; 8]; TIERS as usize],
                     ammo: 0.0,
                     boost: 1.0,
@@ -1261,6 +1274,9 @@ impl World {
         ship.shield_wait = cfg.shield_delay;
         let left = damage - absorbed;
         ship.hull -= left;
+        if attacked && damage > 0.0 {
+            ship.distress = cfg.distress_ticks;
+        }
         if attacked && cfg.crystal_armor > 0.0 && left > 0.0 {
             return std::mem::take(&mut ship.cargo);
         }
@@ -1456,6 +1472,8 @@ impl World {
             }
             ship.ammo = (ship.ammo + cfg.ammo_regen * cfg.boost(ship, Upgrade::Ammo) * dt).min(cfg.ammo_max(ship));
             ship.cooldown = ship.cooldown.saturating_sub(1);
+            ship.distress = ship.distress.saturating_sub(1);
+            ship.aggro = ship.aggro.saturating_sub(1);
             let weapon = *cfg.weapon(ship.class);
             let cost = cfg.volley_cost(ship);
             if ship.burst_left > 0 && ship.cooldown == 0 && ship.ammo < cost {
@@ -1621,6 +1639,7 @@ impl World {
         if self.cfg.turret_damage > 0.0 {
             for (team, base) in self.bases.iter_mut().enumerate() {
                 base.cooldown = base.cooldown.saturating_sub(1);
+                base.alarm = base.alarm.saturating_sub(1);
                 if !base.alive() || base.cooldown > 0 {
                     continue;
                 }
@@ -1710,6 +1729,9 @@ impl World {
                 if let (true, Some(owner)) = (shot.from_ship, shot.owner) {
                     self.felt_damage[self.ships[v].team as usize][owner as usize] = shot.damage;
                 }
+                if let Some(owner) = shot.owner {
+                    self.ships[owner as usize].aggro = self.cfg.distress_ticks;
+                }
                 self.ships[v].last_hit_by = shot.owner;
                 self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage });
                 shot.ticks = 0;
@@ -1721,6 +1743,7 @@ impl World {
             if let Some(team) = base.filter(|team| *team as u8 != shot.team) {
                 let dealt = damage.min(self.bases[team].hp);
                 self.bases[team].hp -= damage;
+                self.bases[team].alarm = self.cfg.distress_ticks;
                 let damage = dealt;
                 // A base under fire sheds crystals around itself, for whoever gets to them.
                 let base = &mut self.bases[team];
@@ -2024,6 +2047,8 @@ impl World {
             put(s.lives as u32);
             put(s.streak);
             put(s.burst_left as u32);
+            put(s.distress as u32);
+            put(s.aggro as u32);
             put(crate::replay::encode(&s.last) as u32);
             for l in s.saved.iter().flatten() {
                 put(*l as u32);
@@ -2051,6 +2076,7 @@ impl World {
             put(b.level as u32);
             put(b.deposited);
             put(b.spill.to_bits());
+            put(b.alarm as u32);
         }
         put(self.drones.len() as u32);
         for d in &self.drones {

@@ -44,6 +44,8 @@ for i in "${!stages[@]}"; do
   # Hull is precious: every point lost costs 0.3 (shields are free to spend), so flying into
   # rocks pays only while the shields hold. A pack fades to nothing in 10 s, so the 0.2 a
   # crystal is paid on what is left of it.
+  # A ship that is hit calls for help. Everyone who goes on shooting rocks within 1500 of a
+  # calling teammate pays 0.1 a shot; damage to the enemy that was hitting it pays 0.4 a point more.
   # Fighting: dying costs 10; damage to an enemy ship pays 0.1 a point, the same as shooting
   # a small rock, and twice that once its shields are down, when its crystals start to fall out.
   # No more than that: with three teams, a fight is time not spent mining and raising the base,
@@ -56,6 +58,7 @@ for i in "${!stages[@]}"; do
     --reward time=0.00083 \
     --reward deposit=0.2 --reward base_level=60 --reward buy=4 --reward tier=20 \
     --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
+    --reward abandon=0.1 --reward rescue=0.4 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
     --reward collect="$(scale 0.4)" --reward rock="$(scale 0.03)" --reward rock_hit="$(scale 0.02)"
   init="runs/$run/policy.pt"

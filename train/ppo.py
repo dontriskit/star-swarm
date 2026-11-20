@@ -23,7 +23,7 @@ from swarm_py import OBS_LEN, Env
 # to do), deposit (hand crystals over while inside the base).
 HEADS = (2, 3, 2, 2, 18, 5, 2, 2)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
-REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level", "rock_hit", "edge", "hull", "bare", "place", "tier")
+REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level", "rock_hit", "edge", "hull", "bare", "place", "tier", "abandon", "rescue")
 CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
 UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
 

@@ -335,7 +335,7 @@ fn destroying_every_other_base_wins_the_match() {
 fn a_team_without_a_base_gets_no_new_ships() {
     let mut world = siege(Config::default());
     // A third team keeps the match going after team 1 loses its base.
-    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0, level: 1, deposited: 0, spill: 0.0 });
+    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0, level: 1, deposited: 0, spill: 0.0, alarm: 0 });
     world.plans.push(None);
     world.commanded.push(false);
     world.seen_base_hp.iter_mut().for_each(|seen| seen.push(100.0));
@@ -582,6 +582,44 @@ fn drones_are_as_good_as_their_ship() {
     assert!(cfg.drone_shot(&big, DroneKind::Combat) > 2.0 * cfg.drone_shot(&small, DroneKind::Combat));
     assert!(cfg.drone_hull(&big) > 2.0 * cfg.drone_hull(&small) && (cfg.drone_hull(&ship(Class::Basic, 1)) - 30.0).abs() < 0.01);
     assert_eq!((cfg.drone_price(DroneKind::Eco, 1), cfg.drone_price(DroneKind::Eco, 5), cfg.drone_price(DroneKind::Combat, 5)), (40, 200, 300));
+}
+
+#[test]
+fn a_ship_that_is_hit_calls_for_help_and_its_team_hears() {
+    // Two of team 0, one of team 1 firing at the first; the second is 1400 away.
+    let cfg = Config { teams: 2, ships_per_team: 2, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 5);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 2.0, 1400.0);
+    world.ships[2].pos = world.offset(POLE, 0.3, 200.0);
+    world.ships[3].pos = world.offset(POLE, 0.3, 6000.0);
+    world.face(2, POLE);
+    let mut actions = vec![Action::default(); 4];
+    actions[2].fire = true;
+    assert!(observe(&world, 1).call.is_none() && !observe(&world, 0).calling);
+    while !world.step(&actions).iter().any(|e| matches!(e, Event::Hit { victim: 0, .. })) {}
+    // The ship that was hit calls; its teammate hears where from, though it is out of sight.
+    assert!(observe(&world, 0).calling && world.ships[2].aggro > 0);
+    let heard = observe(&world, 1).call.expect("the teammate hears the call");
+    assert!((heard.dist - 1400.0).abs() < 30.0 && heard.hull == 1.0, "{heard:?}");
+    assert!(observe(&world, 1).mates[0].calling);
+    assert!(observe(&world, 0).call.is_none(), "a ship does not hear itself");
+    assert!(observe(&world, 2).call.is_none() && observe(&world, 3).call.is_none(), "nor does the enemy");
+    // A scripted teammate leaves its mining and comes.
+    let mut bot = ScriptedBot::default();
+    let before = world.dist(world.ships[1].pos, world.ships[0].pos);
+    actions[2].fire = false;
+    for _ in 0..60 {
+        actions[1] = bot.act(&observe(&world, 1), &world.cfg);
+        world.ships[0].distress = 100;
+        world.step(&actions);
+    }
+    assert!(world.dist(world.ships[1].pos, world.ships[0].pos) < before - 200.0, "it flew towards the call");
+    // Five seconds after the last hit the call is over.
+    for _ in 0..101 {
+        world.step(&vec![Action::default(); 4]);
+    }
+    assert!(!observe(&world, 0).calling && observe(&world, 1).call.is_none());
 }
 
 #[test]
@@ -1480,6 +1518,6 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     assert!(world.cfg.view_range > 1000.0 && world.cfg.view_range < world.cfg.radar_range);
     // All twelve are in the vector a policy gets: the last six have their rows near the end.
     let v = seen.to_vec(&world.cfg);
-    let present = v[OBS_LEN - 127..OBS_LEN - 67].chunks(10).filter(|row| row[0] == 1.0).count();
+    let present = v[OBS_LEN - 140..OBS_LEN - 80].chunks(10).filter(|row| row[0] == 1.0).count();
     assert_eq!(present, 6);
 }
