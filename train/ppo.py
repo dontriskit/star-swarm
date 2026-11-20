@@ -280,14 +280,14 @@ def train(args):
                         grown[at_new] = 2.0
                     at_old, at_new = at_old + was, at_new + size
                 saved[key] = grown
-        first = "trunk.0.weight"
-        if saved[first].shape[1] < OBS_LEN:
-            # The observation has grown since this policy was saved. New inputs are added at the
-            # end, so the old policy carries over with zero weights on them: it behaves exactly
-            # as before until training teaches it to use them.
-            grown = torch.zeros(saved[first].shape[0], OBS_LEN, device=device)
-            grown[:, : saved[first].shape[1]] = saved[first]
-            saved[first] = grown
+        # The observation has grown since this policy was saved. New inputs are added at the
+        # end, so the old policy (and its critic) carries over with zero weights on them: it
+        # behaves exactly as before until training teaches it to use them.
+        for first in ("trunk.0.weight", "critic.0.weight"):
+            if first in saved and saved[first].shape[1] < OBS_LEN:
+                grown = torch.zeros(saved[first].shape[0], OBS_LEN, device=device)
+                grown[:, : saved[first].shape[1]] = saved[first]
+                saved[first] = grown
         # A policy saved before ships had a memory comes without one: it gets a fresh one,
         # which changes nothing until training puts it to use.
         # One saved when the value was a head on the shared layers has that head dropped: the
