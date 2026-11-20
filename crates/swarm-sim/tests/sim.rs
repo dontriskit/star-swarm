@@ -52,15 +52,15 @@ fn bases_are_equally_far_apart() {
     let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
     let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
     let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
-    // A third of the way around a planet of radius 3800.
-    assert!((d01 - 7958.7).abs() < 5.0, "{d01}");
+    // A third of the way around a planet of radius 4400.
+    assert!((d01 - 9215.3).abs() < 5.0, "{d01}");
     assert!((d01 - d12).abs() < 5.0 && (d12 - d20).abs() < 5.0);
 }
 
 #[test]
 fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let world = World::new(Config::default(), 4);
-    assert_eq!(world.rocks.len(), 1100 + 18, "the rocks asked for, and the two lodes at the poles");
+    assert_eq!(world.rocks.len(), 1100 + 28, "the rocks asked for, and the two lodes at the poles");
     assert!(world.rocks.iter().all(|r| r.farm.is_some()), "every rock is in a farm, a straggler in one of its own");
     // Every farm holds rocks of its own sizes, inside its radius.
     for (f, farm) in world.farms.iter().enumerate() {
@@ -89,31 +89,32 @@ fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let (small, medium, big) = ((1, 2), (3, 3), (4, 5));
     for farm in world.farms.iter().filter(|f| f.sizes != (1, 5)) {
         let (mine, theirs) = nearest_two(farm.pos);
-        if mine < 1450.0 {
+        if mine < 1950.0 {
             assert_eq!(farm.sizes, small, "{mine} from its base");
-        } else if mine > 1550.0 && theirs - mine < 900.0 {
+        } else if mine > 2050.0 && theirs - mine < 1100.0 {
             assert_eq!(farm.sizes, big, "{mine} and {theirs} from the two nearest bases");
-        } else if mine > 1550.0 && theirs - mine > 1100.0 {
+        } else if mine > 2050.0 && theirs - mine > 1300.0 {
             assert_eq!(farm.sizes, medium, "{mine} and {theirs} from the two nearest bases");
         }
     }
     let count = |sizes: (u8, u8)| world.farms.iter().filter(|f| f.sizes == sizes).count();
-    assert!(count(small) >= 9 && count(medium) >= 9 && count(big) >= 9, "{} small, {} medium, {} big", count(small), count(medium), count(big));
+    assert!(count(small) >= 3 && count(medium) >= 9 && count(big) >= 9, "{} small, {} medium, {} big", count(small), count(medium), count(big));
 
     // A farm of small rocks next to home; a lode of big rocks exactly half-way between every
     // two bases, and one at each pole, as far from all three.
     let home = world.bases[0].pos;
     let nearest = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(f32::MAX, f32::min);
-    assert!((nearest - 600.0).abs() < 2.0 && world.farms[0].sizes == small);
+    assert!((nearest - 1300.0).abs() < 2.0 && world.farms[0].sizes == small, "the nearest rocks are a flight away: {nearest}");
+    assert!(world.rocks.iter().all(|r| world.dist(home, r.pos) > 900.0), "and none right by the base");
     let lodes: Vec<&Farm> = world.farms.iter().filter(|f| f.sizes == big).filter(|f| { let (a, b) = nearest_two(f.pos); (a - b).abs() < 1.0 }).collect();
     assert_eq!(lodes.len(), 5, "three between the bases and two at the poles");
     assert_eq!(lodes.iter().filter(|f| f.pos.z.abs() > 0.999).count(), 2);
-    assert!(lodes.iter().filter(|f| f.pos.z.abs() < 0.001).all(|f| (nearest_two(f.pos).0 - 3979.4).abs() < 2.0), "half of the 7959 between two bases");
+    assert!(lodes.iter().filter(|f| f.pos.z.abs() < 0.001).all(|f| (nearest_two(f.pos).0 - 4607.7).abs() < 2.0), "half of the 9215 between two bases");
 
     // Several farms known from home, farms out to the far side, and open space between farms.
     let obs = observe(&world, 0);
     assert_eq!(obs.fields.len(), 8);
-    assert!(obs.fields[0].dist < obs.fields[7].dist && obs.fields[7].dist < 3000.0, "{:?}", obs.fields[7]);
+    assert!(obs.fields[0].dist < obs.fields[7].dist && obs.fields[7].dist < 5000.0, "{:?}", obs.fields[7]);
     let far = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(0.0, f32::max);
     assert!(far > 8000.0, "the farthest farm is {far} away");
     let gap = (2..third).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| world.dist(world.farms[i].pos, world.farms[j].pos)).fold(f32::MAX, f32::min);

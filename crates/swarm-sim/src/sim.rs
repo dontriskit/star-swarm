@@ -407,13 +407,13 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            radius: 3800.0,
-            farm_kinds: [(1, 2, 6), (3, 3, 7), (4, 5, 9), (1, 5, 1)],
-            home_zone: 1500.0,
-            contest_margin: 1000.0,
-            home_farm: 600.0,
-            rock_regrow: 6000,
-            farm_radius: 280.0,
+            radius: 4400.0,
+            farm_kinds: [(1, 2, 10), (3, 3, 12), (4, 5, 14), (1, 5, 1)],
+            home_zone: 2000.0,
+            contest_margin: 1200.0,
+            home_farm: 1300.0,
+            rock_regrow: 4800,
+            farm_radius: 380.0,
             dt: 1.0 / 20.0,
             teams: 3,
             ships_per_team: 9,
@@ -1094,10 +1094,10 @@ impl World {
                                 break;
                             }
                         }
-                        // One farm in six is a straggler, a single rock of any size, wherever it lies.
-                        let kind = if rng.below(6) == 0 { 3 } else { kind_at(&world.cfg, pos) };
-                        // Around a base farms are few as well as poor: every other one is left out.
-                        if kind == 0 && rng.below(2) == 0 {
+                        // One farm in ten is a straggler, a single rock of any size, wherever it lies.
+                        let kind = if rng.below(10) == 0 { 3 } else { kind_at(&world.cfg, pos) };
+                        // Around a base farms are few as well as poor: two in three are left out.
+                        if kind == 0 && rng.below(3) != 0 {
                             continue;
                         }
                         (pos, kind)

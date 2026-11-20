@@ -21,7 +21,7 @@ p.add_argument("--frame-skip", type=int, default=3)
 p.add_argument("--teams", type=int, default=3)
 p.add_argument("--ships-per-team", type=int, default=9)
 p.add_argument("--rocks", type=int, default=1100)
-p.add_argument("--radius", type=float, default=3800.0)
+p.add_argument("--radius", type=float, default=4400.0)
 p.add_argument("--max-ticks", type=int, default=54000)
 args = p.parse_args()
 
