@@ -1000,6 +1000,8 @@ fn a_base_has_two_places_and_only_ships_at_rest_take_them() {
     // One leaves: it gives up its place as soon as it moves, and the waiting ship takes it.
     let mut leave = unload.clone();
     leave[0] = Action { thrust: true, ..Action::default() };
+    // Straight out, away from the others.
+    world.face(0, world.offset(base, 0.0, 500.0));
     for _ in 0..30 {
         world.step(&leave);
     }
