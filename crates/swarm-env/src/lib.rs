@@ -49,6 +49,8 @@ pub struct Rewards {
     pub rock_hit: f32,
     /// Taken off for every point of hull a ship loses, whatever did it. Shields are free to spend.
     pub hull: f32,
+    /// Extra for every point of damage to an enemy whose shields are down: its crystals are falling out.
+    pub bare: f32,
     /// Extra per point of damage dealt to an enemy ship while the team is attacking and the
     /// attacker has the upper hand: the enemy has less hull and shield left than the attacker,
     /// is outnumbered around itself, or has drones to be taken.
@@ -57,7 +59,7 @@ pub struct Rewards {
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0 }
     }
 }
 
@@ -357,7 +359,9 @@ impl VecEnv {
                                 rewards[victim as usize] -= pay.hurt * damage;
                                 if let Some(by) = by {
                                     let bonus = if upper_hand(by as usize, victim as usize, damage) { pay.edge } else { 0.0 };
-                                    rewards[by as usize] += (pay.hit + bonus) * damage;
+                                    // With its shields down an enemy is losing crystals or hull.
+                                    let bare = if world.ships[victim as usize].shield <= 0.0 { pay.bare } else { 0.0 };
+                                    rewards[by as usize] += (pay.hit + bonus + bare) * damage;
                                 }
                             }
                             Event::RockHit { by, size, damage } => {
@@ -564,13 +568,41 @@ mod tests {
     }
 
     #[test]
+    fn hitting_an_enemy_without_shields_pays_extra() {
+        let pay = Rewards { hit: 1.0, bare: 1.0, crash: 0.0, death: 0.0, ..Rewards::default() };
+        let hit = |shield: f32| {
+            let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+            let mut env = VecEnv::new(cfg, 1, 3, 1, pay);
+            let world = &mut env.slots[0].world;
+            let pole = swarm_sim::Vec3::new(0.0, 0.0, 1.0);
+            world.ships[1].pos = pole;
+            world.ships[1].shield = shield;
+            world.ships[1].shield_wait = u16::MAX;
+            world.ships[0].pos = world.offset(pole, 0.3, 150.0);
+            world.face(0, pole);
+            let fire = replay::encode(&Action { fire: true, ..Action::default() });
+            let (mut rewards, mut dones) = (vec![0f32; 2], vec![0u8; 2]);
+            for _ in 0..60 {
+                env.step(&[fire, 0], &mut rewards, &mut dones);
+                if rewards[0] > 0.0 {
+                    return rewards[0];
+                }
+            }
+            0.0
+        };
+        assert_eq!(hit(100.0), 2.0, "shields up: the damage alone");
+        assert_eq!(hit(0.0), 4.0, "shields down: twice that");
+    }
+
+    #[test]
     fn attacking_with_the_upper_hand_pays_extra() {
         let pay = Rewards { hit: 1.0, edge: 3.0, crash: 0.0, death: 0.0, ..Rewards::default() };
-        // The same single hit of 1 damage, from inside the laser's full-power range, in each case.
+        // The same single hit, from inside the laser's full-power range, in each case.
+        // (A basic shot does 2.)
         let plain = first_hit_pay(pay, false, 100.0);
         let even = first_hit_pay(pay, true, 100.0);
         let weaker = first_hit_pay(pay, true, 50.0);
-        assert!(plain > 0.5 && plain <= 1.0, "a plain hit pays its damage: {plain}");
+        assert!(plain > 1.0 && plain <= 2.0, "a plain hit pays its damage: {plain}");
         assert!((even - plain).abs() < 1e-4, "attacking an equal pays no more: {even}");
         assert!((weaker - 4.0 * plain).abs() < 1e-3, "attacking a weaker enemy pays hit plus edge: {weaker}");
         // Farming ships get no bonus for shooting a weaker enemy either.

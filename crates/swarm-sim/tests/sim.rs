@@ -354,9 +354,24 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
     };
     // Full power over the first 60% of the range (282 of 470), then fading to nothing.
     let (near, middle, far) = (hit_from(60.0).unwrap(), hit_from(250.0).unwrap(), hit_from(420.0).unwrap());
-    assert_eq!((near, middle), (1.0, 1.0), "full power inside the full-power range");
-    assert!(far < 0.4 && far > 0.05, "near the edge of its range did {far}");
+    assert_eq!((near, middle), (2.0, 2.0), "full power inside the full-power range");
+    assert!(far < 0.8 && far > 0.1, "near the edge of its range did {far}");
     assert_eq!(hit_from(600.0), None, "a basic laser reaches 470");
+}
+
+#[test]
+fn a_team_learns_how_hard_an_enemy_hits_by_being_hit() {
+    let mut world = duel(Config::default(), 150.0);
+    assert_eq!(observe(&world, 1).ships[0].threat, 0.0, "nothing is known of a ship that has not hit yet");
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    while !world.step(&fire).iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })) {}
+    assert_eq!(observe(&world, 1).ships[0].threat, 2.0 / 100.0, "a basic shot does 2 to a hull of 100");
+    // An upgrade shows only once it has been felt.
+    world.ships[0].levels[Upgrade::Attack as usize] = 2;
+    assert_eq!(observe(&world, 1).ships[0].threat, 0.02);
+    while !world.step(&fire).iter().any(|e| matches!(e, Event::Hit { victim: 1, damage, .. } if *damage > 2.5)) {}
+    assert!((observe(&world, 1).ships[0].threat - 0.028).abs() < 1e-6);
+    assert_eq!(observe(&world, 0).ships[0].threat, 0.0, "the other side has learned nothing");
 }
 
 #[test]
@@ -416,7 +431,7 @@ fn carried_crystals_take_damage_before_the_hull_and_fall_out() {
     let mut world = duel(Config::default(), 150.0);
     world.ships[1].shield = 0.0;
     world.ships[1].shield_wait = u16::MAX;
-    world.ships[1].cargo = 6;
+    world.ships[1].cargo = 10;
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
 
     // The first hits cost crystals, not hull.
@@ -425,7 +440,7 @@ fn carried_crystals_take_damage_before_the_hull_and_fall_out() {
         hits += world.step(&fire).iter().filter(|e| matches!(e, Event::Hit { victim: 1, .. })).count();
     }
     assert_eq!(world.ships[1].hull, 100.0);
-    assert!(world.ships[1].cargo < 6 && world.ships[1].cargo >= 3, "cargo {}", world.ships[1].cargo);
+    assert!(world.ships[1].cargo < 10 && world.ships[1].cargo >= 4, "cargo {}", world.ships[1].cargo);
     assert!(!world.crystals.is_empty(), "the lost crystals lie on the map");
     // They land outside the ship's own reach, so it does not simply scoop them back up.
     let ship = &world.ships[1];
@@ -840,14 +855,14 @@ fn a_shield_drone_takes_the_shots_meant_for_its_owner_until_it_breaks() {
     world.ships[1].pos = world.offset(POLE, 0.3, 300.0);
     world.face(1, POLE);
     let fire = [Action::default(), Action { fire: true, ..Action::default() }];
-    // The drone has 30 hit points; a basic shot does a little under 1 at this range.
-    for _ in 0..150 {
+    // The drone has 30 hit points; a basic shot does 2.
+    for _ in 0..60 {
         world.step(&fire);
     }
     assert_eq!(world.drones.len(), 1);
     assert!(world.drones[0].hp < world.cfg.drone_hp, "the drone was not in the way");
     assert_eq!(world.ships[0].shield, world.cfg.shield_max(&world.ships[0]), "the owner was hit while the drone stood");
-    for _ in 0..1200 {
+    for _ in 0..200 {
         world.step(&fire);
     }
     assert!(world.drones.is_empty(), "the drone should have broken");
@@ -931,7 +946,7 @@ fn a_pack_of_crystals_fades_to_nothing() {
 #[test]
 fn small_rocks_are_quick_work_and_big_ones_pay_more() {
     let cfg = Config::default();
-    assert_eq!([1, 2, 3, 4, 5].map(|s| cfg.rock_hp_of(s)), [10.0, 40.0, 90.0, 160.0, 250.0]);
+    assert_eq!([1, 2, 3, 4, 5].map(|s| cfg.rock_hp_of(s)), [20.0, 80.0, 180.0, 320.0, 500.0]);
     assert_eq!(cfg.rock_packs, [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)]);
     // Per shot a basic ship gets the most out of the smallest rocks.
     let per_hp = |size: u8| (cfg.rock_packs[size as usize - 1].0 + cfg.rock_packs[size as usize - 1].1) as f32 / 2.0 / cfg.rock_hp_of(size);
@@ -1135,8 +1150,8 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     assert_eq!(seen.rocks.len(), 12);
     assert!((seen.rocks[0].dist - 100.0).abs() < 0.5 && (seen.rocks[11].dist - 870.0).abs() < 0.5, "nearest first, out to the twelfth");
     assert!(world.cfg.view_range > 1000.0 && world.cfg.view_range < world.cfg.radar_range);
-    // All twelve are in the vector a policy gets: the last six have their rows at the end.
+    // All twelve are in the vector a policy gets: the last six have their rows near the end.
     let v = seen.to_vec(&world.cfg);
-    let present = v[OBS_LEN - 60..].chunks(10).filter(|row| row[0] == 1.0).count();
+    let present = v[OBS_LEN - 66..OBS_LEN - 6].chunks(10).filter(|row| row[0] == 1.0).count();
     assert_eq!(present, 6);
 }

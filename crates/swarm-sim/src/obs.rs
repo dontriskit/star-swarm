@@ -24,7 +24,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -45,6 +45,9 @@ pub struct Near {
     /// For a ship: its shields and the crystals it carries, each as a share of what it can hold.
     pub shield: f32,
     pub cargo: f32,
+    /// For an enemy ship: the damage one of its shots does at full power, as a share of a
+    /// tier-1 hull, as far as this ship's team has felt it. Zero for a ship that has not hit them yet.
+    pub threat: f32,
 }
 
 /// A teammate on the team radar: teammates are known wherever they are.
@@ -273,6 +276,7 @@ impl<'a> Scan<'a> {
                 facing: fwd.map_or(Vec2::default(), local),
                 shield: 0.0,
                 cargo: 0.0,
+                threat: 0.0,
             })
         };
         // What the team last saw of each base, not necessarily how it is now.
@@ -368,6 +372,9 @@ impl<'a> Scan<'a> {
             if let Some(mut seen) = see(far, s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)) {
                 seen.shield = s.shield / cfg.shield_max(s);
                 seen.cargo = s.cargo as f32 / cfg.cargo_max(s) as f32;
+                if s.team != me.team {
+                    seen.threat = world.felt_damage[me.team as usize][i] / cfg.hull;
+                }
                 ships.offer(seen, seen.dist);
             }
         }
@@ -569,6 +576,11 @@ impl Observation {
                 ]),
                 None => put(&[0.0; NEAR_LEN]),
             }
+        }
+        // How hard each ship in sight hits, as far as the team has felt it. A shot of a tenth of
+        // a hull reads as 1.
+        for slot in 0..NEAR {
+            put(&[self.ships.get(slot).map_or(0.0, |s| s.threat * 10.0)]);
         }
         debug_assert_eq!(at, OBS_LEN);
     }

@@ -384,11 +384,11 @@ impl Default for Config {
             turret_damage: 15.0,
             turret_cooldown: 8,
             weapons: [
-                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 8, damage: 1.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 14, damage: 3.0 },
-                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 8, damage: 1.1 },
-                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 5, damage: 0.8 },
-                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 10, damage: 0.8 },
+                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 8, damage: 2.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 14, damage: 6.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 8, damage: 2.2 },
+                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 5, damage: 1.6 },
+                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 10, damage: 1.6 },
             ],
             bodies: [
                 Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
@@ -401,7 +401,7 @@ impl Default for Config {
             shot_full: 0.6,
             ammo: 30.0,
             ammo_regen: 4.0,
-            ammo_damage: 1.0,
+            ammo_damage: 2.0,
             boost_thrust: 2.5,
             boost_speed: 1.6,
             boost_drain: 0.5,
@@ -410,7 +410,7 @@ impl Default for Config {
             lives: 3,
             crystal_armor: 1.0,
             rock_radius: 18.0,
-            rock_hp: 10.0,
+            rock_hp: 20.0,
             rock_packs: [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)],
             rock_weights: [35, 28, 20, 11, 6],
             base_levels: 7,
@@ -428,7 +428,7 @@ impl Default for Config {
             drone_reach: 240.0,
             drone_speed: 170.0,
             drone_cooldown: 10,
-            drone_damage: 1.0,
+            drone_damage: 2.0,
             rock_speed: 12.0,
             crash_damage: 0.15,
             crystal_ticks: 300,
@@ -630,6 +630,8 @@ pub struct Shot {
     pub team: u8,
     /// A mining shot from an eco drone: it breaks rocks and passes through everything else.
     pub mining: bool,
+    /// Fired by the ship's own weapon, not by one of its drones or a turret.
+    pub from_ship: bool,
 }
 
 impl Shot {
@@ -716,6 +718,10 @@ pub struct World {
     pub seen_base_hp: Vec<Vec<f32>>,
     /// Teams whose orders come from outside (a human commander): their votes are not counted.
     pub commanded: Vec<bool>,
+    /// What each team knows of every ship's weapon: the damage one of its shots does at full
+    /// power, as last felt by a ship of the team. Zero until that ship has hit one of them; out
+    /// of date once it has bought upgrades, until it hits again. Indexed by team, then by ship.
+    pub felt_damage: Vec<Vec<f32>>,
     pub events: Vec<Event>,
     rng: Rng,
     /// Scratch space reused every tick: where the rocks and the ships are, laid out for fast first-pass tests.
@@ -742,6 +748,7 @@ impl World {
             plans: vec![None; bases.len()],
             seen_base_hp: vec![vec![cfg.base_hp; bases.len()]; bases.len()],
             commanded: vec![false; bases.len()],
+            felt_damage: vec![vec![0.0; cfg.teams * cfg.ships_per_team]; bases.len()],
             bases,
             events: Vec::new(),
             rock_field: geo::Field::default(),
@@ -1099,6 +1106,7 @@ impl World {
                         owner: Some(i as u16),
                         team: ship.team,
                         mining: false,
+                        from_ship: true,
                     });
                 }
             }
@@ -1220,6 +1228,7 @@ impl World {
                         owner: Some(owner),
                         team,
                         mining: kind == DroneKind::Eco,
+                        from_ship: false,
                     });
                 }
             }
@@ -1253,6 +1262,7 @@ impl World {
                         owner: None,
                         team: team as u8,
                         mining: false,
+                        from_ship: false,
                     });
                 }
             }
@@ -1311,6 +1321,9 @@ impl World {
                 spilled.push((self.ships[v].pos, dropped));
                 if self.ships[v].hull < hull {
                     self.events.push(Event::HullLost { ship: v as u16, amount: hull - self.ships[v].hull });
+                }
+                if let (true, Some(owner)) = (shot.from_ship, shot.owner) {
+                    self.felt_damage[self.ships[v].team as usize][owner as usize] = shot.damage;
                 }
                 self.ships[v].last_hit_by = shot.owner;
                 self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage });
@@ -1603,6 +1616,9 @@ impl World {
         for c in &self.crystals {
             spot(c.pos).into_iter().for_each(&mut put);
             put(c.value);
+        }
+        for felt in self.felt_damage.iter().flatten() {
+            put(felt.to_bits());
         }
         put(self.shots.len() as u32);
         for s in &self.shots {
