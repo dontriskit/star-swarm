@@ -210,6 +210,8 @@ struct Game {
     wins_dir: Option<PathBuf>,
     wins: Vec<PathBuf>,
     win_at: usize,
+    /// In a kept match: how many teams (the first ones) flew on the trained policy.
+    models: usize,
     selected: BTreeSet<usize>,
     order: OrderKind,
     paused: bool,
@@ -264,6 +266,7 @@ impl Game {
             wins_dir: None,
             wins: Vec::new(),
             win_at: 0,
+            models: 0,
             selected: BTreeSet::new(),
             order: OrderKind::Mine,
             paused: false,
@@ -545,11 +548,11 @@ impl Game {
 
     /// The saved matches of the team being trained under a runs directory, newest first.
     fn find_wins(dir: &std::path::Path) -> Vec<PathBuf> {
-        let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .flat_map(|run| std::fs::read_dir(run.path().join("wins")).into_iter().flatten().flatten())
+        // Training keeps them in RUNS/wins; older runs kept them in RUNS/<run>/wins.
+        let runs = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|run| run.path().join("wins"));
+        let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::iter::once(dir.join("wins"))
+            .chain(runs)
+            .flat_map(|wins| std::fs::read_dir(wins).into_iter().flatten().flatten())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "replay"))
             .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
@@ -572,16 +575,20 @@ impl Game {
         let Some(dir) = self.wins_dir.clone() else { return };
         let wins = Self::find_wins(&dir);
         if wins.is_empty() {
-            self.status = format!("W {} nie ma jeszcze zapisanych meczów: trening zapisuje wygrane, zburzone bazy i pierwsze miejsca.", dir.display());
+            // Nothing to show: an empty, stopped screen with the reason, not a game of its own.
+            self.status = format!("W {}/wins nie ma jeszcze zapisanych meczów. Trening zapisuje tam mecze, w których jego drużyna wygrała, zburzyła bazę albo skończyła na pierwszym miejscu. Spróbuj ponownie później („Nowy mecz” sprawdza jeszcze raz).", dir.display());
             self.wins = wins;
+            self.paused = true;
             return;
         }
         let at = at.min(wins.len() - 1);
         let path = &wins[at];
         let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-        let what = if name.ends_with("wygrana") {
+        // "...-m2": the first two teams flew on the policy, the rest on the scripted bot.
+        let models = name.rsplit_once("-m").and_then(|(_, n)| n.parse().ok()).unwrap_or(1);
+        let what = if name.contains("wygrana") {
             "wygrana"
-        } else if name.ends_with("zburzona-baza") {
+        } else if name.contains("zburzona-baza") {
             "zburzona baza wroga"
         } else {
             "pierwsze miejsce po czasie"
@@ -591,7 +598,7 @@ impl Game {
             Ok(replay) => {
                 let status = format!("Mecz {} z {} (od najnowszego): {what}, przebieg {run}.", at + 1, wins.len());
                 let fresh = Game::new(0, Some(replay));
-                *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, spin: self.spin, wins_dir: Some(dir), wins, win_at: at, status, ..fresh };
+                *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, spin: self.spin, wins_dir: Some(dir), wins, win_at: at, models, status, ..fresh };
             }
             Err(e) => self.status = format!("Nie da się odczytać {}: {e} (zapis z innej wersji gry?)", path.display()),
         }
@@ -639,9 +646,11 @@ impl Game {
             let name = TEAM_NAMES[t % TEAM_NAMES.len()];
             let crystals: u32 = self.world.ships.iter().filter(|s| s.team == t as u8).map(|s| s.collected).sum();
             let live = self.watch.as_ref().is_some_and(|w| w.stream.is_some());
+            // In a live or kept training match the first teams fly on the policy, the rest on the bot.
+            let flown = self.watch.as_ref().and_then(|w| w.stream.as_ref()).map_or(self.models, |s| s.models);
             let who = match (self.watch.is_some(), t as u8 == MY_TEAM, self.model.is_some()) {
-                (true, true, _) if live => format!("{name} (uczy się)"),
-                (true, false, _) if live => format!("{name} (starsza kopia)"),
+                _ if self.wins_dir.is_some() && self.playback.is_none() => format!("{name} (—)"),
+                _ if self.wins_dir.is_some() || live => format!("{name} ({})", if t < flown { "model" } else { "skrypt" }),
                 (true, _, _) => format!("{name} (model)"),
                 (_, true, true) => format!("{name} (Ty, model)"),
                 (_, true, false) => format!("{name} (Ty)"),
@@ -875,6 +884,8 @@ impl Game {
             )
             .child(div().text_color(muted).child(if self.watch.is_some() {
                 "Podgląd treningu (rozkazy wyłączone)"
+            } else if self.wins_dir.is_some() && self.playback.is_none() {
+                "Brak zapisanych meczów do pokazania (szczegóły niżej)"
             } else if self.playback.is_some() {
                 "Powtórka (rozkazy wyłączone)"
             } else if self.model.is_some() {

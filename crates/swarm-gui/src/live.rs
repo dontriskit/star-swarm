@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 
 use swarm_sim::{Action, Config, replay};
 
-const MAGIC: &[u8; 8] = b"SWLIVE01";
+const MAGIC: &[u8; 8] = b"SWLIVE02";
 /// Bytes in an episode record after its tag.
-const EPISODE_LEN: usize = 8 + 4 + 2 + 2 + 4 + 4 + 4 + 4;
+const EPISODE_LEN: usize = 8 + 4 + 2 + 2 + 4 + 4 + 4 + 4 + 2;
 
 pub enum Item {
     /// A new match: its setup and seed.
@@ -32,6 +32,8 @@ pub struct Stream {
     started: bool,
     /// Matches whose header has been read so far.
     pub episodes: usize,
+    /// How many teams (the first ones) fly on the policy being trained; the rest are scripted.
+    pub models: usize,
     /// Ticks read so far.
     pub ticks: usize,
     pub queue: VecDeque<Item>,
@@ -41,7 +43,7 @@ impl Stream {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(0))?;
-        Ok(Stream { path: path.to_path_buf(), file, pending: Vec::new(), ships: 0, started: false, episodes: 0, ticks: 0, queue: VecDeque::new() })
+        Ok(Stream { path: path.to_path_buf(), file, pending: Vec::new(), ships: 0, started: false, episodes: 0, models: 0, ticks: 0, queue: VecDeque::new() })
     }
 
     /// Ticks waiting to be played.
@@ -87,6 +89,7 @@ impl Stream {
                         ..Config::default()
                     };
                     self.ships = cfg.teams * cfg.ships_per_team;
+                    self.models = word(body + 32, 2) as usize;
                     self.episodes += 1;
                     self.queue.push_back(Item::Episode(Box::new(cfg), seed));
                     at = body + EPISODE_LEN;

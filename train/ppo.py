@@ -248,7 +248,8 @@ def train(args):
     # One of the training matches is streamed for `swarm-gui --watch` to show live.
     env.stream(str(out / "live.swl"))
     # And the matches in which the team being trained got somewhere are kept, for `swarm-gui --wins`.
-    env.keep_wins(str(out / "wins"))
+    # (In one place for all runs, so that restarting a run does not lose them.)
+    env.keep_wins(str(out.parent / "wins"))
     team = torch.arange(env.agents, device=device) % env.ships // args.ships_per_team
     ours = (team < flown if mirror else team == 0).nonzero().squeeze(-1)
     theirs = (team < 0 if mirror else (team != 0) & (team < flown)).nonzero().squeeze(-1)

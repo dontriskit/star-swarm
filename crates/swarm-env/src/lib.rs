@@ -126,7 +126,7 @@ impl EpisodeStats {
 }
 
 /// Magic at the start of a live stream file.
-pub const LIVE_MAGIC: &[u8; 8] = b"SWLIVE01";
+pub const LIVE_MAGIC: &[u8; 8] = b"SWLIVE02";
 
 /// One thing that happened in the watched match, in the order it happened.
 enum Tape {
@@ -228,14 +228,15 @@ impl VecEnv {
     }
 
     fn write_highlights(&mut self) {
-        let Self { slots, highlights, saved, .. } = self;
+        let Self { slots, highlights, saved, learners, .. } = self;
         let Some(dir) = highlights else { return };
         for slot in slots.iter_mut() {
             let Some((kind, replay)) = slot.keep.take() else { continue };
             *saved += 1;
             // Numbered in the order they ended, and stamped so that runs do not overwrite each other.
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            if replay.save(dir.join(format!("{stamp}-{saved:04}-{kind}.replay"))).is_err() {
+            // The name also says how many teams flew on the policy (the first ones): "m2" is two.
+            if replay.save(dir.join(format!("{stamp}-{saved:04}-{kind}-m{learners}.replay"))).is_err() {
                 continue;
             }
             let mut of_kind: Vec<std::path::PathBuf> = std::fs::read_dir(&*dir)
@@ -243,7 +244,7 @@ impl VecEnv {
                 .flatten()
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(&format!("-{kind}.replay"))))
+                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(&format!("-{kind}-m"))))
                 .collect();
             of_kind.sort();
             for old in of_kind.iter().rev().skip(15) {
@@ -283,6 +284,7 @@ impl VecEnv {
                     file.write_all(&self.cfg.max_ticks.to_le_bytes())?;
                     file.write_all(&self.cfg.base_hp.to_le_bytes())?;
                     file.write_all(&self.cfg.turret_damage.to_le_bytes())?;
+                    file.write_all(&(self.learners as u16).to_le_bytes())?;
                 }
                 Tape::Tick(actions) => {
                     file.write_all(b"T")?;
@@ -724,7 +726,7 @@ mod tests {
         }
         let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
         assert_eq!(files.len(), 1, "only the first slot is recorded: {files:?}");
-        assert!(files[0].to_str().unwrap().ends_with("-pierwsze-miejsce.replay"));
+        assert!(files[0].to_str().unwrap().ends_with("-pierwsze-miejsce-m3.replay"));
         let kept = swarm_sim::Replay::load(&files[0]).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!((kept.ticks(), kept.setup.base_hp), (60, 777.0), "the whole match, with the bases it was played with");
