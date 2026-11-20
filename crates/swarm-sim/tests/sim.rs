@@ -1049,3 +1049,27 @@ fn the_hull_mends_from_crystals_first_and_in_the_base() {
     }
     assert_eq!(world.ships[0].hull, 40.0);
 }
+
+#[test]
+fn a_destroyed_ship_comes_back_whole_and_empty_but_keeps_its_points() {
+    let mut world = with_drone(DroneKind::Eco);
+    world.ships[0].cargo = 80;
+    world.ships[0].points = 55;
+    world.ships[0].levels[Upgrade::Attack as usize] = 2;
+    world.ships[0].hull = -1000.0;
+    let idle = [Action::default(); 2];
+    world.step(&idle);
+    assert!(!world.ships[0].alive);
+    for _ in 0..world.cfg.respawn_ticks + 1 {
+        world.step(&idle);
+    }
+    let ship = &world.ships[0];
+    assert!(ship.alive);
+    assert_eq!(ship.cargo, 0, "the hold is empty");
+    assert_eq!((ship.hull, ship.shield), (world.cfg.hull_max(ship), world.cfg.shield_max(ship)), "hull and shields are whole");
+    assert_eq!(ship.points, 55, "points are kept");
+    assert_eq!(ship.levels[Upgrade::Attack as usize], 2, "and so are upgrades, while it has lives left");
+    assert_eq!(observe(&world, 0).drones, 0, "its drones are no longer its own");
+    assert_eq!(world.drones.len(), 1, "they stay where they were, for anyone to take");
+    assert!(world.crystals.iter().any(|c| c.value == 40), "half of what it carried was left behind as a pack");
+}
