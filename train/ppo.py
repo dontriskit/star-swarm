@@ -46,7 +46,17 @@ class Policy(nn.Module):
         nn.init.zeros_(self.recall.weight)
         nn.init.zeros_(self.recall.bias)
         self.logits = nn.Linear(hidden, sum(HEADS))
-        self.value = nn.Linear(hidden, 1)
+        # What a position is worth is judged by a network of its own. Sharing layers with the
+        # part that acts let a badly wrong judgement (a lost base is worth -50 to seven ships)
+        # drag those layers about and the ship's flying with them.
+        self.critic = nn.Sequential(nn.Linear(OBS_LEN, hidden), nn.ReLU(), nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1))
+        # The critic works in units of the usual spread of returns, kept here.
+        self.register_buffer("ret_mean", torch.zeros(()))
+        self.register_buffer("ret_std", torch.ones(()))
+
+    def worth(self, obs) -> torch.Tensor:
+        """The value of each observation, in reward units."""
+        return self.critic(obs).squeeze(-1) * self.ret_std + self.ret_mean
 
     def blank(self, count: int, device) -> torch.Tensor:
         """The memory of ships that remember nothing yet."""
@@ -59,7 +69,7 @@ class Policy(nn.Module):
         if state is not None:
             state = self.memory(h, state)
             h = h + self.recall(state)
-        return self.logits(h).split(HEADS, dim=-1), self.value(h).squeeze(-1), state
+        return self.logits(h).split(HEADS, dim=-1), self.worth(obs), state
 
     def act(self, obs, state=None, greedy: bool = False):
         logits, value, state = self(obs, state)
@@ -102,7 +112,7 @@ def forget(policy: Policy, how: str, device, hidden: int):
         if how == "head":
             # Keep what the network sees (the trunk), forget what it does with it.
             policy.logits.load_state_dict(fresh.logits.state_dict())
-            policy.value.load_state_dict(fresh.value.state_dict())
+            policy.critic.load_state_dict(fresh.critic.state_dict())
         elif how == "shrink":
             # Shrink and perturb: pull every weight halfway to zero and add a fresh random network on top.
             for old, new in zip(policy.parameters(), fresh.parameters()):
@@ -239,6 +249,8 @@ def train(args):
     rival = Policy(args.hidden).to(device)
     past = []
     policy = Policy(args.hidden).to(device)
+    # Whether the critic's units came with the saved policy; if not, the first returns set them.
+    calibrated = False
     if args.init:
         checkpoint = torch.load(args.init, map_location=device)
         saved = checkpoint["model"]
@@ -269,8 +281,12 @@ def train(args):
             saved[first] = grown
         # A policy saved before ships had a memory comes without one: it gets a fresh one,
         # which changes nothing until training puts it to use.
+        # One saved when the value was a head on the shared layers has that head dropped: the
+        # critic starts afresh (see --value-warmup).
+        saved = {k: v for k, v in saved.items() if not k.startswith("value.")}
+        calibrated = "ret_std" in saved
         missing = policy.load_state_dict(saved, strict=False)
-        assert not missing.unexpected_keys and all(k.startswith(("memory.", "recall.")) for k in missing.missing_keys), missing
+        assert not missing.unexpected_keys and all(k.startswith(("memory.", "recall.", "critic.", "ret_")) for k in missing.missing_keys), missing
         forget(policy, args.forget, device, args.hidden)
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
 
@@ -325,6 +341,13 @@ def train(args):
                 adv[t] = last
                 next_value = val_buf[t]
             returns = adv + val_buf
+            # Keep the critic's units up to date: a slow average of where returns sit and how
+            # widely they spread.
+            seen = returns[obs_buf[..., 0] > 0.5]
+            if len(seen) > 1:
+                rate = 0.05 if update > 1 or calibrated else 1.0
+                policy.ret_mean.lerp_(seen.mean(), rate)
+                policy.ret_std.lerp_(seen.std().clamp(min=1e-3), rate)
 
         # Learning goes over stretches of consecutive decisions of one ship, so that the memory
         # can be taught: each stretch starts from the memory the ship had there and is played
@@ -358,15 +381,16 @@ def train(args):
                 a = (a - mean(a)) / ((mean((a - mean(a)) ** 2)).sqrt() + 1e-8)
                 ratio = (logp - logp_buf[rows, cols]).exp()
                 policy_loss = -mean(torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a))
-                value_loss = 0.5 * mean((value - returns[rows, cols]).pow(2))
+                # Judged in the critic's own units, so the size of the rewards does not set the size of the step.
+                value_loss = 0.5 * mean(((value - returns[rows, cols]) / policy.ret_std).pow(2))
                 loss = policy_loss + args.value_coef * value_loss - entropy_coef * mean(entropy)
                 optim.zero_grad(set_to_none=True)
                 loss.backward()
                 if update <= args.value_warmup:
                     # A policy taught elsewhere comes without a sense of what a position is worth.
-                    # Until it has one, only the value head learns: the rest is left as it came.
+                    # Until it has one, only the critic learns: the rest is left as it came.
                     for name, param in policy.named_parameters():
-                        if not name.startswith("value."):
+                        if not name.startswith("critic."):
                             param.grad = None
                 nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
                 optim.step()
@@ -415,7 +439,7 @@ if __name__ == "__main__":
     p.add_argument("--entropy-coef", type=float, default=0.01)
     p.add_argument("--entropy-end", type=float, default=None, help="entropy coefficient at the last update (default: no fading)")
     p.add_argument("--init", default=None, metavar="POLICY.PT", help="start from a saved policy")
-    p.add_argument("--value-warmup", type=int, default=0, help="updates at the start in which only the value head learns")
+    p.add_argument("--value-warmup", type=int, default=0, help="updates at the start in which only the critic learns")
     p.add_argument("--forget", default="none", choices=["none", "head", "shrink"],
                    help="with --init: reset the action and value heads, or shrink every weight and add noise")
     p.add_argument("--log-every", type=int, default=10)
