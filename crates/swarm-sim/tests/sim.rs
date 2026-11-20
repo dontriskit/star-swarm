@@ -423,7 +423,8 @@ fn carried_crystals_take_damage_before_the_hull_and_fall_out() {
     assert!(world.ships[1].cargo < 6 && world.ships[1].cargo >= 3, "cargo {}", world.ships[1].cargo);
     assert!(!world.crystals.is_empty(), "the lost crystals lie on the map");
     // They land outside the ship's own reach, so it does not simply scoop them back up.
-    assert!(world.crystals.iter().all(|c| world.dist(c.pos, world.ships[1].pos) > world.cfg.pickup_radius));
+    let ship = &world.ships[1];
+    assert!(world.crystals.iter().all(|c| world.dist(c.pos, ship.pos) > world.cfg.pickup_reach(world.cfg.radius_of(ship), c.value)));
 
     // Keep firing: the hull starts to go only once the hold is empty.
     for _ in 0..150 {
@@ -804,4 +805,23 @@ fn a_broken_rock_leaves_one_pack_and_a_ship_takes_what_fits() {
     let taken: u32 = world.step(&[Action::default(); 2]).iter().map(|e| if let Event::Collected { ship: 0, amount } = e { *amount } else { 0 }).sum();
     assert_eq!((taken, world.ships[0].cargo), (60, 60));
     assert_eq!(world.crystals.iter().find(|c| !c.boost_cell).map(|c| c.value), Some(pack - 60));
+}
+
+#[test]
+fn a_ship_passing_close_to_a_pack_picks_it_up() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let grab = |gap: f32, value: u32| {
+        let mut world = World::new(cfg.clone(), 2);
+        world.ships[0].pos = POLE;
+        world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
+        world.crystals.push(Crystal { pos: world.offset(POLE, 0.3, gap), ticks: 100, value, boost_cell: false });
+        world.step(&[Action::default(); 2]);
+        world.ships[0].cargo
+    };
+    // A small pack of 9 has radius 11: a tier-1 ship (radius 12) takes it from within 34.
+    assert_eq!(grab(30.0, 9), 9);
+    assert_eq!(grab(38.0, 9), 0);
+    // A big pack is a bigger target: 49 crystals have radius 15, so the reach is 42.
+    assert_eq!(grab(40.0, 49), 49);
+    assert_eq!(grab(46.0, 49), 0);
 }

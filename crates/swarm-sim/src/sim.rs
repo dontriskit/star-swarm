@@ -481,6 +481,15 @@ impl Config {
     pub fn next_base_level_at(&self, level: u8) -> Option<u32> {
         (level < self.base_levels).then(|| self.base_level_at[level as usize - 1])
     }
+    /// How big a pack of crystals is: bigger packs are bigger targets. A boost cell (value 0) is the smallest.
+    pub fn crystal_radius(&self, value: u32) -> f32 {
+        8.0 + (value as f32).sqrt()
+    }
+    /// How close a ship of the given radius (0 for a drone) has to come to a pack to take it:
+    /// its own radius plus twice the pack's.
+    pub fn pickup_reach(&self, ship_radius: f32, value: u32) -> f32 {
+        ship_radius + 2.0 * self.crystal_radius(value)
+    }
     pub fn rock_radius_of(&self, size: u8) -> f32 {
         self.rock_radius * size as f32
     }
@@ -1229,7 +1238,7 @@ impl World {
 
         // Spilled crystals land a little way off, out of the ship's own reach, for anyone to pick up.
         for (at, count) in spilled {
-            self.drop_pack(at, count, self.cfg.pickup_radius * 2.0, self.cfg.pickup_radius * 4.5);
+            self.drop_pack(at, count, 90.0, 140.0);
         }
 
         // Broken rocks leave crystals and are replaced elsewhere.
@@ -1263,7 +1272,7 @@ impl World {
                 for d in drones {
                     let Some(i) = d.owner.map(|o| o as usize) else { continue };
                     let dist = geo::chord(radius, d.pos, c.pos);
-                    if ships[i].alive && ships[i].cargo < cfg.cargo_max(&ships[i]) && dist < cfg.pickup_radius && best.is_none_or(|(_, b)| dist < b) {
+                    if ships[i].alive && ships[i].cargo < cfg.cargo_max(&ships[i]) && dist < cfg.pickup_reach(0.0, c.value) && best.is_none_or(|(_, b)| dist < b) {
                         best = Some((i, dist));
                     }
                 }
@@ -1275,7 +1284,7 @@ impl World {
                     continue;
                 }
                 let dist = geo::chord(radius, s.pos, c.pos);
-                if dist < cfg.pickup_radius && best.is_none_or(|(_, b)| dist < b) {
+                if dist < cfg.pickup_reach(cfg.radius_of(s), c.value) && best.is_none_or(|(_, b)| dist < b) {
                     best = Some((i, dist));
                 }
             }
