@@ -148,7 +148,7 @@ const DRONE_RADIUS: f32 = 12.0;
 pub const ROCK_SIZES: u8 = 5;
 
 /// Ship tiers run from 1 to this.
-pub const TIERS: u8 = 3;
+pub const TIERS: u8 = 4;
 
 /// What a ship has set out to do, which its teammates can see. Farming is the default, and
 /// defending is each ship's own choice. Attacking is a team decision: when at least half of a
@@ -394,11 +394,11 @@ impl Default for Config {
             farm_radius: 200.0,
             dt: 1.0 / 30.0,
             teams: 3,
-            ships_per_team: 9,
+            ships_per_team: 7,
             rock_count: 11000,
             max_ticks: 36000,
             ship_radius: 12.0,
-            ship_radii: [12.0, 15.0, 19.0],
+            ship_radii: [12.0, 15.0, 19.0, 23.0],
             ram_damage: 0.1,
             plan_ticks: 30,
             thrust_accel: 75.0,
@@ -411,9 +411,9 @@ impl Default for Config {
             shield: 100.0,
             shield_regen: 1.0,
             shield_delay: 60,
-            cargo: [150, 300, 500],
-            tier_levels: [3, 4, 5],
-            tier_cost: [150, 300],
+            cargo: [150, 300, 500, 750],
+            tier_levels: [3, 4, 5, 6],
+            tier_cost: [150, 300, 600],
             // Attack, health, fire rate, shield, speed, regen, agility, ammo: fighting stats grow
             // fast, mobility slowly.
             upgrade_steps: [0.2, 0.2, 0.05, 0.2, 0.05, 0.2, 0.05, 0.2],
@@ -466,7 +466,7 @@ impl Default for Config {
             drone_hp: 30.0,
             repair_step: 10,
             drone_cost: [40, 40, 60],
-            drone_slots: [1, 2, 3],
+            drone_slots: [1, 2, 3, 4],
             drone_reach: 240.0,
             drone_speed: 170.0,
             drone_cooldown: 10,
@@ -544,6 +544,12 @@ impl Config {
         self.cargo[s.tier as usize - 1]
     }
     /// Highest upgrade level a ship of this tier can reach.
+    /// Whether a base of this level lets a ship of this tier move up one: only the step to
+    /// the last tier asks for a base above level 1.
+    pub fn base_allows(&self, tier: u8, base_level: u8) -> bool {
+        tier + 1 < TIERS || base_level >= 2
+    }
+
     pub fn max_level(&self, tier: u8) -> u8 {
         self.tier_levels[tier as usize - 1]
     }
@@ -560,9 +566,9 @@ impl Config {
     pub fn price(&self, s: &Ship, buy: Buy, base: &Base, drones: usize) -> Option<u32> {
         match buy {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
-            // Leaving tier 1 needs a real class; after that the class named is ignored. A ship
-            // cannot run far ahead of its base: tier 3 needs a level-2 base.
-            Buy::Tier(class) => (s.tier < TIERS && base.level >= s.tier && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
+            // Leaving tier 1 needs a real class; after that the class named is ignored. Up to
+            // tier 3 any base will do; tier 4 needs a level-2 base.
+            Buy::Tier(class) => (s.tier < TIERS && self.base_allows(s.tier, base.level) && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
             Buy::Drone(kind) => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_cost[kind as usize]),
             Buy::Repair => (base.alive() && base.hp < self.base_hp_max(base.level)).then_some(self.repair_step),
             // Selling costs nothing; what it pays is handled where it happens.

@@ -665,7 +665,7 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     let mut world = World::new(cfg, 4);
     let n = world.ships.len();
     let per_team = world.cfg.ships_per_team;
-    assert_eq!(per_team, 9);
+    assert_eq!(per_team, 7);
     let pick = |world: &mut World, modes: &[(usize, Plan)]| {
         let mut actions = vec![Action::default(); n];
         for (ship, mode) in modes {
@@ -687,11 +687,11 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     assert!(world.dist(world.ships[3].order.target, world.bases[0].pos) < 1.0);
     assert!(kinds(&world).iter().enumerate().all(|(i, k)| i == 3 || *k == OrderKind::Mine));
 
-    // Four of nine want to attack: not half the team, so nobody attacks.
-    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB), (5, Plan::AttackA)]);
+    // Three of seven want to attack: not half the team, so nobody attacks.
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB)]);
     assert!(kinds(&world).iter().all(|k| *k != OrderKind::Attack), "{:?}", kinds(&world));
 
-    // A fifth joins: the whole team attacks, defender included, at the base most of them picked.
+    // A fourth joins: the whole team attacks, defender included, at the base most of them picked.
     pick(&mut world, &[(4, Plan::AttackA)]);
     assert!(kinds(&world).iter().all(|k| *k == OrderKind::Attack), "{:?}", kinds(&world));
     assert!(world.ships[..per_team].iter().all(|s| world.dist(s.order.target, world.bases[1].pos) < 1.0));
@@ -699,10 +699,10 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
 
     // Team radar: a ship sees every teammate's mode and how the team splits.
-    // (The radar shows the six nearest of the eight teammates; the split counts them all.)
+    // (The radar shows up to six teammates, which is all of them in a team of seven.)
     let seen = observe(&world, 6);
     assert_eq!(seen.mates.len(), 6);
-    assert!((seen.votes[Plan::AttackA as usize] - 4.0 / per_team as f32).abs() < 1e-6);
+    assert!((seen.votes[Plan::AttackA as usize] - 3.0 / per_team as f32).abs() < 1e-6);
     assert!((seen.votes[Plan::AttackB as usize] - 1.0 / per_team as f32).abs() < 1e-6);
 
     // Two change their minds: the attack is off, and everyone is back to their own mode.
@@ -898,8 +898,11 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
     // Tier 2 costs a full tier-1 hold, 150.
     world.step(&tier_up);
     assert_eq!((world.ships[0].tier, world.ships[0].points), (2, 850));
+    // Tier 3 needs no more of the base, only 300 points; the last tier needs a level-2 base.
     world.step(&tier_up);
-    assert_eq!(world.ships[0].tier, 2, "tier 3 needs a level-2 base");
+    assert_eq!((world.ships[0].tier, world.ships[0].points), (3, 550));
+    world.step(&tier_up);
+    assert_eq!(world.ships[0].tier, 3, "tier 4 needs a level-2 base");
 
     // The team has handed over 995 crystals so far; this ship brings the rest.
     world.bases[0].deposited = 995;
@@ -913,8 +916,10 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
     assert_eq!(world.bases[0].hp, 1200.0, "the level comes with 200 more hit points");
     assert_eq!(observe(&world, 0).base_level, 2);
 
+    world.ships[0].points = 600;
     world.step(&tier_up);
-    assert_eq!(world.ships[0].tier, 3);
+    assert_eq!((world.ships[0].tier, world.ships[0].points), (4, 0), "the last tier costs 600");
+    assert_eq!(world.cfg.max_level(4), 6, "and every tier allows one more level of each upgrade");
     assert_eq!(world.cfg.next_base_level_at(2), Some(2500));
     assert_eq!(world.cfg.next_base_level_at(7), None);
 }

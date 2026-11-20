@@ -159,7 +159,7 @@ impl ScriptedBot {
         }
         let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
         let lowest = obs.levels[next as usize];
-        let can_tier = obs.tier < TIERS && obs.base_level >= obs.tier;
+        let can_tier = obs.tier < TIERS && cfg.base_allows(obs.tier, obs.base_level);
         match cfg.cost(lowest, obs.tier) {
             Some(cost) if lowest == 0 || !can_tier => (obs.points >= cost).then_some(Buy::Upgrade(next)),
             _ => (can_tier && obs.points >= cfg.tier_cost[obs.tier as usize - 1]).then_some(Buy::Tier(self.prefers)),

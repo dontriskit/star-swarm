@@ -840,7 +840,7 @@ impl Game {
                     .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
                     .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
             }))
-            .child(div().text_color(muted).child("Drzewko: typ, tier, życia, tryb, drony (eko, tarcza, bojowy) i poziom każdego ulepszenia"))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, seria zabójstw, tryb, drony (eko, tarcza, bojowy) i poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
     }

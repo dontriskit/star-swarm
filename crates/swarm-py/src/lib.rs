@@ -32,10 +32,10 @@ struct Env {
 #[pymethods]
 impl Env {
     /// `rewards` overrides reward weights by name: collect, rock, buy, hit, kill, crash, death,
-    /// base_hit, base_lost, win, lose, hurt, time, draw, deposit, base_level, rock_hit, edge, hull, bare, place. Teams `0..learners` take the actions passed to `step`;
+    /// base_hit, base_lost, win, lose, hurt, time, draw, deposit, base_level, rock_hit, edge, hull, bare, place, tier. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
-    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=9, rock_count=11000, radius=12000.0, max_ticks=36000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
+    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=7, rock_count=11000, radius=12000.0, max_ticks=36000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         envs: usize,
@@ -81,6 +81,7 @@ impl Env {
                 "hull" => &mut pay.hull,
                 "bare" => &mut pay.bare,
                 "place" => &mut pay.place,
+                "tier" => &mut pay.tier,
                 "edge" => &mut pay.edge,
                 other => return Err(PyValueError::new_err(format!("unknown reward weight: {other}"))),
             };
@@ -173,7 +174,7 @@ impl Env {
     /// minutes, crystals, upgrade levels, kills, deaths (per-ship averages), won, lost (0 or 1),
     /// slot, matches that slot had finished before, then the share of ships in each class
     /// (Basic, Lancer, Twin, Scatter, Ram), the mean level of each of the eight upgrades, the share of
-    /// ships at tier 1, 2 and 3, the share of ship-time spent in each mode (farm, defend,
+    /// ships at tier 1, 2, 3 and 4, the share of ship-time spent in each mode (farm, defend,
     /// attack A, attack B), the base level reached, crystals handed over per ship, drones per ship.
     fn take_stats(&mut self) -> Vec<Vec<f32>> {
         self.inner

@@ -21,7 +21,7 @@ py=.venv/bin/python
 # of the starter reward. The bonus is kept low: with more of it the ships being trained act
 # close to at random, and a ship that thrusts at random never comes to rest inside its base.
 # Each update is 2048 matches x 64 decisions: about 900 thousand samples for the ships being trained.
-stages=("100 0 30 0.01 0.01 1" "300 5 50 0.01 0.005 1" "600 10 75 0.004 0.002 0.8" "1000 15 150 0.002 0.001 0.5")
+stages=("100 0 30 0.01 0.01 1" "300 5 50 0.01 0.005 1" "600 10 75 0.002 0.0005 0.8" "1000 15 150 0.0005 0.0003 0.5")
 for i in "${!stages[@]}"; do
   [ $((i + 1)) -ge "$first" ] || continue
   read -r hp turret updates entropy_start entropy_end share <<<"${stages[$i]}"
@@ -34,7 +34,7 @@ for i in "${!stages[@]}"; do
   # When time runs out everybody pays 30, and the standing bases are ranked by crystals handed
   # over: 20 back for the first, 20 more off for the last. Destroying the others still pays best.
   # Growing pays at every stage: 0.2 for a crystal handed over, 4 for an upgrade, a drone or a
-  # tier bought, 60 to every ship of the team when the base gains a level. Rocks pay nothing to
+  # tier bought and 20 more for the tier, 60 to every ship of the team when the base gains a level. Rocks pay nothing to
   # a ship with a full hold unless a teammate with room is within 500.
   # Hull is precious: every point lost costs 0.3 (shields are free to spend), so flying into
   # rocks pays only while the shields hold. A pack fades to nothing in 10 s, so the 0.2 a
@@ -49,7 +49,7 @@ for i in "${!stages[@]}"; do
     --opponent self --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
     --reward time=0.00083 --reward draw=30 --reward place=20 \
-    --reward deposit=0.2 --reward base_level=60 --reward buy=4 \
+    --reward deposit=0.2 --reward base_level=60 --reward buy=4 --reward tier=20 \
     --reward death=10 --reward hit=0.1 --reward bare=0.1 --reward edge=0.3 --reward kill=5 \
     --reward base_hit="$(awk "BEGIN{print 50/$hp}")" --reward base_lost="$(awk "BEGIN{print 20/$hp}")" \
     --reward collect="$(scale 0.2)" --reward rock="$(scale 0.1)" --reward rock_hit="$(scale 0.1)"

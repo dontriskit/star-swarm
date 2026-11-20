@@ -55,6 +55,8 @@ pub struct Rewards {
     /// this much, the one that handed over the fewest loses it, the rest fall evenly between.
     /// Only teams whose base still stands are ranked. On top of `draw`.
     pub place: f32,
+    /// For moving a ship up a tier, on top of `buy`.
+    pub tier: f32,
     /// Extra per point of damage dealt to an enemy ship while the team is attacking and the
     /// attacker has the upper hand: the enemy has less hull and shield left than the attacker,
     /// is outnumbered around itself, or has drones to be taken.
@@ -63,7 +65,7 @@ pub struct Rewards {
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0, place: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0, rock_hit: 0.0, edge: 0.0, hull: 0.0, bare: 0.0, place: 0.0, tier: 0.0 }
     }
 }
 
@@ -87,7 +89,7 @@ pub struct EpisodeStats {
     /// Team 0's mean level of each upgrade at the end, indexed by [`swarm_sim::Upgrade`].
     pub upgrades: [f32; 8],
     /// Share of team 0's ships at tier 1, 2 and 3 at the end.
-    pub tiers: [f32; 3],
+    pub tiers: [f32; swarm_sim::TIERS as usize],
     /// Share of ship-time team 0 spent in each mode, indexed by [`swarm_sim::Plan`]; the rest in none.
     pub plans: [f32; 4],
     /// The level team 0's base reached.
@@ -370,7 +372,9 @@ impl VecEnv {
                                 }
                             }
                             Event::RockDestroyed { by: None, .. } => {}
-                            Event::Bought { ship, .. } => rewards[ship as usize] += pay.buy,
+                            Event::Bought { ship, what } => {
+                                rewards[ship as usize] += pay.buy + if matches!(what, swarm_sim::Buy::Tier(_)) { pay.tier } else { 0.0 };
+                            }
                             Event::Hit { by, victim, damage } => {
                                 rewards[victim as usize] -= pay.hurt * damage;
                                 if let Some(by) = by {
@@ -527,9 +531,9 @@ mod tests {
         let agents = env.agents();
         let mut mask = vec![0u8; agents];
         env.controlled(&mut mask);
-        // 3 teams of 9: the first 9 ships of each match are the learner's.
-        assert_eq!(mask[..27].iter().map(|m| *m as usize).sum::<usize>(), 9);
-        assert!(mask[..9].iter().all(|m| *m == 1));
+        // 3 teams of 7: the first 7 ships of each match are the learner's.
+        assert_eq!(mask[..21].iter().map(|m| *m as usize).sum::<usize>(), 7);
+        assert!(mask[..7].iter().all(|m| *m == 1));
 
         // The learner team does nothing at all; the scripted teams must still play and finish matches.
         let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
