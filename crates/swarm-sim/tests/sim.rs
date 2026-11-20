@@ -769,9 +769,35 @@ fn a_drone_mines_for_its_owner_and_can_be_taken_when_the_owner_dies() {
 #[test]
 fn small_rocks_are_quick_work_and_big_ones_pay_more() {
     let cfg = Config::default();
-    assert_eq!((cfg.rock_hp_of(1), cfg.rock_hp_of(2), cfg.rock_hp_of(3)), (10.0, 40.0, 90.0));
-    assert_eq!(cfg.rock_drops, [2, 6, 15]);
+    assert_eq!([1, 2, 3, 4, 5].map(|s| cfg.rock_hp_of(s)), [10.0, 40.0, 90.0, 160.0, 250.0]);
+    assert_eq!(cfg.rock_packs, [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)]);
     // Per shot a basic ship gets the most out of the smallest rocks.
-    let per_hp = |size: u8| cfg.rock_drops[size as usize - 1] as f32 / cfg.rock_hp_of(size);
-    assert!(per_hp(1) > per_hp(2) && per_hp(1) > per_hp(3));
+    let per_hp = |size: u8| (cfg.rock_packs[size as usize - 1].0 + cfg.rock_packs[size as usize - 1].1) as f32 / 2.0 / cfg.rock_hp_of(size);
+    assert!((2..=5).all(|s| per_hp(1) > per_hp(s)));
+
+    // Every size turns up, small ones most often, and a broken rock leaves one pack in its size's range.
+    let world = World::new(Config { rock_count: 2000, ..Config::default() }, 9);
+    let count = |size: u8| world.rocks.iter().filter(|r| r.size == size).count();
+    assert!(count(1) > count(3) && count(3) > count(5) && count(5) > 0);
+}
+
+#[test]
+fn a_broken_rock_leaves_one_pack_and_a_ship_takes_what_fits() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, boost_cell_chance: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 2);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
+    // An XXL rock about to break, 300 away so the ship is not standing on it.
+    let spot = world.offset(POLE, 0.3, 300.0);
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 5, hp: 0.0, last_hit_by: Some(0) });
+    world.step(&[Action::default(); 2]);
+    assert_eq!(world.crystals.len(), 1);
+    let pack = world.crystals[0].value;
+    assert!((111..=150).contains(&pack), "an XXL pack of {pack}");
+
+    // A tier-1 ship has room for 60: it takes 60 and the rest of the pack stays.
+    world.ships[0].pos = world.crystals[0].pos;
+    let taken: u32 = world.step(&[Action::default(); 2]).iter().map(|e| if let Event::Collected { ship: 0, amount } = e { *amount } else { 0 }).sum();
+    assert_eq!((taken, world.ships[0].cargo), (60, 60));
+    assert_eq!(world.crystals.iter().find(|c| !c.boost_cell).map(|c| c.value), Some(pack - 60));
 }

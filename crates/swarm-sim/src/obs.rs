@@ -1,5 +1,5 @@
 use crate::geo::{self, Vec3};
-use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, PLANS, Plan, TIERS, UPGRADES, Vec2, World};
+use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, PLANS, Plan, ROCK_SIZES, TIERS, UPGRADES, Vec2, World};
 
 /// How many of each kind of nearby object a ship sees.
 pub const NEAR: usize = 6;
@@ -27,8 +27,10 @@ pub struct Near {
     pub vel: Vec2,
     pub dist: f32,
     pub radius: f32,
-    /// Remaining health as a fraction; for crystals 0, or 1 when it is a boost cell.
+    /// Remaining health as a fraction of the biggest rock's or of the ship's own; for a crystal
+    /// pack, its size as a fraction of the biggest pack.
     pub hp: f32,
+    /// An enemy ship or shot. Among crystals it marks a boost cell.
     pub enemy: bool,
     /// Where another ship is pointing, as a unit vector in this ship's frame;
     /// zero for everything that is not a ship.
@@ -155,6 +157,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
     let mut enemy_bases: Vec<BaseObs> = (0..world.bases.len()).filter(|t| *t != me.team as usize && known[*t] > 0.0).map(base).collect();
     enemy_bases.sort_by(|a, b| a.dist.total_cmp(&b.dist));
     enemy_bases.truncate(BASES);
+    let biggest_pack = cfg.rock_packs[ROCK_SIZES as usize - 1].1 as f32;
     let mates = || world.ships.iter().enumerate().filter(|(i, s)| s.team == me.team && s.alive && *i != ship).map(|(_, s)| s);
     let voters = mates().count() + me.alive as usize;
     let middle = mates().fold(Vec3::default(), |sum, s| sum.add(s.pos));
@@ -225,12 +228,12 @@ pub fn observe(world: &World, ship: usize) -> Observation {
             world
                 .rocks
                 .iter()
-                .filter_map(|r| see(r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(3), false, None))
+                .filter_map(|r| see(r.pos, r.vel, cfg.rock_radius_of(r.size), r.hp / cfg.rock_hp_of(ROCK_SIZES), false, None))
                 .collect(),
             NEAR,
         ),
         crystals: nearest(
-            world.crystals.iter().filter_map(|c| see(c.pos, Vec3::default(), 0.0, c.boost_cell as u8 as f32, false, None)).collect(),
+            world.crystals.iter().filter_map(|c| see(c.pos, Vec3::default(), 0.0, c.value as f32 / biggest_pack, c.boost_cell, None)).collect(),
             NEAR,
         ),
         ships: nearest(
@@ -343,7 +346,7 @@ impl Observation {
                         n.pos.y / view,
                         n.vel.x / speed,
                         n.vel.y / speed,
-                        n.radius / cfg.rock_radius_of(3),
+                        n.radius / cfg.rock_radius_of(ROCK_SIZES),
                         n.hp,
                         n.enemy as u8 as f32,
                         n.facing.x,

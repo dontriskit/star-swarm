@@ -124,6 +124,9 @@ pub enum Buy {
     Repair,
 }
 
+/// Rocks come in sizes 1 to this: S, M, L, XL, XXL.
+pub const ROCK_SIZES: u8 = 5;
+
 /// Ship tiers run from 1 to this.
 pub const TIERS: u8 = 3;
 
@@ -266,8 +269,10 @@ pub struct Config {
     pub rock_radius: f32,
     /// Hit points of the smallest rock; a rock of size s has s squared times as many.
     pub rock_hp: f32,
-    /// Crystals a rock of size 1, 2 and 3 leaves behind.
-    pub rock_drops: [u32; 3],
+    /// The pack of crystals a rock of each size leaves behind: fewest and most, by size.
+    pub rock_packs: [(u32, u32); ROCK_SIZES as usize],
+    /// How common each rock size is, relative to the others.
+    pub rock_weights: [u32; ROCK_SIZES as usize],
     /// Highest level a base can reach.
     pub base_levels: u8,
     /// Crystals a team has to bring to its base, in total, for the base to reach level 2, 3, and so on.
@@ -366,7 +371,8 @@ impl Default for Config {
             crystal_armor: 1.0,
             rock_radius: 18.0,
             rock_hp: 10.0,
-            rock_drops: [2, 6, 15],
+            rock_packs: [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)],
+            rock_weights: [35, 28, 20, 11, 6],
             base_levels: 7,
             base_level_at: [1000, 2500, 4500, 7000, 10000, 14000],
             base_hp_per_level: 200.0,
@@ -539,6 +545,8 @@ pub struct Rock {
 pub struct Crystal {
     pub pos: Vec3,
     pub ticks: u16,
+    /// How many crystals are in this pack; a ship without room for all of it takes what fits.
+    pub value: u32,
     /// A boost cell refills the boost tank instead of going into the cargo hold.
     pub boost_cell: bool,
 }
@@ -598,7 +606,8 @@ impl Base {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     RockDestroyed { by: Option<u16>, size: u8 },
-    Collected { ship: u16 },
+    /// A ship (or its drone) picked up this many crystals.
+    Collected { ship: u16, amount: u32 },
     Bought { ship: u16, what: Buy },
     BaseHit { by: u16, team: u8, damage: f32 },
     BaseDestroyed { by: u16, team: u8 },
@@ -636,7 +645,6 @@ pub struct World {
     rng: Rng,
 }
 
-const MAX_DROPPED: u32 = 8;
 
 impl World {
     pub fn new(cfg: Config, seed: u64) -> Self {
@@ -853,19 +861,21 @@ impl World {
                 break;
             }
         }
-        let size = 1 + rng.below(3) as u8;
+        // Small rocks are common, the biggest rare.
+        let mut pick = rng.below(cfg.rock_weights.iter().sum());
+        let size = 1 + cfg.rock_weights.iter().position(|w| if pick < *w { true } else { pick -= *w; false }).unwrap_or(0) as u8;
         let vel = geo::bearing(pos, rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(0.0, cfg.rock_speed));
         Rock { pos, vel, size, hp: cfg.rock_hp_of(size), last_hit_by: None }
     }
 
-    /// Drops crystals between `near` and `far` from a point; `cells` lets some of them be boost cells.
-    fn scatter(&mut self, at: Vec3, count: u32, near: f32, far: f32, cells: bool) {
-        for _ in 0..count {
-            let away = geo::bearing(at, self.rng.range(0.0, std::f32::consts::TAU));
-            let pos = geo::travel(self.cfg.radius, at, away, self.rng.range(near, far));
-            let boost_cell = cells && self.rng.unit() < self.cfg.boost_cell_chance;
-            self.crystals.push(Crystal { pos, ticks: self.cfg.crystal_ticks, boost_cell });
+    /// Drops one pack of crystals between `near` and `far` from a point. Nothing for an empty pack.
+    fn drop_pack(&mut self, at: Vec3, value: u32, near: f32, far: f32) {
+        if value == 0 {
+            return;
         }
+        let away = geo::bearing(at, self.rng.range(0.0, std::f32::consts::TAU));
+        let pos = geo::travel(self.cfg.radius, at, away, self.rng.range(near, far));
+        self.crystals.push(Crystal { pos, ticks: self.cfg.crystal_ticks, value, boost_cell: false });
     }
 
     /// Advances the match by one tick. `actions[i]` drives `ships[i]`.
@@ -1210,7 +1220,7 @@ impl World {
 
         // Spilled crystals land a little way off, out of the ship's own reach, for anyone to pick up.
         for (at, count) in spilled {
-            self.scatter(at, count, self.cfg.pickup_radius * 2.0, self.cfg.pickup_radius * 4.5, false);
+            self.drop_pack(at, count, self.cfg.pickup_radius * 2.0, self.cfg.pickup_radius * 4.5);
         }
 
         // Broken rocks leave crystals and are replaced elsewhere.
@@ -1220,7 +1230,14 @@ impl World {
             }
             let (pos, rock_size, by) = (self.rocks[r].pos, self.rocks[r].size, self.rocks[r].last_hit_by);
             self.events.push(Event::RockDestroyed { by, size: rock_size });
-            self.scatter(pos, self.cfg.rock_drops[rock_size as usize - 1], 0.0, self.cfg.rock_radius * rock_size as f32, true);
+            let (least, most) = self.cfg.rock_packs[rock_size as usize - 1];
+            let value = least + self.rng.below(most - least + 1);
+            self.drop_pack(pos, value, 0.0, self.cfg.rock_radius);
+            if self.rng.unit() < self.cfg.boost_cell_chance {
+                let away = geo::bearing(pos, self.rng.range(0.0, std::f32::consts::TAU));
+                let at = geo::travel(radius, pos, away, self.cfg.rock_radius * 1.5);
+                self.crystals.push(Crystal { pos: at, ticks: self.cfg.crystal_ticks, value: 0, boost_cell: true });
+            }
             self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
         }
 
@@ -1258,11 +1275,14 @@ impl World {
                     ships[i].boost = 1.0;
                     return false;
                 }
-                ships[i].cargo += 1;
-                ships[i].collected += 1;
-                ships[i].score += 1;
-                events.push(Event::Collected { ship: i as u16 });
-                return false;
+                // Take what fits; the rest of the pack stays where it is.
+                let amount = c.value.min(cfg.cargo_max(&ships[i]) - ships[i].cargo);
+                ships[i].cargo += amount;
+                ships[i].collected += amount;
+                ships[i].score += amount;
+                c.value -= amount;
+                events.push(Event::Collected { ship: i as u16, amount });
+                return c.value > 0 && c.ticks > 0;
             }
             c.ticks > 0
         });
@@ -1272,7 +1292,8 @@ impl World {
             if !self.ships[i].alive || self.ships[i].hull > 0.0 {
                 continue;
             }
-            let (pos, dropped, by) = (self.ships[i].pos, self.ships[i].cargo.min(MAX_DROPPED), self.ships[i].last_hit_by);
+            // Half of what was on board is left behind as one pack; the rest is lost.
+            let (pos, dropped, by) = (self.ships[i].pos, self.ships[i].cargo.div_ceil(2), self.ships[i].last_hit_by);
             let ship = &mut self.ships[i];
             ship.alive = false;
             ship.respawn = self.cfg.respawn_ticks;
@@ -1298,7 +1319,7 @@ impl World {
                 self.ships[k as usize].score += self.cfg.kill_score;
             }
             self.events.push(Event::Killed { by, victim: i as u16 });
-            self.scatter(pos, dropped, 0.0, 30.0, false);
+            self.drop_pack(pos, dropped, 0.0, 30.0);
         }
 
         self.look_at_bases();
@@ -1354,6 +1375,7 @@ impl World {
         put(self.crystals.len() as u32);
         for c in &self.crystals {
             spot(c.pos).into_iter().for_each(&mut put);
+            put(c.value);
         }
         put(self.shots.len() as u32);
         for s in &self.shots {

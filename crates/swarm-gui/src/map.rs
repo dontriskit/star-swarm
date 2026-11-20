@@ -213,7 +213,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
     for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
             // Boost cells are larger and orange.
-            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.2, rgb(0x8ef0c8)) };
+            // Bigger packs are drawn bigger.
+            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.2 + (crystal.value as f32).sqrt() * 0.22, rgb(0x8ef0c8)) };
             dot(window, p, half, color);
         }
     }

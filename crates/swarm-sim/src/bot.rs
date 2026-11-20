@@ -112,13 +112,13 @@ impl ScriptedBot {
     }
 
     fn mine(obs: &Observation, cfg: &Config) -> Action {
-        // A crystal needs cargo room; a boost cell (hp 1) is only worth it with a tank that is not full.
-        let wanted = |c: &&Near| if c.hp > 0.5 { obs.boost < 0.95 } else { obs.cargo < obs.cargo_max };
+        // A crystal pack needs cargo room; a boost cell is only worth it with a tank that is not full.
+        let wanted = |c: &&Near| if c.enemy { obs.boost < 0.95 } else { obs.cargo < obs.cargo_max };
         if let Some(c) = obs.crystals.iter().find(wanted) {
             return Self::fly(c.pos, 0.0, obs, cfg);
         }
         // Prefer rocks this ship can break soon: a big rock nearby is worth less than a small one a little farther.
-        let effort = |r: &&Near| r.dist + r.hp * cfg.rock_hp_of(3) * 12.0 / cfg.weapon(obs.class).damage.max(0.1);
+        let effort = |r: &&Near| r.dist + r.hp * cfg.rock_hp_of(crate::sim::ROCK_SIZES) * 12.0 / cfg.weapon(obs.class).damage.max(0.1);
         match obs.rocks.iter().min_by(|a, b| effort(a).total_cmp(&effort(b))) {
             Some(rock) => Self::shoot(rock, 140.0, obs, cfg),
             // Nothing in sight: cruise until something shows up.

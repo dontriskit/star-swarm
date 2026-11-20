@@ -323,7 +323,7 @@ impl VecEnv {
                             Event::BaseDestroyed { team, .. } => {
                                 (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] -= pay.lose);
                             }
-                            Event::Collected { ship } => rewards[ship as usize] += pay.collect,
+                            Event::Collected { ship, amount } => rewards[ship as usize] += pay.collect * amount as f32,
                             Event::RockDestroyed { by: Some(ship), size } => rewards[ship as usize] += pay.rock * size as f32,
                             Event::RockDestroyed { by: None, .. } => {}
                             Event::Bought { ship, .. } => rewards[ship as usize] += pay.buy,
