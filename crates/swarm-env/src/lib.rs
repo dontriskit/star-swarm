@@ -37,11 +37,15 @@ pub struct Rewards {
     pub lose: f32,
     /// Per point of damage the ship takes, from shots or rocks, shield or hull (subtracted).
     pub hurt: f32,
+    /// Per tick the match goes on, from every ship (subtracted): time spent achieving nothing costs.
+    pub time: f32,
+    /// From every ship when a match runs out of time with no winner (subtracted).
+    pub draw: f32,
 }
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0 }
     }
 }
 
@@ -326,6 +330,7 @@ impl VecEnv {
                             }
                         }
                     }
+                    rewards.iter_mut().for_each(|r| *r -= pay.time);
                     // An upgrade is bought once, not once per held tick.
                     held.iter_mut().for_each(|a| a.buy = None);
                     for mode in slot.world.ships.iter().filter(|s| s.team == 0).filter_map(|s| s.vote) {
@@ -335,8 +340,10 @@ impl VecEnv {
                         slot.tape.as_mut().unwrap().push(Tape::Hash(slot.world.state_hash()));
                     }
                     if slot.world.done() {
-                        if let Some(winner) = slot.world.winner() {
-                            (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win);
+                        match slot.world.winner() {
+                            Some(winner) => (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win),
+                            // Time ran out with more than one base standing: nobody won, and everybody pays.
+                            None => rewards.iter_mut().for_each(|r| *r -= pay.draw),
                         }
                         let mut stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
                         stats.plans = slot.planned.map(|ticks| ticks as f32 / (slot.world.tick.max(1) as usize * per_team) as f32);
@@ -452,5 +459,24 @@ mod tests {
         assert!(stats.iter().all(|s| !(s.won && s.lost)));
         // The idle team bought nothing and stayed tier 1.
         assert!(stats.iter().all(|s| s.classes[0] == 1.0 && s.upgrades.iter().all(|l| *l == 0.0)));
+    }
+
+    #[test]
+    fn time_costs_every_tick_and_a_match_without_a_winner_costs_more() {
+        // Turrets off and nobody acting: no base falls, the match runs out of time.
+        let cfg = Config { rock_count: 0, max_ticks: 90, turret_damage: 0.0, ..Config::default() };
+        let pay = Rewards { time: 0.01, draw: 5.0, crash: 0.0, death: 0.0, ..Rewards::default() };
+        let mut env = VecEnv::new(cfg, 1, 3, 3, pay);
+        let agents = env.agents();
+        let (actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
+        env.step(&actions, &mut rewards, &mut dones);
+        assert!(rewards.iter().all(|r| (*r + 0.03).abs() < 1e-6), "three ticks at 0.01 each: {:?}", &rewards[..3]);
+        for _ in 0..28 {
+            env.step(&actions, &mut rewards, &mut dones);
+        }
+        assert!(dones.iter().all(|d| *d == 0));
+        env.step(&actions, &mut rewards, &mut dones);
+        assert!(dones.iter().all(|d| *d == 1));
+        assert!(rewards.iter().all(|r| (*r + 5.03).abs() < 1e-5), "the draw is charged to everyone: {:?}", &rewards[..3]);
     }
 }

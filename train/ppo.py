@@ -22,7 +22,7 @@ from swarm_py import OBS_LEN, Env
 # Sizes of the six action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out to do).
 HEADS = (2, 3, 2, 2, 13, 5)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
-REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt")
+REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw")
 CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
 UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
 
@@ -279,7 +279,7 @@ if __name__ == "__main__":
     p.add_argument("--minibatch", type=int, default=8192)
     p.add_argument("--hidden", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--gamma", type=float, default=0.995)
+    p.add_argument("--gamma", type=float, default=0.999)
     p.add_argument("--lam", type=float, default=0.95)
     p.add_argument("--clip", type=float, default=0.2)
     p.add_argument("--value-coef", type=float, default=0.5)

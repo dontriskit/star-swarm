@@ -31,7 +31,7 @@ struct Env {
 #[pymethods]
 impl Env {
     /// `rewards` overrides reward weights by name: collect, rock, buy, hit, kill, crash, death,
-    /// base_hit, base_lost, win, lose, hurt. Teams `0..learners` take the actions passed to `step`;
+    /// base_hit, base_lost, win, lose, hurt, time, draw. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
     #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=7, rock_count=270, radius=1200.0, max_ticks=18000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
@@ -72,6 +72,8 @@ impl Env {
                 "win" => &mut pay.win,
                 "lose" => &mut pay.lose,
                 "hurt" => &mut pay.hurt,
+                "time" => &mut pay.time,
+                "draw" => &mut pay.draw,
                 other => return Err(PyValueError::new_err(format!("unknown reward weight: {other}"))),
             };
             *slot = value;
