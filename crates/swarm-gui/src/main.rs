@@ -23,7 +23,8 @@ const COMMAND_EVERY: u32 = 450;
 /// A click this close to one of your ships (world units) selects it.
 const PICK_RADIUS: f32 = 45.0;
 /// Game speeds the button cycles through; 0 means as fast as the machine can simulate.
-const SPEEDS: [u32; 6] = [1, 2, 4, 8, 32, 0];
+/// How many times real time the game runs; 0 is as fast as the machine goes.
+const SPEEDS: [u32; 7] = [1, 2, 4, 8, 16, 32, 0];
 /// At full speed, how long one frame may spend simulating.
 const FULL_SPEED_BUDGET: Duration = Duration::from_millis(12);
 /// How fast the globe turns by itself, radians per second.
@@ -600,7 +601,9 @@ impl Game {
             Ok(replay) => {
                 let status = format!("Mecz {} z {} (od najnowszego): {what}, przebieg {run}.", at + 1, wins.len());
                 let fresh = Game::new(0, Some(replay));
-                *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, spin: self.spin, wins_dir: Some(dir), wins, win_at: at, models, status, ..fresh };
+                // A kept match never starts at full speed: it would be over before it could be watched.
+                let speed = if self.speed == 0 { 8 } else { self.speed };
+                *self = Game { map_bounds: self.map_bounds.clone(), speed, spin: self.spin, wins_dir: Some(dir), wins, win_at: at, models, status, ..fresh };
             }
             Err(e) => self.status = format!("Nie da się odczytać {}: {e} (zapis z innej wersji gry?)", path.display()),
         }
@@ -823,6 +826,12 @@ impl Game {
                             cx.notify();
                         },
                     )))
+                    // Slower, the speed itself (a click goes one faster, and round to the slowest), faster.
+                    .child(Button::new("slower").small().label("−").on_click(cx.listener(|this, _, _, cx| {
+                        let at = SPEEDS.iter().position(|s| *s == this.speed).unwrap_or(0);
+                        this.speed = SPEEDS[at.saturating_sub(1)];
+                        cx.notify();
+                    })))
                     .child(Button::new("speed").small().label(match (self.speed, self.watch.as_ref().is_some_and(|w| w.stream.is_some())) {
                         (0, true) => "Szybkość: płynnie".to_string(),
                         (0, false) => "Szybkość: pełna".to_string(),
@@ -834,6 +843,11 @@ impl Game {
                             cx.notify();
                         },
                     )))
+                    .child(Button::new("faster").small().label("+").on_click(cx.listener(|this, _, _, cx| {
+                        let at = SPEEDS.iter().position(|s| *s == this.speed).unwrap_or(0);
+                        this.speed = SPEEDS[(at + 1).min(SPEEDS.len() - 1)];
+                        cx.notify();
+                    })))
                     .child(Button::new("restart").small().label("Nowy mecz").on_click(cx.listener(|this, _, _, cx| {
                         this.restart();
                         cx.notify();
