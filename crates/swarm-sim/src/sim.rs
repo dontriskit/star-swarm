@@ -408,8 +408,8 @@ impl Default for Config {
             ships_per_team: 7,
             rock_count: 1760,
             max_ticks: 36000,
-            ship_radius: 16.0,
-            ship_radii: [16.0, 20.0, 24.0, 29.0, 34.0, 40.0, 48.0],
+            ship_radius: 20.0,
+            ship_radii: [20.0, 25.0, 30.0, 36.0, 42.0, 50.0, 60.0],
             ram_damage: 0.1,
             plan_ticks: 30,
             thrust_accel: 75.0,
@@ -430,18 +430,18 @@ impl Default for Config {
             upgrade_steps: [0.2, 0.2, 0.08, 0.2, 0.05, 0.2, 0.05, 0.2],
             tier_discount: 0.95,
             base_hp: 1000.0,
-            base_radius: 150.0,
-            base_heal_radius: 260.0,
+            base_radius: 180.0,
+            base_heal_radius: 300.0,
             base_heal: 0.1,
-            turret_range: 520.0,
+            turret_range: 650.0,
             turret_damage: 15.0,
             turret_cooldown: 8,
             weapons: [
-                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 14, damage: 2.0, burst: 1, burst_gap: 0, size: 3.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 900.0, speed: 520.0, cooldown: 32, damage: 10.0, burst: 1, burst_gap: 0, size: 7.0 },
-                Weapon { lasers: 2, fan: 0.0, range: 520.0, speed: 350.0, cooldown: 13, damage: 2.2, burst: 1, burst_gap: 0, size: 3.5 },
-                Weapon { lasers: 2, fan: 0.06, range: 420.0, speed: 420.0, cooldown: 34, damage: 1.6, burst: 3, burst_gap: 4, size: 2.5 },
-                Weapon { lasers: 1, fan: 0.0, range: 300.0, speed: 300.0, cooldown: 16, damage: 2.0, burst: 1, burst_gap: 0, size: 4.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 600.0, speed: 340.0, cooldown: 14, damage: 2.0, burst: 1, burst_gap: 0, size: 5.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 1100.0, speed: 540.0, cooldown: 32, damage: 10.0, burst: 1, burst_gap: 0, size: 11.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 660.0, speed: 365.0, cooldown: 13, damage: 2.2, burst: 1, burst_gap: 0, size: 5.5 },
+                Weapon { lasers: 2, fan: 0.06, range: 540.0, speed: 430.0, cooldown: 34, damage: 1.6, burst: 3, burst_gap: 4, size: 4.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 400.0, speed: 320.0, cooldown: 16, damage: 2.0, burst: 1, burst_gap: 0, size: 6.5 },
             ],
             bodies: [
                 Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0, speed: 1.0, turn: 1.0 },
@@ -462,7 +462,7 @@ impl Default for Config {
             boost_cell_chance: 0.15,
             lives: 3,
             crystal_armor: 1.0,
-            rock_radius: 22.0,
+            rock_radius: 26.0,
             rock_hp: 20.0,
             rock_packs: [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)],
             rock_weights: [35, 28, 20, 11, 6],
@@ -610,7 +610,7 @@ impl Config {
     }
     /// How big a pack of crystals is: bigger packs are bigger targets. A boost cell (value 0) is the smallest.
     pub fn crystal_radius(&self, value: u32) -> f32 {
-        1.5 * (8.0 + (value as f32).sqrt())
+        1.8 * (8.0 + (value as f32).sqrt())
     }
     /// How close a ship of the given radius (0 for a drone) has to come to a pack to take it:
     /// its own radius plus twice the pack's.

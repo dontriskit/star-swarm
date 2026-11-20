@@ -432,11 +432,11 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
         }
         None
     };
-    // Full power over the first 60% of the range (282 of 470), then fading to nothing.
-    let (near, middle, far) = (hit_from(60.0).unwrap(), hit_from(250.0).unwrap(), hit_from(420.0).unwrap());
+    // Full power over the first 60% of the range (360 of 600), then fading to nothing.
+    let (near, middle, far) = (hit_from(60.0).unwrap(), hit_from(320.0).unwrap(), hit_from(570.0).unwrap());
     assert_eq!((near, middle), (2.0, 2.0), "full power inside the full-power range");
     assert!(far < 1.2 && far > 0.1, "near the edge of its range did {far}");
-    assert_eq!(hit_from(600.0), None, "a basic laser reaches 470");
+    assert_eq!(hit_from(760.0), None, "a basic laser reaches 600");
 }
 
 #[test]
@@ -515,9 +515,9 @@ fn ammo_runs_out_and_comes_back() {
         world.step(&fire);
         volleys += (world.shots.len() > before) as u32;
     }
-    // A Scatter volley is three shots, 2.4 ammo: 30 on board plus 1.2 a second over 20 s is
-    // about 22 volleys, not the 75 its cooldown alone allows. Firing without a target runs dry.
-    assert!((21..=24).contains(&volleys), "fired {volleys} volleys");
+    // A hunter's volley is two shots, 1.6 ammo: 30 on board plus 1.2 a second over 20 s is
+    // about 33 volleys, not the 110 its bursts alone would allow. Firing without a target runs dry.
+    assert!((32..=35).contains(&volleys), "fired {volleys} volleys");
 
     // A basic ship without upgrades fires about twice a second, and its ammo comes back at
     // little more than half of that.
@@ -651,8 +651,9 @@ fn a_ship_hit_through_its_shields_drops_everything_it_carries() {
     assert_eq!((world.ships[1].cargo, world.ships[1].hull), (130, 100.0));
     assert!(world.ships[1].shield < 100.0);
 
-    // Shields down: the first hit takes hull, and the whole load falls out at once.
-    let mut world = duel(Config::default(), 150.0);
+    // Shields down: the first hit takes hull, and the whole load falls out at once. (The
+    // shooter stands well back, or it would scoop some of it up itself.)
+    let mut world = duel(Config::default(), 420.0);
     world.ships[1].shield = 0.0;
     world.ships[1].shield_wait = u16::MAX;
     world.ships[1].cargo = 130;
@@ -1221,12 +1222,12 @@ fn a_ship_passing_close_to_a_pack_picks_it_up() {
         world.step(&[Action::default(); 2]);
         world.ships[0].cargo
     };
-    // A small pack of 9 has radius 16.5: a tier-1 ship (radius 16) takes it from within 49.
-    assert_eq!(grab(46.0, 9), 9);
-    assert_eq!(grab(53.0, 9), 0);
-    // A big pack is a bigger target: 49 crystals have radius 22.5, so the reach is 61.
-    assert_eq!(grab(58.0, 49), 49);
-    assert_eq!(grab(65.0, 49), 0);
+    // A small pack of 9 has radius 19.8: a tier-1 ship (radius 20) takes it from within 59.6.
+    assert_eq!(grab(56.0, 9), 9);
+    assert_eq!(grab(63.0, 9), 0);
+    // A big pack is a bigger target: 49 crystals have radius 27, so the reach is 74.
+    assert_eq!(grab(71.0, 49), 49);
+    assert_eq!(grab(78.0, 49), 0);
 }
 
 #[test]
