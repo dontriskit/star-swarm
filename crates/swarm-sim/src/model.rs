@@ -9,7 +9,7 @@ use crate::bot::Controller;
 use crate::obs::{OBS_LEN, Observation};
 use crate::sim::{Action, Config};
 
-const MAGIC: &[u8; 8] = b"SWPOL009";
+const MAGIC: &[u8; 8] = b"SWPOL010";
 /// Action heads in the order the trainer uses: thrust, turn, fire, boost, buy, mode, deposit, brake.
 const HEADS: [usize; 8] = [2, 3, 2, 2, crate::replay::BUY_CODES, crate::replay::VOTE_CODES, 2, 2];
 
@@ -41,9 +41,17 @@ impl Layer {
     }
 }
 
-/// The network: two hidden layers and one row of logits per action choice.
+/// The network: two layers that read the observation, a memory cell (a GRU) whose content is
+/// added to what they made of it, and one row of logits per action choice.
 pub struct Net {
-    layers: [Layer; 3],
+    read: [Layer; 2],
+    /// The memory cell: what comes in and what it held, each giving the reset, update and
+    /// candidate parts one after another.
+    cell_in: Layer,
+    cell_held: Layer,
+    recall: Layer,
+    logits: Layer,
+    memory: usize,
 }
 
 impl Net {
@@ -60,27 +68,52 @@ impl Net {
             f.read_exact(&mut b)?;
             Ok(u32::from_le_bytes(b) as usize)
         };
-        let (obs_len, hidden, heads) = (word()?, word()?, word()?);
+        let (obs_len, hidden, memory, heads) = (word()?, word()?, word()?, word()?);
         let sizes = (0..heads.min(16)).map(|_| word()).collect::<io::Result<Vec<_>>>()?;
         if obs_len != OBS_LEN {
             return Err(bad(format!("policy expects observations of {obs_len} values, this build produces {OBS_LEN}; retrain or re-export")));
         }
-        if sizes != HEADS || hidden == 0 || hidden > 1 << 14 {
+        if sizes != HEADS || hidden == 0 || hidden > 1 << 14 || memory == 0 || memory > 1 << 14 {
             return Err(bad(format!("unexpected policy shape: hidden {hidden}, heads {sizes:?}")));
         }
         let outputs = HEADS.iter().sum();
-        Ok(Net { layers: [Layer::read(&mut f, obs_len, hidden)?, Layer::read(&mut f, hidden, hidden)?, Layer::read(&mut f, hidden, outputs)?] })
+        Ok(Net {
+            read: [Layer::read(&mut f, obs_len, hidden)?, Layer::read(&mut f, hidden, hidden)?],
+            cell_in: Layer::read(&mut f, hidden, 3 * memory)?,
+            cell_held: Layer::read(&mut f, memory, 3 * memory)?,
+            recall: Layer::read(&mut f, memory, hidden)?,
+            logits: Layer::read(&mut f, hidden, outputs)?,
+            memory,
+        })
     }
 
-    /// Logits for every action choice, heads back to back.
-    pub fn logits(&self, obs: &[f32]) -> Vec<f32> {
-        let hidden = self.layers[1].apply(&self.layers[0].apply(obs, true), true);
-        self.layers[2].apply(&hidden, false)
+    /// The memory of a ship that remembers nothing yet.
+    pub fn blank(&self) -> Vec<f32> {
+        vec![0.0; self.memory]
+    }
+
+    /// Logits for every action choice, heads back to back. `state` is the ship's memory: it
+    /// is read and then replaced by what the ship remembers after this decision.
+    pub fn logits(&self, obs: &[f32], state: &mut [f32]) -> Vec<f32> {
+        let mut hidden = self.read[1].apply(&self.read[0].apply(obs, true), true);
+        let (from_in, from_held) = (self.cell_in.apply(&hidden, false), self.cell_held.apply(state, false));
+        let m = self.memory;
+        let squash = |x: f32| 1.0 / (1.0 + (-x).exp());
+        for i in 0..m {
+            let reset = squash(from_in[i] + from_held[i]);
+            let update = squash(from_in[m + i] + from_held[m + i]);
+            let candidate = (from_in[2 * m + i] + reset * from_held[2 * m + i]).tanh();
+            state[i] = (1.0 - update) * candidate + update * state[i];
+        }
+        for (h, r) in hidden.iter_mut().zip(self.recall.apply(state, false)) {
+            *h += r;
+        }
+        self.logits.apply(&hidden, false)
     }
 
     /// The most likely choice of every head.
-    pub fn decide(&self, obs: &[f32]) -> Action {
-        let logits = self.logits(obs);
+    pub fn decide(&self, obs: &[f32], state: &mut [f32]) -> Action {
+        let logits = self.logits(obs, state);
         let mut start = 0;
         let pick = HEADS.map(|size| {
             let head = &logits[start..start + size];
@@ -108,6 +141,8 @@ pub struct ModelBot {
     phase: u32,
     held: Action,
     obs: Vec<f32>,
+    /// What the ship remembers from one decision to the next.
+    state: Vec<f32>,
 }
 
 impl ModelBot {
@@ -115,7 +150,8 @@ impl ModelBot {
     pub const HOLD: u32 = 3;
 
     pub fn new(net: Arc<Net>, hold: u32) -> Self {
-        ModelBot { net, hold: hold.max(1), phase: 0, held: Action::default(), obs: vec![0.0; OBS_LEN] }
+        let state = net.blank();
+        ModelBot { net, hold: hold.max(1), phase: 0, held: Action::default(), obs: vec![0.0; OBS_LEN], state }
     }
 }
 
@@ -123,7 +159,7 @@ impl Controller for ModelBot {
     fn act(&mut self, obs: &Observation, cfg: &Config) -> Action {
         if self.phase == 0 {
             obs.fill(cfg, &mut self.obs);
-            self.held = self.net.decide(&self.obs);
+            self.held = self.net.decide(&self.obs, &mut self.state);
         } else {
             // An upgrade is bought once per decision, not on every held tick.
             self.held.buy = None;

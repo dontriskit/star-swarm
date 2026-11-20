@@ -28,31 +28,71 @@ CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
 UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
 
 
+# Width of a ship's memory: what it carries from one decision to the next.
+MEMORY = 256
+
+
 class Policy(nn.Module):
+    """Two layers read the observation; a memory cell (a GRU) carries something on from one
+    decision to the next, and what it holds is added to what the layers made of the observation.
+    The addition starts at zero, so a policy without a memory behaves the same once given one,
+    until training finds a use for it."""
+
     def __init__(self, hidden: int = 256):
         super().__init__()
         self.trunk = nn.Sequential(nn.Linear(OBS_LEN, hidden), nn.ReLU(), nn.Linear(hidden, hidden), nn.ReLU())
+        self.memory = nn.GRUCell(hidden, MEMORY)
+        self.recall = nn.Linear(MEMORY, hidden)
+        nn.init.zeros_(self.recall.weight)
+        nn.init.zeros_(self.recall.bias)
         self.logits = nn.Linear(hidden, sum(HEADS))
         self.value = nn.Linear(hidden, 1)
 
-    def forward(self, obs):
-        h = self.trunk(obs)
-        return self.logits(h).split(HEADS, dim=-1), self.value(h).squeeze(-1)
+    def blank(self, count: int, device) -> torch.Tensor:
+        """The memory of ships that remember nothing yet."""
+        return torch.zeros(count, MEMORY, device=device)
 
-    def act(self, obs, greedy: bool = False):
-        logits, value = self(obs)
+    def forward(self, obs, state=None):
+        """Logits per head, the value, and the memory after this decision. Without a memory
+        passed in, the ship decides on the observation alone and none is returned."""
+        h = self.trunk(obs)
+        if state is not None:
+            state = self.memory(h, state)
+            h = h + self.recall(state)
+        return self.logits(h).split(HEADS, dim=-1), self.value(h).squeeze(-1), state
+
+    def act(self, obs, state=None, greedy: bool = False):
+        logits, value, state = self(obs, state)
         dists = [torch.distributions.Categorical(logits=l) for l in logits]
         actions = torch.stack([l.argmax(-1) if greedy else d.sample() for l, d in zip(logits, dists)], dim=-1)
-        return actions, self.log_prob(dists, actions), value
+        return actions, self.log_prob(dists, actions), value, state
 
     @staticmethod
     def log_prob(dists, actions):
         return sum(d.log_prob(actions[..., i]) for i, d in enumerate(dists))
 
-    def evaluate(self, obs, actions):
-        logits, value = self(obs)
+    def evaluate(self, obs, actions, state=None):
+        logits, value, state = self(obs, state)
         dists = [torch.distributions.Categorical(logits=l) for l in logits]
-        return self.log_prob(dists, actions), sum(d.entropy() for d in dists), value
+        return self.log_prob(dists, actions), sum(d.entropy() for d in dists), value, state
+
+
+class Pilot:
+    """Flies every ship of a set of matches with a policy, keeping each ship's memory between
+    decisions and wiping it when its match ends."""
+
+    def __init__(self, policy: Policy, greedy: bool):
+        self.policy, self.greedy, self.state = policy, greedy, None
+
+    def __call__(self, env: Env, obs) -> bytes:
+        if self.state is None:
+            self.state = self.policy.blank(len(obs), obs.device)
+        actions, _, _, self.state = self.policy.act(obs, self.state, greedy=self.greedy)
+        return pack(actions)
+
+    def after(self, dones: bytes):
+        ended = torch.tensor(np.frombuffer(dones, dtype=np.uint8), device=self.state.device).bool()
+        self.state[ended] = 0.0
 
 
 def forget(policy: Policy, how: str, device, hidden: int):
@@ -157,7 +197,9 @@ def play(args, choose, envs: int, seed: int, device) -> dict:
     stats = []
     while len(stats) < envs:
         actions = choose(env, None if choose is scripted else observe(env, device))
-        env.step(actions)
+        _, dones = env.step(actions)
+        if isinstance(choose, Pilot):
+            choose.after(dones)
         # Only the first match of every slot counts; taking whichever matches end
         # first would favour short ones.
         stats.extend(s for s in env.take_stats() if s[8] == 0)
@@ -225,7 +267,10 @@ def train(args):
             grown = torch.zeros(saved[first].shape[0], OBS_LEN, device=device)
             grown[:, : saved[first].shape[1]] = saved[first]
             saved[first] = grown
-        policy.load_state_dict(saved)
+        # A policy saved before ships had a memory comes without one: it gets a fresh one,
+        # which changes nothing until training puts it to use.
+        missing = policy.load_state_dict(saved, strict=False)
+        assert not missing.unexpected_keys and all(k.startswith(("memory.", "recall.")) for k in missing.missing_keys), missing
         forget(policy, args.forget, device, args.hidden)
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
 
@@ -235,6 +280,9 @@ def train(args):
     val_buf = torch.zeros(steps, n, device=device)
     rew_buf = torch.zeros(steps, n, device=device)
     done_buf = torch.zeros(steps, n, device=device)
+    # Each ship's memory as it was before each decision, to start a stretch from when learning.
+    mem_buf = torch.zeros(steps, n, MEMORY, device=device)
+    state, rival_state = policy.blank(n, device), policy.blank(len(theirs), device)
 
     full = observe(env, device)
     obs = full[ours]
@@ -248,14 +296,20 @@ def train(args):
             rival.load_state_dict(past[-1] if torch.rand(()) < 0.5 else past[int(torch.randint(len(past), ()))])
         with torch.no_grad():
             for t in range(steps):
-                actions, logp, value = policy.act(obs)
+                mem_buf[t] = state
+                actions, logp, value, state = policy.act(obs, state)
                 everyone[ours] = actions
                 if self_play:
-                    everyone[theirs] = rival.act(full[theirs])[0]
+                    rival_actions, _, _, rival_state = rival.act(full[theirs], rival_state)
+                    everyone[theirs] = rival_actions
                 rewards, dones = env.step(pack(everyone))
                 obs_buf[t], act_buf[t], logp_buf[t], val_buf[t] = obs, actions, logp, value
                 rew_buf[t] = torch.tensor(np.frombuffer(rewards, dtype=np.float32), device=device)[ours]
-                done_buf[t] = torch.tensor(np.frombuffer(dones, dtype=np.uint8), device=device)[ours].float()
+                ended = torch.tensor(np.frombuffer(dones, dtype=np.uint8), device=device).float()
+                done_buf[t] = ended[ours]
+                # A new match starts with nothing remembered.
+                state = state * (1.0 - ended[ours]).unsqueeze(-1)
+                rival_state = rival_state * (1.0 - ended[theirs]).unsqueeze(-1)
                 full = observe(env, device)
                 obs = full[ours]
             stats.extend(env.take_stats())
@@ -263,7 +317,7 @@ def train(args):
             # Generalised advantage estimation; a finished match cuts the return.
             adv = torch.zeros(steps, n, device=device)
             last = torch.zeros(n, device=device)
-            next_value = policy(obs)[1]
+            next_value = policy(obs, state)[1]
             for t in reversed(range(steps)):
                 alive = 1.0 - done_buf[t]
                 delta = rew_buf[t] + args.gamma * next_value * alive - val_buf[t]
@@ -272,21 +326,40 @@ def train(args):
                 next_value = val_buf[t]
             returns = adv + val_buf
 
-        # A destroyed ship's actions do nothing until it respawns; leave those samples out.
-        keep = (obs_buf[..., 0] > 0.5).reshape(-1).nonzero().squeeze(-1)
-        flat = lambda x: x.reshape(steps * n, *x.shape[2:])
-        b_obs, b_act, b_logp, b_adv, b_ret = (flat(x) for x in (obs_buf, act_buf, logp_buf, adv, returns))
+        # Learning goes over stretches of consecutive decisions of one ship, so that the memory
+        # can be taught: each stretch starts from the memory the ship had there and is played
+        # through again. A destroyed ship's actions do nothing until it respawns; those
+        # decisions are played through but not learned from.
+        span = min(args.span, steps)
+        starts = torch.arange(0, steps - span + 1, span, device=device)
+        pairs = torch.cartesian_prod(starts, torch.arange(n, device=device))
+        alive_buf = (obs_buf[..., 0] > 0.5).float()
+        per_batch = max(args.minibatch // span, 1)
+        offsets = torch.arange(span, device=device).unsqueeze(1)
         for _ in range(args.epochs):
-            order = keep[torch.randperm(len(keep), device=device)]
-            for start in range(0, len(order), args.minibatch):
-                idx = order[start : start + args.minibatch]
-                logp, entropy, value = policy.evaluate(b_obs[idx], b_act[idx])
-                a = b_adv[idx]
-                a = (a - a.mean()) / (a.std() + 1e-8)
-                ratio = (logp - b_logp[idx]).exp()
-                policy_loss = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
-                value_loss = 0.5 * (value - b_ret[idx]).pow(2).mean()
-                loss = policy_loss + args.value_coef * value_loss - entropy_coef * entropy.mean()
+            order = pairs[torch.randperm(len(pairs), device=device)]
+            for start in range(0, len(order), per_batch):
+                t0, who = order[start : start + per_batch].unbind(1)
+                rows = t0.unsqueeze(0) + offsets  # [span, batch]: the steps of each stretch
+                cols = who.unsqueeze(0).expand_as(rows)
+                h = mem_buf[t0, who]
+                logps, entropies, values = [], [], []
+                for k in range(span):
+                    logp_k, entropy_k, value_k, h = policy.evaluate(obs_buf[rows[k], cols[k]], act_buf[rows[k], cols[k]], h)
+                    h = h * (1.0 - done_buf[rows[k], cols[k]]).unsqueeze(-1)
+                    logps.append(logp_k)
+                    entropies.append(entropy_k)
+                    values.append(value_k)
+                logp, entropy, value = torch.stack(logps), torch.stack(entropies), torch.stack(values)
+                mask = alive_buf[rows, cols]
+                count = mask.sum().clamp(min=1.0)
+                mean = lambda x: (x * mask).sum() / count
+                a = adv[rows, cols]
+                a = (a - mean(a)) / ((mean((a - mean(a)) ** 2)).sqrt() + 1e-8)
+                ratio = (logp - logp_buf[rows, cols]).exp()
+                policy_loss = -mean(torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a))
+                value_loss = 0.5 * mean((value - returns[rows, cols]).pow(2))
+                loss = policy_loss + args.value_coef * value_loss - entropy_coef * mean(entropy)
                 optim.zero_grad(set_to_none=True)
                 loss.backward()
                 if update <= args.value_warmup:
@@ -297,6 +370,7 @@ def train(args):
                             param.grad = None
                 nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
                 optim.step()
+        entropy = mean(entropy)
 
         samples += steps * n
         if update % args.log_every == 0 or update == args.updates:
@@ -307,16 +381,16 @@ def train(args):
                 "samples_per_s": round(samples / (time.time() - started)),
                 "reward_per_decision": float(rew_buf.mean()),
                 "value_loss": value_loss.item(),
-                "entropy": entropy.mean().item(),
+                "entropy": entropy.item(),
             }
             if stats:
                 row.update(summarize(stats))
                 stats = []
             record(row)
-            torch.save({"model": policy.state_dict(), "hidden": args.hidden, "obs_len": OBS_LEN, "heads": HEADS}, out / "policy.pt")
+            torch.save({"model": policy.state_dict(), "hidden": args.hidden, "obs_len": OBS_LEN, "heads": HEADS, "memory": MEMORY}, out / "policy.pt")
 
-    sampled = play(args, lambda e, o: pack(policy.act(o)[0]), args.eval_envs, 1_000_000, device)
-    greedy = play(args, lambda e, o: pack(policy.act(o, greedy=True)[0]), args.eval_envs, 1_000_000, device)
+    sampled = play(args, Pilot(policy, greedy=False), args.eval_envs, 1_000_000, device)
+    greedy = play(args, Pilot(policy, greedy=True), args.eval_envs, 1_000_000, device)
     record({"kind": "eval", "scripted": baseline, "policy_sampled": sampled, "policy_greedy": greedy})
 
 
@@ -331,6 +405,7 @@ if __name__ == "__main__":
     p.add_argument("--steps", type=int, default=64, help="decisions per agent per update")
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--minibatch", type=int, default=8192)
+    p.add_argument("--span", type=int, default=16, help="consecutive decisions in a stretch learned from: how far back the memory is taught to reach")
     p.add_argument("--hidden", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--gamma", type=float, default=0.999)

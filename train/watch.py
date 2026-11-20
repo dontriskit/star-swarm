@@ -27,7 +27,8 @@ args = p.parse_args()
 
 saved = torch.load(args.policy, map_location="cpu")
 policy = Policy(saved["hidden"])
-policy.load_state_dict(saved["model"])
+policy.load_state_dict(saved["model"], strict=False)
+state = None
 env = Env(1, seed=args.seed, frame_skip=args.frame_skip, teams=args.teams, ships_per_team=args.ships_per_team,
           rock_count=args.rocks, radius=args.radius, max_ticks=args.max_ticks)
 
@@ -35,7 +36,11 @@ frames = bytearray()
 stats = []
 with torch.no_grad():
     while not stats:
-        actions = pack(policy.act(observe(env, "cpu"), greedy=True)[0])
+        obs = observe(env, "cpu")
+        if state is None:
+            state = policy.blank(len(obs), "cpu")
+        chosen, _, _, state = policy.act(obs, state, greedy=True)
+        actions = pack(chosen)
         env.step(actions)
         # The environment holds an action for frame_skip ticks and buys only on the first:
         # clear the five buy bits (5 to 9) of every 16-bit action for the held ticks.

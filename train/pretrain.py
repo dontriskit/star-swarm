@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ppo import HEADS, OBS_LEN, Policy, observe, pack
+from ppo import HEADS, MEMORY, OBS_LEN, Policy, observe, pack
 from swarm_py import Env
 
 # Where each head's choice sits in the 16-bit action: shift and mask, in the order of HEADS.
@@ -51,7 +51,7 @@ def main():
     env = Env(args.envs, seed=args.seed, learners=3)
     policy = Policy(args.hidden).to(device)
     if args.init:
-        policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
+        policy.load_state_dict(torch.load(args.init, map_location=device)["model"], strict=False)
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr)
     # The first matches are the scripted bot's, the rest the policy's own.
     own = (torch.arange(env.agents, device=device) // env.ships) >= int(args.envs * (1 - args.own_share))
@@ -61,7 +61,8 @@ def main():
         obs = observe(env, device)
         expert = unpack(env.scripted(), device)
         with torch.no_grad():
-            mine, _, _ = policy.act(obs)
+            # Taught without its memory: the scripted bot has none to imitate.
+            mine = policy.act(obs)[0]
         env.step(pack(torch.where(own.unsqueeze(-1), mine, expert)))
         seen_obs.append(obs)
         seen_act.append(expert)
@@ -72,18 +73,18 @@ def main():
         order = torch.randperm(len(obs_all), device=device)
         for at in range(0, len(order), args.minibatch):
             idx = order[at : at + args.minibatch]
-            logits, _ = policy(obs_all[idx])
+            logits = policy(obs_all[idx])[0]
             loss = sum(F.cross_entropy(l, act_all[idx, i]) for i, l in enumerate(logits))
             optim.zero_grad()
             loss.backward()
             optim.step()
         if step % (args.every * 16) == 0 or step == args.steps:
             with torch.no_grad():
-                logits, _ = policy(obs_all)
+                logits = policy(obs_all)[0]
                 same = [round((l.argmax(-1) == act_all[:, i]).float().mean().item(), 3) for i, l in enumerate(logits)]
             line = {"step": step, "game_minutes": round(step * 0.15 / 60, 1), "loss": round(loss.item(), 4), "agrees": same, "seconds": round(time.time() - started)}
             print(json.dumps(line), flush=True)
-            torch.save({"model": policy.state_dict(), "hidden": args.hidden, "obs_len": OBS_LEN, "heads": HEADS}, out / "policy.pt")
+            torch.save({"model": policy.state_dict(), "hidden": args.hidden, "obs_len": OBS_LEN, "heads": HEADS, "memory": MEMORY}, out / "policy.pt")
 
 
 if __name__ == "__main__":
