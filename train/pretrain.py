@@ -81,7 +81,7 @@ def main():
             with torch.no_grad():
                 logits, _ = policy(obs_all)
                 same = [round((l.argmax(-1) == act_all[:, i]).float().mean().item(), 3) for i, l in enumerate(logits)]
-            line = {"step": step, "game_minutes": round(step * 0.1 / 60, 1), "loss": round(loss.item(), 4), "agrees": same, "seconds": round(time.time() - started)}
+            line = {"step": step, "game_minutes": round(step * 0.15 / 60, 1), "loss": round(loss.item(), 4), "agrees": same, "seconds": round(time.time() - started)}
             print(json.dumps(line), flush=True)
             torch.save({"model": policy.state_dict(), "hidden": args.hidden, "obs_len": OBS_LEN, "heads": HEADS}, out / "policy.pt")
 

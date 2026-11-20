@@ -8,7 +8,7 @@ use swarm_sim::replay::decode;
 use swarm_sim::{Action, Config, Controller, Event, OBS_LEN, Scan, ScriptedBot, ScriptedCommander, World, replay};
 
 /// Scripted teams get fresh orders from their scripted commander this often.
-const COMMAND_EVERY: u32 = 450;
+const COMMAND_EVERY: u32 = 300;
 
 /// What an agent is paid for. Training stages differ only in these weights.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -492,7 +492,7 @@ mod tests {
         assert!(total > 0.0, "scripted bots earned {total}");
         // 900 ticks at 3 per step is 300 steps a match: two rounds of 8 matches have ended.
         assert_eq!(stats.len(), 16);
-        assert!(stats.iter().all(|s| (s.minutes - 0.5).abs() < 1e-3));
+        assert!(stats.iter().all(|s| (s.minutes - 0.75).abs() < 1e-3));
         assert!(stats.iter().map(|s| s.collected).sum::<f32>() > 0.0);
         assert!(obs.iter().all(|v| v.is_finite()));
     }

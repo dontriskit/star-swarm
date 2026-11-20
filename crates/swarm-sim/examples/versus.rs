@@ -28,7 +28,7 @@ fn main() -> std::io::Result<()> {
                 })
                 .collect();
             while !world.done() {
-                if world.tick % 450 == 0 {
+                if world.tick % 300 == 0 {
                     for team in (if pilot == "model" { 1 } else { 0 })..world.bases.len() as u8 {
                         commander.command(&mut world, team);
                     }

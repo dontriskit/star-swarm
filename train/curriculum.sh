@@ -47,7 +47,7 @@ for i in "${!stages[@]}"; do
   # team is attacking and the attacker has the upper hand; a kill pays 8.
   $py train/ppo.py --name "$run" ${init:+--init "$init"} --updates "$updates" --value-warmup "${WARMUP:-0}" --entropy-coef "$entropy_start" --entropy-end "$entropy_end" --log-every 5 --eval-envs 64 \
     --envs "${ENVS:-2048}" --hidden "${HIDDEN:-1024}" --minibatch "${MINIBATCH:-16384}" \
-    --opponent self --base-hp "$hp" --turret-damage "$turret" \
+    --opponent "${OPPONENT:-self}" --base-hp "$hp" --turret-damage "$turret" \
     --reward win=50 --reward lose=50 --reward hurt=0.02 --reward hull=0.3 \
     --reward time=0.00083 --reward draw=30 --reward place=20 \
     --reward deposit=0.2 --reward base_level=60 --reward buy=4 --reward tier=20 \

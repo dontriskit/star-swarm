@@ -12,7 +12,7 @@ fn main() -> std::io::Result<()> {
     let mut commander = ScriptedCommander::new(seed);
     let mut raids = 0;
     while !world.done() {
-        if world.tick % 450 == 0 {
+        if world.tick % 300 == 0 {
             for team in 0..world.bases.len() as u8 {
                 raids += commander.command(&mut world, team);
             }

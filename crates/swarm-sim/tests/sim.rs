@@ -149,7 +149,7 @@ fn a_ship_flying_straight_comes_back_around_the_planet() {
     }
     // Once around is 1885 units; at about 150 a second that is roughly 13 s after getting up to speed.
     assert!(farthest > 900.0, "only got {farthest} away, half-way around is 942");
-    assert!(back.is_some_and(|t| (360..480).contains(&t)), "back at the start after {back:?} ticks");
+    assert!(back.is_some_and(|t| (240..320).contains(&t)), "back at the start after {back:?} ticks");
 }
 
 #[test]
@@ -510,7 +510,7 @@ fn ammo_runs_out_and_comes_back() {
     world.ships[0].class = Class::Scatter;
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
     let mut volleys = 0;
-    for _ in 0..600 {
+    for _ in 0..400 {
         let before = world.shots.len();
         world.step(&fire);
         volleys += (world.shots.len() > before) as u32;
@@ -523,8 +523,8 @@ fn ammo_runs_out_and_comes_back() {
     // little more than half of that.
     let basic = &duel(Config::default(), 150.0).ships[0].clone();
     let cfg = Config::default();
-    assert_eq!(cfg.cooldown(basic), 14);
-    assert!(cfg.ammo_regen < 0.6 * 30.0 / 14.0 * cfg.volley_cost(basic));
+    assert_eq!(cfg.cooldown(basic), 9);
+    assert!(cfg.ammo_regen < 0.6 * 20.0 / 9.0 * cfg.volley_cost(basic));
     assert!(world.ships[0].ammo < 2.4, "less than one volley left");
     // An empty magazine takes 25 s to fill.
     for _ in 0..900 {
@@ -562,29 +562,29 @@ fn a_ship_has_inertia_drifts_and_can_brake() {
     let go = Action { thrust: true, ..Action::default() };
 
     // Speed builds up over a couple of seconds.
-    step(&mut world, go, 30);
+    step(&mut world, go, 20);
     let after_a_second = world.ships[0].vel.len();
     assert!(after_a_second > 50.0 && after_a_second < 0.6 * cfg.max_speed, "a second of thrust gives {after_a_second}");
-    step(&mut world, go, 60);
+    step(&mut world, go, 40);
     assert!((world.ships[0].vel.len() - cfg.max_speed).abs() < 2.0, "top speed after three");
 
     // Engine off, nose turned away: the ship keeps going the way it was going, hardly slower.
     let way = world.ships[0].vel.unit();
-    step(&mut world, Action { turn: 1, ..Action::default() }, 30);
+    step(&mut world, Action { turn: 1, ..Action::default() }, 20);
     let ship = &world.ships[0];
     assert!(ship.vel.len() > 0.9 * cfg.max_speed, "it drifts at {}", ship.vel.len());
     assert!(ship.vel.unit().dot(geo::tangent(ship.pos, way).unit()) > 0.99, "still on its old course");
     assert!(ship.fwd.dot(ship.vel.unit()) < 0.0, "with its nose pointing back");
 
     // Thrust the new way: the course comes round little by little, not at once.
-    step(&mut world, go, 15);
+    step(&mut world, go, 10);
     let ship = &world.ships[0];
     assert!(ship.vel.unit().dot(ship.fwd) < 0.5, "half a second is not enough to turn the course around");
     assert!(ship.vel.len() < 0.9 * cfg.max_speed, "pushing against the drift slows it first");
 
     // Brakes stop it within a second and a half, whichever way the nose points.
-    step(&mut world, go, 90);
-    step(&mut world, Action { brake: true, thrust: true, ..Action::default() }, 45);
+    step(&mut world, go, 60);
+    step(&mut world, Action { brake: true, thrust: true, ..Action::default() }, 30);
     assert_eq!(world.ships[0].vel.len(), 0.0, "braking wins over thrust and brings the ship to rest");
 }
 
@@ -600,7 +600,7 @@ fn each_class_fires_its_own_volley() {
 
 #[test]
 fn a_hunter_fires_in_bursts_and_every_class_is_built_differently() {
-    // One pull of the trigger: three volleys of two, four ticks apart, then a long wait.
+    // One pull of the trigger: three volleys of two, three ticks apart, then a long wait.
     let mut world = duel(Config::default(), 5000.0);
     world.ships[0].class = Class::Scatter;
     let idle = [Action::default(); 2];
@@ -613,7 +613,7 @@ fn a_hunter_fires_in_bursts_and_every_class_is_built_differently() {
             fired_at.push(tick);
         }
     }
-    assert_eq!(fired_at, [0, 4, 8], "the burst runs on by itself");
+    assert_eq!(fired_at, [0, 3, 6], "the burst runs on by itself");
 
     // Hunter fast and thin, tank slow and thick, cannon far-reaching and fragile.
     let cfg = Config::default();
@@ -915,7 +915,7 @@ fn crystals_are_handed_over_inside_the_base_a_tenth_of_a_hold_a_second() {
     let mut world = at_home(45);
     let unload = [UNLOAD, Action::default()];
     // A tier-1 hold is 150, so 15 crystals a second: after one second, 15 of the 45.
-    for _ in 0..30 {
+    for _ in 0..20 {
         world.step(&unload);
     }
     assert_eq!((world.ships[0].cargo, world.ships[0].points), (30, 15));
@@ -966,8 +966,8 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
     world.step(&tier_up);
     assert_eq!(world.ships[0].tier, 3, "tier 4 needs a level-3 base");
 
-    // The team has handed over 995 crystals so far; this ship brings the rest.
-    world.bases[0].deposited = 995;
+    // The team has handed over 1995 crystals so far; this ship brings the rest.
+    world.bases[0].deposited = 1995;
     world.ships[0].cargo = 10;
     let mut levelled = false;
     for _ in 0..30 {
@@ -988,7 +988,7 @@ fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
     let cfg = &world.cfg;
     assert_eq!((1..=6).map(|tier| (1..=6).find(|base| cfg.base_allows(tier, *base)).unwrap()).collect::<Vec<u8>>(), [1, 1, 3, 4, 5, 6]);
     assert_eq!((1..=7).map(|tier| cfg.max_level(tier)).collect::<Vec<u8>>(), [3, 4, 5, 6, 7, 8, 9], "every tier allows one more level of each upgrade");
-    assert_eq!(cfg.next_base_level_at(2), Some(2500));
+    assert_eq!(cfg.next_base_level_at(2), Some(5000));
     assert_eq!(cfg.next_base_level_at(6), None, "a base tops out at level 6");
 }
 
@@ -1156,7 +1156,7 @@ fn a_pack_of_crystals_fades_to_nothing() {
     let cfg = Config { teams: 1, ships_per_team: 1, rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 3);
     let life = world.cfg.crystal_ticks;
-    assert_eq!(life, 300, "ten seconds");
+    assert_eq!(life as f32 * world.cfg.dt, 10.0, "ten seconds");
     let far = world.offset(world.ships[0].pos, 0.0, 600.0);
     world.crystals.push(Crystal { pos: far, ticks: life, value: 100, full: 100, boost_cell: false });
     let idle = vec![Action::default(); 1];
@@ -1178,7 +1178,7 @@ fn a_pack_of_crystals_fades_to_nothing() {
 fn small_rocks_are_quick_work_and_big_ones_pay_more() {
     let cfg = Config::default();
     assert_eq!([1, 2, 3, 4, 5].map(|s| cfg.rock_hp_of(s)), [20.0, 80.0, 180.0, 320.0, 500.0]);
-    assert_eq!(cfg.rock_packs, [(8, 15), (16, 40), (41, 70), (71, 110), (111, 150)]);
+    assert_eq!(cfg.rock_packs, [(12, 22), (24, 60), (62, 105), (107, 165), (167, 225)]);
     // Per shot a basic ship gets the most out of the smallest rocks.
     let per_hp = |size: u8| (cfg.rock_packs[size as usize - 1].0 + cfg.rock_packs[size as usize - 1].1) as f32 / 2.0 / cfg.rock_hp_of(size);
     assert!((2..=5).all(|s| per_hp(1) > per_hp(s)));
@@ -1201,14 +1201,16 @@ fn a_broken_rock_leaves_one_pack_and_a_ship_takes_what_fits() {
     world.step(&[Action::default(); 2]);
     assert_eq!(world.crystals.len(), 1);
     let pack = world.crystals[0].value;
-    assert!((111..=150).contains(&pack), "an XXL pack of {pack}");
+    assert!((167..=225).contains(&pack), "an XXL pack of {pack}");
 
     // A tier-1 ship holds 150; with 100 on board it takes 50 and the rest of the pack stays.
     world.ships[0].pos = world.crystals[0].pos;
     world.ships[0].cargo = 100;
     let taken: u32 = world.step(&[Action::default(); 2]).iter().map(|e| if let Event::Collected { ship: 0, amount } = e { *amount } else { 0 }).sum();
     assert_eq!((taken, world.ships[0].cargo), (50, 150));
-    assert_eq!(world.crystals.iter().find(|c| !c.boost_cell).map(|c| c.value), Some(pack - 50));
+    // (The pack has been fading for two ticks by now, which costs it a crystal or two.)
+    let left = world.crystals.iter().find(|c| !c.boost_cell).map(|c| c.value).unwrap();
+    assert!((pack - 53..=pack - 50).contains(&left), "{left} left of {pack}");
 }
 
 #[test]
@@ -1329,7 +1331,7 @@ fn the_hull_mends_from_crystals_first_and_in_the_base() {
     // Docked in the base: a tenth of the hull a second.
     let mut world = at_home(0);
     world.ships[0].hull = 40.0;
-    for _ in 0..30 {
+    for _ in 0..20 {
         world.step(&[Action::default(); 2]);
     }
     assert!((world.ships[0].hull - 50.0).abs() < 0.5, "after one second: {}", world.ships[0].hull);

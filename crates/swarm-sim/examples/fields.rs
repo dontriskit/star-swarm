@@ -18,13 +18,13 @@ fn main() {
     let mut bots: Vec<ScriptedBot> = (0..world.ships.len()).map(ScriptedBot::for_ship).collect();
     let home = world.bases[0].pos;
     let standing: u32 = world.rocks.iter().map(|r| (world.cfg.rock_packs[r.size as usize - 1].0 + world.cfg.rock_packs[r.size as usize - 1].1) / 2).sum();
-    println!("{} farms, {} rocks, about {} crystals standing; regrow {} s", world.farms.len(), world.rocks.len(), standing, world.cfg.rock_regrow / 30);
+    println!("{} farms, {} rocks, about {} crystals standing; regrow {} s", world.farms.len(), world.rocks.len(), standing, world.cfg.rock_regrow / 20);
     println!("min  handed-over  per-ship/min  empty<2000  empty<4000  empty<8000  mean-dist-from-home  base-lvl");
     let mut last = 0;
     while !world.done() {
         let actions: Vec<Action> = (0..world.ships.len()).map(|i| bots[i].act(&observe(&world, i), &world.cfg)).collect();
         world.step(&actions);
-        if world.tick % 1800 == 0 {
+        if world.tick % 1200 == 0 {
             let empty = |within: f32| {
                 let near: Vec<usize> = (0..world.farms.len()).filter(|f| world.dist(home, world.farms[*f].pos) < within).collect();
                 format!("{:>3}/{:<3}", near.iter().filter(|f| world.farm_live[**f] == 0).count(), near.len())
@@ -34,7 +34,7 @@ fn main() {
             let handed = world.bases[0].deposited;
             println!(
                 "{:>3}  {:>11}  {:>12.1}  {:>10}  {:>10}  {:>10}  {:>19.0}  {:>8}",
-                world.tick / 1800,
+                world.tick / 1200,
                 handed,
                 (handed - last) as f32 / mine.len().max(1) as f32,
                 empty(2000.0),
