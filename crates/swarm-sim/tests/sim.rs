@@ -232,7 +232,7 @@ fn destroying_every_other_base_wins_the_match() {
 fn a_team_without_a_base_gets_no_new_ships() {
     let mut world = siege(Config::default());
     // A third team keeps the match going after team 1 loses its base.
-    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0, level: 1, deposited: 0 });
+    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0, level: 1, deposited: 0, spill: 0.0 });
     world.plans.push(None);
     world.commanded.push(false);
     world.seen_base_hp.iter_mut().for_each(|seen| seen.push(100.0));
@@ -298,7 +298,8 @@ fn shields_take_the_damage_first_and_grow_back() {
 
 #[test]
 fn three_deaths_demote_a_ship() {
-    let mut world = duel(Config::default(), 150.0);
+    // Lives are off by default; a match can still be set up with them.
+    let mut world = duel(Config { lives: 3, ..Config::default() }, 150.0);
     let idle = [Action::default(); 2];
     let kill = |world: &mut World| {
         // Well below zero: a ship that respawned inside its base is docked and being repaired.
@@ -357,6 +358,56 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
     assert_eq!((near, middle), (2.0, 2.0), "full power inside the full-power range");
     assert!(far < 0.8 && far > 0.1, "near the edge of its range did {far}");
     assert_eq!(hit_from(600.0), None, "a basic laser reaches 470");
+}
+
+#[test]
+fn dying_costs_points_and_a_run_of_kills_pays_until_it_is_ended() {
+    let mut world = World::new(Config { teams: 2, ships_per_team: 2, rock_count: 0, turret_damage: 0.0, ..Config::default() }, 6);
+    let idle = vec![Action::default(); 4];
+    // Ship 0 (team 0) destroys ship 2 (team 1) over and over.
+    let kill = |world: &mut World, victim: usize, by: u16| {
+        world.ships[victim].hull = -1000.0;
+        world.ships[victim].last_hit_by = Some(by);
+        world.step(&idle);
+        for _ in 0..world.cfg.respawn_ticks + 1 {
+            world.step(&idle);
+        }
+    };
+    world.ships[2].points = 100;
+    world.ships[2].levels[Upgrade::Attack as usize] = 2;
+    kill(&mut world, 2, 0);
+    assert_eq!(world.ships[2].points, 60, "20 and a fifth of the 100");
+    assert_eq!(world.ships[2].levels[Upgrade::Attack as usize], 2, "nothing else is lost");
+    kill(&mut world, 2, 0);
+    assert_eq!((world.ships[0].streak, world.ships[0].points), (2, 0), "two kills are no run yet");
+    kill(&mut world, 2, 0);
+    kill(&mut world, 2, 0);
+    assert_eq!((world.ships[0].streak, world.ships[0].points), (4, 60), "30 for the third and for the fourth");
+    world.ships[0].pos = world.offset(world.ships[2].pos, 0.3, 200.0);
+    assert_eq!(observe(&world, 2).ships.iter().map(|s| s.streak).fold(0.0, f32::max), 4.0, "the run shows");
+    // Ship 3 ends the run: 10 a kill of it to each ship of its team, and the run is gone.
+    let before = (world.ships[2].points, world.ships[3].points);
+    kill(&mut world, 0, 3);
+    assert_eq!((world.ships[2].points, world.ships[3].points), (before.0 + 40, before.1 + 40));
+    assert_eq!((world.ships[0].streak, world.ships[0].points), (0, 60 - 20 - 12));
+}
+
+#[test]
+fn a_base_under_fire_sheds_crystals() {
+    let mut world = duel(Config { turret_damage: 0.0, ..Config::default() }, 150.0);
+    let base = world.bases[1].pos;
+    world.ships[0].pos = world.offset(base, 0.3, 200.0);
+    world.face(0, base);
+    world.ships[1].pos = world.offset(base, 2.0, 900.0);
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    let mut dealt = 0.0;
+    let mut seen = 0;
+    while dealt < 30.0 {
+        dealt += world.step(&fire).iter().map(|e| if let Event::BaseHit { damage, .. } = e { *damage } else { 0.0 }).sum::<f32>();
+        seen = seen.max(world.crystals.iter().filter(|c| c.full == 10).count());
+    }
+    assert!(seen >= 1, "a pack of 10 for every 10 damage");
+    assert!(world.crystals.iter().all(|c| world.dist(c.pos, base) > world.cfg.base_radius));
 }
 
 #[test]
@@ -1113,7 +1164,7 @@ fn the_hull_mends_from_crystals_first_and_in_the_base() {
 }
 
 #[test]
-fn a_destroyed_ship_comes_back_whole_and_empty_but_keeps_its_points() {
+fn a_destroyed_ship_comes_back_whole_and_empty_and_pays_in_points() {
     let mut world = with_drone(DroneKind::Eco);
     world.ships[0].cargo = 80;
     world.ships[0].points = 55;
@@ -1130,7 +1181,7 @@ fn a_destroyed_ship_comes_back_whole_and_empty_but_keeps_its_points() {
     assert!(ship.alive);
     assert_eq!(ship.cargo, 0, "the hold is empty");
     assert_eq!((ship.hull, ship.shield), (world.cfg.hull_max(ship), world.cfg.shield_max(ship)), "hull and shields are whole");
-    assert_eq!(ship.points, 55, "points are kept");
+    assert_eq!(ship.points, 55 - 20 - 11, "it pays 20 points and a fifth of what it had");
     assert_eq!(ship.levels[Upgrade::Attack as usize], 2, "and so are upgrades, while it has lives left");
     assert_eq!(observe(&world, 0).drones, 0, "its drones are no longer its own");
     assert_eq!(world.drones.len(), 1, "they stay where they were, for anyone to take");
@@ -1152,6 +1203,6 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     assert!(world.cfg.view_range > 1000.0 && world.cfg.view_range < world.cfg.radar_range);
     // All twelve are in the vector a policy gets: the last six have their rows near the end.
     let v = seen.to_vec(&world.cfg);
-    let present = v[OBS_LEN - 66..OBS_LEN - 6].chunks(10).filter(|row| row[0] == 1.0).count();
+    let present = v[OBS_LEN - 73..OBS_LEN - 13].chunks(10).filter(|row| row[0] == 1.0).count();
     assert_eq!(present, 6);
 }

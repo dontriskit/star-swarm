@@ -341,6 +341,20 @@ pub struct Config {
 
     pub respawn_ticks: u16,
     pub kill_score: u32,
+    /// What a destroyed ship loses of its points: this many, plus this share of what it had.
+    /// With `lives` at 0 that is all a death costs besides the cargo and the drones.
+    pub death_points: u32,
+    pub death_share: f32,
+    /// A ship on a run of kills without dying is paid this many points for the third kill of
+    /// the run and for every one after it.
+    pub streak_from: u32,
+    pub streak_bonus: u32,
+    /// Destroying a ship that is on such a run pays every ship of the killer's team this many
+    /// points for each kill of the run it ends.
+    pub bounty: u32,
+    /// Crystals a base sheds for every point of damage it takes, in packs of `base_pack`.
+    pub base_spill: f32,
+    pub base_pack: u32,
     /// How far a ship sees clearly: everything in this range is observed in detail, enough to aim.
     pub view_range: f32,
     /// How far a ship's long-range radar reaches: it shows where enemy ships are and in which
@@ -407,7 +421,7 @@ impl Default for Config {
             boost_drain: 0.5,
             boost_regen: 0.1,
             boost_cell_chance: 0.15,
-            lives: 3,
+            lives: 0,
             crystal_armor: 1.0,
             rock_radius: 18.0,
             rock_hp: 20.0,
@@ -437,6 +451,13 @@ impl Default for Config {
             upgrade_cost: 10,
             respawn_ticks: 90,
             kill_score: 20,
+            death_points: 20,
+            death_share: 0.2,
+            streak_from: 3,
+            streak_bonus: 30,
+            bounty: 10,
+            base_spill: 1.0,
+            base_pack: 10,
             view_range: 1040.0,
             radar_range: 1500.0,
         }
@@ -561,8 +582,10 @@ pub struct Ship {
     /// 1 or 2.
     pub tier: u8,
     pub class: Class,
-    /// Deaths left before the ship is demoted.
+    /// Deaths left before the ship is demoted; unused while [`Config::lives`] is 0.
     pub lives: u8,
+    /// Kills since it was last destroyed.
+    pub streak: u32,
     /// Shots on board.
     pub ammo: f32,
     /// Boost tank, 0 to 1.
@@ -655,6 +678,8 @@ pub struct Base {
     pub level: u8,
     /// Crystals the team has handed over in all; enough of them raise the level.
     pub deposited: u32,
+    /// Damage taken that has not yet shaken a whole pack of crystals loose.
+    pub spill: f32,
 }
 
 /// A mining helper. It follows its owner, breaks rocks near it and gathers crystals for it.
@@ -736,7 +761,7 @@ impl World {
         // Evenly spaced around the equator, so every team sees the same layout
         // from its own base and none starts closer to its enemies.
         let bases: Vec<Base> = (0..cfg.teams)
-            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0, level: 1, deposited: 0 })
+            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0, level: 1, deposited: 0, spill: 0.0 })
             .collect();
         let mut world = World {
             tick: 0,
@@ -769,6 +794,7 @@ impl World {
                     tier: 1,
                     class: Class::Basic,
                     lives: world.cfg.lives,
+                    streak: 0,
                     ammo: 0.0,
                     boost: 1.0,
                     spill: 0.0,
@@ -1270,6 +1296,7 @@ impl World {
 
         // Crystals knocked out of holds this tick: where, and how many.
         let mut spilled: Vec<(Vec3, u32)> = Vec::new();
+        let mut shed: Vec<Vec3> = Vec::new();
 
         // Nearly every shot touches no rock; a flat first pass says so without the exact search.
         self.rock_field.fill(radius, self.rocks.iter().map(|r| (r.pos, self.cfg.rock_radius * r.size as f32)));
@@ -1337,6 +1364,13 @@ impl World {
                 let dealt = damage.min(self.bases[team].hp);
                 self.bases[team].hp -= damage;
                 let damage = dealt;
+                // A base under fire sheds crystals around itself, for whoever gets to them.
+                let base = &mut self.bases[team];
+                base.spill += damage * self.cfg.base_spill;
+                while self.cfg.base_pack > 0 && base.spill >= self.cfg.base_pack as f32 {
+                    base.spill -= self.cfg.base_pack as f32;
+                    shed.push(base.pos);
+                }
                 self.events.push(Event::BaseHit { by: owner, team: team as u8, damage });
                 if !self.bases[team].alive() {
                     self.events.push(Event::BaseDestroyed { by: owner, team: team as u8 });
@@ -1444,6 +1478,9 @@ impl World {
         for (at, count) in spilled {
             self.drop_pack(at, count, 90.0, 140.0);
         }
+        for at in shed {
+            self.drop_pack(at, self.cfg.base_pack, self.cfg.base_radius + 20.0, self.cfg.base_radius + 120.0);
+        }
 
         // Broken rocks leave crystals and are replaced elsewhere.
         for r in 0..self.rocks.len() {
@@ -1536,8 +1573,12 @@ impl World {
             ship.respawn = self.cfg.respawn_ticks;
             ship.cargo = 0;
             ship.deaths += 1;
+            // Dying costs points: a fixed sum and a share of what the ship had.
+            let lost = self.cfg.death_points + (ship.points as f32 * self.cfg.death_share) as u32;
+            ship.points -= lost.min(ship.points);
+            let run = std::mem::take(&mut ship.streak);
             ship.lives = ship.lives.saturating_sub(1);
-            if ship.lives == 0 {
+            if self.cfg.lives > 0 && ship.lives == 0 {
                 ship.lives = self.cfg.lives;
                 if ship.tier > 1 {
                     ship.tier -= 1;
@@ -1552,8 +1593,19 @@ impl World {
                 self.events.push(Event::Demoted { ship: i as u16 });
             }
             if let Some(k) = by {
-                self.ships[k as usize].kills += 1;
-                self.ships[k as usize].score += self.cfg.kill_score;
+                let team = self.ships[k as usize].team;
+                let killer = &mut self.ships[k as usize];
+                killer.kills += 1;
+                killer.score += self.cfg.kill_score;
+                killer.streak += 1;
+                if killer.streak >= self.cfg.streak_from {
+                    killer.points += self.cfg.streak_bonus;
+                }
+                // Ending a run of kills pays the whole team.
+                if run >= self.cfg.streak_from {
+                    let pay = self.cfg.bounty * run;
+                    self.ships.iter_mut().filter(|s| s.team == team).for_each(|s| s.points += pay);
+                }
             }
             self.events.push(Event::Killed { by, victim: i as u16 });
             self.drop_pack(pos, dropped, 0.0, 30.0);
@@ -1583,6 +1635,7 @@ impl World {
             put(s.tier as u32);
             put(s.class as u32);
             put(s.lives as u32);
+            put(s.streak);
             put(s.ammo.to_bits());
             put(s.boost.to_bits());
             put(s.spill.to_bits());
@@ -1604,6 +1657,7 @@ impl World {
             put(b.hp.to_bits());
             put(b.level as u32);
             put(b.deposited);
+            put(b.spill.to_bits());
         }
         put(self.drones.len() as u32);
         for d in &self.drones {

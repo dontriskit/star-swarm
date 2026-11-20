@@ -661,7 +661,7 @@ impl Game {
             }
         });
 
-        // What every ship has become: class, tier, lives, and the level of each upgrade.
+        // What every ship has become: class, tier, its run of kills, and the level of each upgrade.
         let legend = div().flex().flex_wrap().gap_x_3().text_xs().text_color(muted).children(UPGRADES.iter().map(|u| {
             let (icon, name) = upgrade_look(*u);
             div().flex().items_center().gap_1().child(Icon::default().data(icon).xsmall()).child(name)
@@ -689,7 +689,7 @@ impl Game {
                 .child(div().size_2().mr_1().rounded_sm().bg(color))
                 .child(div().w(px(22.)).text_color(muted).child(format!("{}", i % cfg.ships_per_team + 1)))
                 .child(div().w(px(104.)).whitespace_nowrap().child(format!("{} T{}", class_name(ship.class), ship.tier)))
-                .child(div().w(px(40.)).text_color(muted).child(format!("♥{}", ship.lives)))
+                .child(div().w(px(40.)).text_color(muted).child(format!("⚔{}", ship.streak)))
                 .child(div().w(px(52.)).text_color(muted).child(plan_name(ship.vote)))
                 .child(div().w(px(58.)).text_color(muted).child({
                     // Drones by kind: eco, shield, combat.

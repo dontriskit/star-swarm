@@ -24,7 +24,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -48,6 +48,8 @@ pub struct Near {
     /// For an enemy ship: the damage one of its shots does at full power, as a share of a
     /// tier-1 hull, as far as this ship's team has felt it. Zero for a ship that has not hit them yet.
     pub threat: f32,
+    /// For a ship: its run of kills since it was last destroyed.
+    pub streak: f32,
 }
 
 /// A teammate on the team radar: teammates are known wherever they are.
@@ -94,6 +96,8 @@ pub struct Observation {
     pub class: Class,
     /// Deaths left before the ship is demoted.
     pub lives: u8,
+    /// The ship's own run of kills since it was last destroyed.
+    pub streak: u32,
     pub ammo: f32,
     pub ammo_max: f32,
     /// Boost tank, 0 to 1.
@@ -277,6 +281,7 @@ impl<'a> Scan<'a> {
                 shield: 0.0,
                 cargo: 0.0,
                 threat: 0.0,
+                streak: 0.0,
             })
         };
         // What the team last saw of each base, not necessarily how it is now.
@@ -372,6 +377,7 @@ impl<'a> Scan<'a> {
             if let Some(mut seen) = see(far, s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)) {
                 seen.shield = s.shield / cfg.shield_max(s);
                 seen.cargo = s.cargo as f32 / cfg.cargo_max(s) as f32;
+                seen.streak = s.streak as f32;
                 if s.team != me.team {
                     seen.threat = world.felt_damage[me.team as usize][i] / cfg.hull;
                 }
@@ -398,6 +404,7 @@ impl<'a> Scan<'a> {
             tier: me.tier,
             class: me.class,
             lives: me.lives,
+            streak: me.streak,
             ammo: me.ammo,
             ammo_max: cfg.ammo_max(me),
             boost: me.boost,
@@ -581,6 +588,12 @@ impl Observation {
         // a hull reads as 1.
         for slot in 0..NEAR {
             put(&[self.ships.get(slot).map_or(0.0, |s| s.threat * 10.0)]);
+        }
+        // Runs of kills, the ship's own and those of the ships in sight: three is where the
+        // bonus starts, and where a ship becomes worth hunting.
+        put(&[(self.streak as f32 / 3.0).min(3.0)]);
+        for slot in 0..NEAR {
+            put(&[self.ships.get(slot).map_or(0.0, |s| (s.streak / 3.0).min(3.0))]);
         }
         debug_assert_eq!(at, OBS_LEN);
     }
