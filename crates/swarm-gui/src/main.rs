@@ -1,5 +1,6 @@
 //! Commander GUI: the human leads team 0 by giving orders; every ship flies itself.
 
+mod live;
 mod map;
 
 use std::cell::Cell;
@@ -92,6 +93,13 @@ struct Watch {
     checked: Instant,
     /// When the current match ended, to pause briefly before the next one.
     ended: Option<Instant>,
+    /// The trainer's own match, read as it is played. When there is one, the window shows
+    /// it instead of playing matches of its own.
+    stream: Option<live::Stream>,
+    /// Set when the replayed match no longer matches the trainer's.
+    drifted: bool,
+    /// The latest lines of the run's metrics, newest last, for the progress table.
+    progress: Vec<[String; 5]>,
 }
 
 impl Watch {
@@ -105,6 +113,45 @@ impl Watch {
                 Some((path, written))
             })
             .max_by_key(|(_, written)| *written)
+    }
+
+    /// The most recently written `live.swl` one level under the directory.
+    fn newest_stream(dir: &Path) -> Option<PathBuf> {
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|run| {
+                let path = run.ok()?.path().join("live.swl");
+                let written = std::fs::metadata(&path).ok()?.modified().ok()?;
+                Some((path, written))
+            })
+            .max_by_key(|(_, written)| *written)
+            .map(|(path, _)| path)
+    }
+
+    /// The last few training lines of a run as table rows: update, matches won, crystals per
+    /// ship per minute, upgrade levels per ship, share of ships above tier 1.
+    fn progress(run_file: &Path) -> Vec<[String; 5]> {
+        let text = std::fs::read_to_string(run_file.with_file_name("metrics.jsonl")).unwrap_or_default();
+        let rows: Vec<[String; 5]> = text
+            .lines()
+            .filter(|l| l.contains("\"kind\": \"train\"") && l.contains("\"win_rate\""))
+            .map(|line| {
+                let number = |key: &str| -> f64 {
+                    let Some(start) = line.find(&format!("\"{key}\": ")) else { return 0.0 };
+                    let rest = &line[start + key.len() + 4..];
+                    rest[..rest.find([',', '}', ']']).unwrap_or(rest.len())].trim().trim_start_matches('[').parse().unwrap_or(0.0)
+                };
+                [
+                    format!("{:.0}", number("update")),
+                    format!("{:.0}%", number("win_rate") * 100.0),
+                    format!("{:.1}", number("crystals_per_min")),
+                    format!("{:.1}", number("levels")),
+                    // "tiers" is a list starting with the share still at tier 1.
+                    format!("{:.0}%", (1.0 - number("tiers")) * 100.0),
+                ]
+            })
+            .collect();
+        rows[rows.len().saturating_sub(8)..].to_vec()
     }
 
     /// The last training line of the run's metrics, boiled down to the numbers worth watching.
@@ -215,7 +262,7 @@ impl Game {
     /// Shows training live: every ship of every team flies on the newest policy under `dir`.
     fn watching(seed: u64, dir: PathBuf) -> Self {
         let mut game = Game::new(seed, None);
-        game.watch = Some(Watch { dir, loaded: None, checked: Instant::now(), ended: None });
+        game.watch = Some(Watch { dir, loaded: None, checked: Instant::now(), ended: None, stream: None, drifted: false, progress: Vec::new() });
         game.status = "Czekam na pierwszy zapisany model (uruchom train/live.sh obok treningu).".into();
         // Nobody is steering, so let the planet turn and show every side in time.
         game.spin = true;
@@ -236,8 +283,66 @@ impl Game {
         // Nobody commands here: every team follows its own ships' votes.
         fresh.world.commanded.iter_mut().for_each(|c| *c = false);
         fresh.status = Watch::report(&path);
-        fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None });
+        fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None, stream: None, drifted: false, progress: Vec::new() });
         *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, paused: self.paused, camera: self.camera, spin: self.spin, ..fresh };
+    }
+
+    /// Plays the trainer's own match from its stream, as far as the chosen speed allows, and
+    /// returns false when there is no stream to play.
+    fn play_stream(&mut self, elapsed: f32) -> bool {
+        let Some(watch) = &mut self.watch else { return false };
+        // Every couple of seconds: switch to a newer stream (the next training stage), refresh the table.
+        if watch.checked.elapsed() >= Duration::from_secs(2) {
+            watch.checked = Instant::now();
+            if let Some(path) = Watch::newest_stream(&watch.dir) {
+                if watch.stream.as_ref().is_none_or(|s| s.path != path) {
+                    watch.stream = live::Stream::open(&path).ok();
+                    watch.drifted = false;
+                }
+                watch.progress = Watch::progress(&path);
+            }
+        }
+        let Some(stream) = &mut watch.stream else { return false };
+        stream.poll();
+        // At a fixed speed the trainer may run ahead; past a minute's worth, skip forward to stay current.
+        let backlog = stream.backlog();
+        let budget = if self.paused {
+            0
+        } else if self.speed == 0 || backlog > 1800 {
+            usize::MAX
+        } else {
+            self.backlog += elapsed * self.speed as f32;
+            let whole = (self.backlog / self.world.cfg.dt) as usize;
+            self.backlog -= whole as f32 * self.world.cfg.dt;
+            whole
+        };
+        let started = Instant::now();
+        let mut played = 0;
+        while played < budget && started.elapsed() < FULL_SPEED_BUDGET {
+            match stream.queue.pop_front() {
+                Some(live::Item::Episode(cfg, seed)) => {
+                    self.world = World::new(*cfg, seed);
+                    self.seed = seed;
+                    self.selected.clear();
+                }
+                Some(live::Item::Tick(actions)) if actions.len() == self.world.ships.len() => {
+                    self.world.step(&actions);
+                    played += 1;
+                }
+                // Ticks from before the first match header cannot be placed; drop them.
+                Some(live::Item::Tick(_)) => {}
+                Some(live::Item::Hash(hash)) => watch.drifted |= hash != self.world.state_hash(),
+                None => break,
+            }
+        }
+        let run = stream.path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let behind = stream.backlog() as f32 * self.world.cfg.dt;
+        self.status = if watch.drifted {
+            format!("Przebieg {run}: podgląd rozjechał się z treningiem (inna wersja gry w oknie niż w trenerze).")
+        } else {
+            format!("Na żywo: mecz treningowy z przebiegu {run}, seed {}. Opóźnienie {behind:.0} s gry.", self.seed)
+        };
+        true
     }
 
     /// While watching training: move on to a newer policy once the match in progress has had its time.
@@ -275,6 +380,10 @@ impl Game {
         self.last_frame = now;
         if self.spin {
             self.camera.turn(elapsed * SPIN, 0.0);
+        }
+        // With a live stream the trainer's match is the show; nothing is simulated here on its own.
+        if self.play_stream(elapsed) {
+            return;
         }
         self.follow_training();
         if !self.running() {
@@ -412,7 +521,10 @@ impl Game {
             let base_text = if base.alive() { format!("{:.0}", base.hp) } else { "zniszczona".to_string() };
             let name = TEAM_NAMES[t % TEAM_NAMES.len()];
             let crystals: u32 = self.world.ships.iter().filter(|s| s.team == t as u8).map(|s| s.collected).sum();
+            let live = self.watch.as_ref().is_some_and(|w| w.stream.is_some());
             let who = match (self.watch.is_some(), t as u8 == MY_TEAM, self.model.is_some()) {
+                (true, true, _) if live => format!("{name} (uczy się)"),
+                (true, false, _) if live => format!("{name} (starsza kopia)"),
                 (true, _, _) => format!("{name} (model)"),
                 (_, true, true) => format!("{name} (Ty, model)"),
                 (_, true, false) => format!("{name} (Ty)"),
@@ -602,7 +714,7 @@ impl Game {
                     .child(div().text_xs().text_color(muted).child("albo przeciągnij prawym przyciskiem myszy")),
             )
             .child(div().text_color(muted).child(if self.watch.is_some() {
-                "Podgląd treningu: wszystkie drużyny lecą na najnowszym modelu (rozkazy wyłączone)"
+                "Podgląd treningu (rozkazy wyłączone)"
             } else if self.playback.is_some() {
                 "Powtórka (rozkazy wyłączone)"
             } else if self.model.is_some() {
@@ -627,6 +739,19 @@ impl Game {
                 "Bez zaznaczenia rozkaz dostaje cała flota. Kliknij statek na mapie albo na liście, żeby dowodzić wybranymi.",
             ))
             .child(div().child(self.status.clone()))
+            .children(self.watch.as_ref().filter(|w| !w.progress.is_empty()).map(|watch| {
+                // How training is going: the latest measurements of the run being watched.
+                let cell = |text: String, width: f32| div().w(px(width)).flex().justify_end().child(text);
+                let head = ["Aktualizacja", "Wygrane", "Kryształy/min", "Ulepszenia", "Powyżej T1"];
+                let widths = [96., 72., 104., 88., 88.];
+                div()
+                    .flex()
+                    .flex_col()
+                    .text_xs()
+                    .child(div().text_sm().text_color(muted).child("Postęp treningu (niebiescy, ostatnie pomiary)"))
+                    .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
+                    .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
+            }))
             .child(div().text_color(muted).child("Drzewko: typ, tier, życia i poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
@@ -834,6 +959,59 @@ mod tests {
         }
         assert!(!watch.paused, "{}", watch.status);
         assert_eq!(watch.world.state_hash(), game.world.state_hash());
+    }
+}
+
+/// The live view against a real batched environment, as the trainer drives it.
+#[cfg(test)]
+mod live_tests {
+    use crate::live::{Item, Stream};
+    use swarm_env::{Rewards, VecEnv};
+    use swarm_sim::{Config, World};
+
+    #[core::prelude::v1::test]
+    fn replaying_the_stream_reproduces_the_trainers_match() {
+        // Short matches against scripted teams, so several begin and end while streaming.
+        let cfg = Config { rock_count: 60, radius: 500.0, max_ticks: 300, base_hp: 100.0, turret_damage: 0.0, ..Config::default() };
+        let mut env = VecEnv::with_learners(cfg, 4, 7, 3, Rewards::default(), 1);
+        let path = std::env::temp_dir().join(format!("star-swarm-live-{}.swl", std::process::id()));
+        env.stream_to(&path).unwrap();
+        let mut stream = Stream::open(&path).unwrap();
+
+        let agents = env.agents();
+        let (mut actions, mut rewards, mut dones) = (vec![0u16; agents], vec![0f32; agents], vec![0u8; agents]);
+        let mut world: Option<World> = None;
+        let (mut matches, mut ticks, mut hashes) = (0, 0, 0);
+        for step in 0..260 {
+            env.scripted(&mut actions);
+            env.step(&actions, &mut rewards, &mut dones);
+            // Read in small pieces, as a window polling a file that is still being written does.
+            if step % 7 == 0 || step == 259 {
+                stream.poll();
+            }
+            while let Some(item) = stream.queue.pop_front() {
+                match item {
+                    Item::Episode(cfg, seed) => {
+                        world = Some(World::new(*cfg, seed));
+                        matches += 1;
+                    }
+                    Item::Tick(actions) => {
+                        world.as_mut().expect("ticks come after a match header").step(&actions);
+                        ticks += 1;
+                    }
+                    Item::Hash(hash) => {
+                        assert_eq!(world.as_ref().unwrap().state_hash(), hash, "drifted from the trainer at tick {ticks}");
+                        hashes += 1;
+                    }
+                }
+            }
+        }
+        std::fs::remove_file(&path).unwrap();
+        // 780 ticks: the match in progress when streaming began is skipped, then two whole matches of 300 and the start of another.
+        assert_eq!(matches, 2, "matches seen from their first tick");
+        assert!(hashes >= 1 && ticks == 480, "{ticks} ticks, {hashes} hashes");
+        // The window's world is the trainer's world, tick for tick.
+        assert_eq!(world.unwrap().state_hash(), env.world(0).state_hash());
     }
 }
 

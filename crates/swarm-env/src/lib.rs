@@ -92,7 +92,29 @@ impl EpisodeStats {
     }
 }
 
+/// Magic at the start of a live stream file.
+pub const LIVE_MAGIC: &[u8; 8] = b"SWLIVE01";
+
+/// One thing that happened in the watched match, in the order it happened.
+enum Tape {
+    /// A new match began with this seed.
+    Episode(u64),
+    /// The action of every ship for one tick.
+    Tick(Vec<u16>),
+    /// The state hash after the tick just taken, to catch a viewer that has drifted.
+    Hash(u64),
+}
+
+/// Ticks between state hashes in a live stream.
+const LIVE_HASH_EVERY: u32 = 300;
+
 struct Slot {
+    /// The seed of the match in progress.
+    seed: u64,
+    /// Set for the one slot that is streamed to a viewer.
+    tape: Option<Vec<Tape>>,
+    /// Whether the match in progress has been on the tape from its first tick.
+    on_tape: bool,
     /// Ticks team 0 has spent under each plan in the match in progress.
     planned: [u32; 4],
     world: World,
@@ -110,6 +132,7 @@ pub struct VecEnv {
     seed: u64,
     slots: Vec<Slot>,
     finished: Vec<EpisodeStats>,
+    live: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 impl VecEnv {
@@ -126,10 +149,54 @@ impl VecEnv {
         let slots = (0..envs as u64)
             .map(|index| {
                 let seed = Self::seed_of(seed, index, 0, envs as u64);
-                Slot { planned: [0; 4], world: World::new(cfg.clone(), seed), commander: ScriptedCommander::new(seed), index, episode: 0 }
+                Slot { seed, tape: None, on_tape: false, planned: [0; 4], world: World::new(cfg.clone(), seed), commander: ScriptedCommander::new(seed), index, episode: 0 }
             })
             .collect();
-        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new() }
+        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new(), live: None }
+    }
+
+    /// Streams the first slot's matches to a file as they are played: each match's seed and
+    /// setup, then every ship's action on every tick. A viewer that replays them sees exactly
+    /// what happens in training, because the simulation is deterministic.
+    pub fn stream_to(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        file.write_all(LIVE_MAGIC)?;
+        self.live = Some(file);
+        // The match in progress cannot be joined half-way; the viewer starts with the next one.
+        self.slots[0].tape = Some(Vec::new());
+        self.flush_tape()
+    }
+
+    fn flush_tape(&mut self) -> std::io::Result<()> {
+        use std::io::Write;
+        let (Some(file), Some(tape)) = (&mut self.live, &mut self.slots[0].tape) else { return Ok(()) };
+        for item in tape.drain(..) {
+            match item {
+                Tape::Episode(seed) => {
+                    file.write_all(b"E")?;
+                    file.write_all(&seed.to_le_bytes())?;
+                    file.write_all(&self.cfg.radius.to_le_bytes())?;
+                    file.write_all(&(self.cfg.teams as u16).to_le_bytes())?;
+                    file.write_all(&(self.cfg.ships_per_team as u16).to_le_bytes())?;
+                    file.write_all(&(self.cfg.rock_count as u32).to_le_bytes())?;
+                    file.write_all(&self.cfg.max_ticks.to_le_bytes())?;
+                    file.write_all(&self.cfg.base_hp.to_le_bytes())?;
+                    file.write_all(&self.cfg.turret_damage.to_le_bytes())?;
+                }
+                Tape::Tick(actions) => {
+                    file.write_all(b"T")?;
+                    for a in actions {
+                        file.write_all(&a.to_le_bytes())?;
+                    }
+                }
+                Tape::Hash(hash) => {
+                    file.write_all(b"H")?;
+                    file.write_all(&hash.to_le_bytes())?;
+                }
+            }
+        }
+        file.flush()
     }
 
     /// One byte per agent: 1 where `step` uses the action passed in, 0 where the ship is scripted.
@@ -222,6 +289,11 @@ impl VecEnv {
                             held[ship] = ScriptedBot::for_ship(ship).act(&observe(&slot.world, ship), &slot.world.cfg);
                         }
                     }
+                    // Only a match seen from its first tick is on the tape.
+                    let taped = slot.on_tape;
+                    if taped {
+                        slot.tape.as_mut().unwrap().push(Tape::Tick(held.iter().map(replay::encode).collect()));
+                    }
                     for event in slot.world.step(&held) {
                         match *event {
                             Event::BaseHit { by, team, damage } => {
@@ -256,6 +328,9 @@ impl VecEnv {
                     if let Some(plan) = slot.world.plans[0] {
                         slot.planned[plan as usize] += 1;
                     }
+                    if taped && slot.world.tick % LIVE_HASH_EVERY == 0 {
+                        slot.tape.as_mut().unwrap().push(Tape::Hash(slot.world.state_hash()));
+                    }
                     if slot.world.done() {
                         if let Some(winner) = slot.world.winner() {
                             (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win);
@@ -267,6 +342,11 @@ impl VecEnv {
                         let next = Self::seed_of(seed, slot.index, slot.episode, envs);
                         slot.world = World::new(cfg.clone(), next);
                         slot.commander = ScriptedCommander::new(next);
+                        slot.seed = next;
+                        if let Some(tape) = &mut slot.tape {
+                            tape.push(Tape::Episode(next));
+                            slot.on_tape = true;
+                        }
                         dones.fill(1);
                         return Some(stats);
                     }
@@ -275,6 +355,8 @@ impl VecEnv {
             })
             .collect();
         self.finished.extend(finished);
+        // A viewer missing a few ticks is no reason to stop training.
+        let _ = self.flush_tape();
     }
 
     /// Stats of the matches that ended since the last call.

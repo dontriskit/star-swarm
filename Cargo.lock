@@ -6817,6 +6817,7 @@ name = "swarm-gui"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "swarm-env",
  "swarm-sim",
 ]
 

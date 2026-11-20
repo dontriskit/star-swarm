@@ -166,6 +166,8 @@ def train(args):
     # the others from a frozen earlier copy of it. Against "scripted" only team 0 is ours.
     self_play = args.opponent == "self"
     env = make_env(args, args.envs, args.seed, learners=args.teams if self_play else 1)
+    # One of the training matches is streamed for `swarm-gui --watch` to show live.
+    env.stream(str(out / "live.swl"))
     team = torch.arange(env.agents, device=device) % env.ships // args.ships_per_team
     ours = (team == 0).nonzero().squeeze(-1)
     theirs = (team != 0).nonzero().squeeze(-1)
