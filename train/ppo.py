@@ -2,7 +2,8 @@
 
 Usage (from the repo root, after `maturin develop --release` in crates/swarm-py):
 
-    .venv/bin/python train/ppo.py --name mine --updates 300
+    .venv/bin/python train/ppo.py --name win --updates 300 \\
+        --reward win=20 --reward lose=20 --reward base_hit=0.2 --reward base_lost=0.05 --reward kill=3 --reward hit=0.02
 
 Writes runs/<name>/metrics.jsonl and runs/<name>/policy.pt.
 """
@@ -19,7 +20,7 @@ from torch import nn
 from swarm_py import OBS_LEN, Env
 
 # Sizes of the four action heads: thrust, turn, fire, buy.
-HEADS = (2, 3, 2, 9)
+HEADS = (2, 3, 2, 8)
 
 
 class Policy(nn.Module):
@@ -59,7 +60,7 @@ def observe(env: Env, device) -> torch.Tensor:
     return torch.tensor(np.frombuffer(env.observe(), dtype=np.float32), device=device).view(env.agents, OBS_LEN)
 
 
-def make_env(args, envs: int, seed: int) -> Env:
+def make_env(args, envs: int, seed: int, learners: int | None = None) -> Env:
     return Env(
         envs,
         seed=seed,
@@ -70,15 +71,25 @@ def make_env(args, envs: int, seed: int) -> Env:
         world_size=args.world_size,
         max_ticks=args.max_ticks,
         rewards={name: float(weight) for name, weight in (pair.split("=") for pair in args.reward)},
+        learners=args.learners if learners is None else learners,
+        base_hp=args.base_hp,
     )
 
 
+def controlled(env: Env, device) -> torch.Tensor:
+    """True for the agents whose actions the environment takes from us."""
+    return torch.tensor(np.frombuffer(env.controlled(), dtype=np.uint8), device=device).bool()
+
+
 def summarize(stats) -> dict:
-    """Per-ship averages over finished matches."""
+    """Team 0 over finished matches: how often it won or lost its base, and per-ship averages."""
     s = np.array(stats, dtype=np.float64)
     minutes = s[:, 0].mean()
     return {
         "matches": len(stats),
+        "win_rate": float(s[:, 5].mean()),
+        "loss_rate": float(s[:, 6].mean()),
+        "minutes": float(minutes),
         "crystals_per_min": float(s[:, 1].mean() / minutes),
         "levels": float(s[:, 2].mean()),
         "kills": float(s[:, 3].mean()),
@@ -88,14 +99,19 @@ def summarize(stats) -> dict:
 
 @torch.no_grad()
 def play(args, choose, envs: int, seed: int, device) -> dict:
-    """Plays one round of matches in fresh environments; `choose(env, obs)` returns action bytes."""
-    env = make_env(args, envs, seed)
+    """Plays one round of matches in fresh environments; `choose(env, obs)` returns action bytes.
+
+    Team 0 is flown by `choose`, every other team by the scripted bot.
+    """
+    env = make_env(args, envs, seed, learners=0 if choose is scripted else 1)
     stats = []
     while len(stats) < envs:
         actions = choose(env, None if choose is scripted else observe(env, device))
         env.step(actions)
-        stats.extend(env.take_stats())
-    return summarize(stats[:envs])
+        # Only the first match of every slot counts; taking whichever matches end
+        # first would favour short ones.
+        stats.extend(s for s in env.take_stats() if s[8] == 0)
+    return summarize(stats)
 
 
 def scripted(env: Env, _obs) -> bytes:
@@ -118,7 +134,10 @@ def train(args):
     record({"kind": "scripted", **baseline})
 
     env = make_env(args, args.envs, args.seed)
-    n, steps = env.agents, args.steps
+    # Only the ships we fly are kept on the GPU; scripted ships get a dummy action.
+    ours = controlled(env, device).nonzero().squeeze(-1)
+    n, steps = len(ours), args.steps
+    everyone = torch.zeros(env.agents, len(HEADS), dtype=torch.long, device=device)
     policy = Policy(args.hidden).to(device)
     if args.init:
         policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
@@ -131,7 +150,7 @@ def train(args):
     rew_buf = torch.zeros(steps, n, device=device)
     done_buf = torch.zeros(steps, n, device=device)
 
-    obs = observe(env, device)
+    obs = observe(env, device)[ours]
     stats, started, samples = [], time.time(), 0
     for update in range(1, args.updates + 1):
         # Exploration bonus fades linearly, so the policy ends up decisive.
@@ -139,11 +158,12 @@ def train(args):
         with torch.no_grad():
             for t in range(steps):
                 actions, logp, value = policy.act(obs)
-                rewards, dones = env.step(pack(actions))
+                everyone[ours] = actions
+                rewards, dones = env.step(pack(everyone))
                 obs_buf[t], act_buf[t], logp_buf[t], val_buf[t] = obs, actions, logp, value
-                rew_buf[t] = torch.tensor(np.frombuffer(rewards, dtype=np.float32), device=device)
-                done_buf[t] = torch.tensor(np.frombuffer(dones, dtype=np.uint8), device=device).float()
-                obs = observe(env, device)
+                rew_buf[t] = torch.tensor(np.frombuffer(rewards, dtype=np.float32), device=device)[ours]
+                done_buf[t] = torch.tensor(np.frombuffer(dones, dtype=np.uint8), device=device)[ours].float()
+                obs = observe(env, device)[ours]
             stats.extend(env.take_stats())
 
             # Generalised advantage estimation; a finished match cuts the return.
@@ -202,7 +222,7 @@ def train(args):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--name", default="mine")
+    p.add_argument("--name", default="win")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--updates", type=int, default=300)
@@ -213,7 +233,7 @@ if __name__ == "__main__":
     p.add_argument("--minibatch", type=int, default=8192)
     p.add_argument("--hidden", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--gamma", type=float, default=0.995)
     p.add_argument("--lam", type=float, default=0.95)
     p.add_argument("--clip", type=float, default=0.2)
     p.add_argument("--value-coef", type=float, default=0.5)
@@ -221,13 +241,15 @@ if __name__ == "__main__":
     p.add_argument("--entropy-end", type=float, default=None, help="entropy coefficient at the last update (default: no fading)")
     p.add_argument("--init", default=None, metavar="POLICY.PT", help="start from a saved policy")
     p.add_argument("--log-every", type=int, default=10)
-    # The match: one team mining, three minutes long, a decision every 0.1 s.
+    # The match: the full game, three teams of five, up to five minutes, a decision every 0.1 s.
     p.add_argument("--frame-skip", type=int, default=3)
-    p.add_argument("--teams", type=int, default=1)
-    p.add_argument("--ships-per-team", type=int, default=4)
-    p.add_argument("--rocks", type=int, default=40)
-    p.add_argument("--world-size", type=float, default=1400.0)
-    p.add_argument("--max-ticks", type=int, default=5400)
+    p.add_argument("--teams", type=int, default=3)
+    p.add_argument("--ships-per-team", type=int, default=5)
+    p.add_argument("--rocks", type=int, default=90)
+    p.add_argument("--world-size", type=float, default=2400.0)
+    p.add_argument("--max-ticks", type=int, default=9000)
+    p.add_argument("--base-hp", type=float, default=100.0)
+    p.add_argument("--learners", type=int, default=1, help="teams flown by the policy in training; the rest are scripted")
     p.add_argument("--reward", action="append", default=[], metavar="NAME=WEIGHT", help="override a reward weight, e.g. --reward buy=4")
     args = p.parse_args()
     if args.entropy_end is None:

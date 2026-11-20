@@ -79,9 +79,22 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, area: Bounds<Pixels>, wi
     window.paint_quad(fill(Bounds::new(point(px(view.left), px(view.top)), size(px(side), px(side))), rgb(0x0d111a)));
 
     for (team, base) in world.bases.iter().enumerate() {
+        let center = view.at(base.pos);
+        let radius = world.cfg.base_radius * view.scale;
+        if !base.alive() {
+            stroke_shape(window, &polygon(center, radius, 6, 0.0), 1.0, rgb(0x3a4050));
+            continue;
+        }
         let mut color = team_color(team as u8);
-        color.a = 0.45;
-        stroke_shape(window, &polygon(view.at(*base), 120.0 * view.scale, 40, 0.0), 1.5, color);
+        color.a = 0.3;
+        // The repair zone, then the base itself with its health bar underneath.
+        stroke_shape(window, &polygon(center, world.cfg.base_heal_radius * view.scale, 40, 0.0), 1.0, color);
+        color.a = 0.55;
+        fill_shape(window, &polygon(center, radius, 6, 0.0), color);
+        let (width, health) = (radius * 2.4, (base.hp / world.cfg.base_hp).clamp(0.0, 1.0));
+        let bar = point(center.x - px(width / 2.0), center.y + px(radius + 5.0));
+        window.paint_quad(fill(Bounds::new(bar, size(px(width), px(4.0))), rgb(0x2a3040)));
+        window.paint_quad(fill(Bounds::new(bar, size(px(width * health), px(4.0))), team_color(team as u8)));
     }
 
     for (i, rock) in world.rocks.iter().enumerate() {
@@ -106,7 +119,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, area: Bounds<Pixels>, wi
 
     for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive) {
         let center = view.at(ship.pos);
-        let radius = (world.cfg.ship_radius * view.scale * 1.8).max(9.0);
+        // Tier 2 ships are drawn larger.
+        let radius = (world.cfg.ship_radius * view.scale * 1.8).max(9.0) * if ship.tier > 1 { 1.4 } else { 1.0 };
         let nose = Vec2::from_angle(ship.heading);
         let corner = |turn: f32, reach: f32| {
             let dir = Vec2::from_angle(ship.heading + turn);

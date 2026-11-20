@@ -1,16 +1,35 @@
 //! Recorded matches: the seed plus every ship's action on every tick, with a
 //! state hash every [`HASH_EVERY`] ticks so a diverging playback is detected.
 
-use crate::sim::{Action, Config, UPGRADES, World};
+use crate::sim::{Action, Buy, Config, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0002";
+const MAGIC: &[u8; 8] = b"SWRP0003";
 pub const HASH_EVERY: u32 = 300;
 
-/// Packs an action into one byte: thrust, turn, fire, upgrade to buy.
+/// What to buy as a small number: 0 nothing, 1 to 6 an upgrade, 7 the next tier.
+pub fn buy_code(buy: Option<Buy>) -> u8 {
+    match buy {
+        None => 0,
+        Some(Buy::Upgrade(u)) => u as u8 + 1,
+        Some(Buy::Tier) => UPGRADES.len() as u8 + 1,
+    }
+}
+
+/// The inverse of [`buy_code`]; unknown codes buy nothing.
+pub fn buy_of(code: u8) -> Option<Buy> {
+    match code as usize {
+        0 => None,
+        n if n <= UPGRADES.len() => Some(Buy::Upgrade(UPGRADES[n - 1])),
+        n if n == UPGRADES.len() + 1 => Some(Buy::Tier),
+        _ => None,
+    }
+}
+
+/// Packs an action into one byte: thrust, turn, fire, what to buy.
 pub fn encode(a: &Action) -> u8 {
-    let buy = a.buy.map_or(0, |u| u as u8 + 1);
+    let buy = buy_code(a.buy);
     a.thrust as u8 | ((a.turn.clamp(-1, 1) + 1) as u8) << 1 | (a.fire as u8) << 3 | buy << 4
 }
 
@@ -19,7 +38,7 @@ pub fn decode(b: u8) -> Action {
         thrust: b & 1 != 0,
         turn: ((b >> 1) & 3) as i8 - 1,
         fire: b & 8 != 0,
-        buy: (b >> 4).checked_sub(1).and_then(|i| UPGRADES.get(i as usize).copied()),
+        buy: buy_of(b >> 4),
     }
 }
 

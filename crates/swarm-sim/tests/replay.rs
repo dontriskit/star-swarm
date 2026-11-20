@@ -6,7 +6,8 @@ fn every_action_survives_encoding() {
     for thrust in [false, true] {
         for turn in [-1, 0, 1] {
             for fire in [false, true] {
-                for buy in std::iter::once(None).chain(UPGRADES.iter().copied().map(Some)) {
+                let buys = UPGRADES.iter().copied().map(Buy::Upgrade).chain([Buy::Tier]).map(Some);
+                for buy in std::iter::once(None).chain(buys) {
                     let a = Action { thrust, turn, fire, buy };
                     assert_eq!(decode(encode(&a)), a);
                 }

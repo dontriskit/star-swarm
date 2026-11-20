@@ -5,7 +5,10 @@
 
 use rayon::prelude::*;
 use swarm_sim::replay::decode;
-use swarm_sim::{Action, Config, Controller, Event, OBS_LEN, ScriptedBot, World, observe, replay};
+use swarm_sim::{Action, Config, Controller, Event, OBS_LEN, ScriptedBot, ScriptedCommander, World, observe, replay};
+
+/// Scripted teams get fresh orders from their scripted commander this often.
+const COMMAND_EVERY: u32 = 450;
 
 /// What an agent is paid for. Training stages differ only in these weights.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,40 +27,60 @@ pub struct Rewards {
     pub crash: f32,
     /// Per death (subtracted).
     pub death: f32,
+    /// Per point of damage dealt to an enemy base.
+    pub base_hit: f32,
+    /// Per point of damage the ship's own base takes, charged to every ship of the team (subtracted).
+    pub base_lost: f32,
+    /// To every ship of the team whose base is the last one standing.
+    pub win: f32,
+    /// To every ship of a team when its base is destroyed (subtracted).
+    pub lose: f32,
 }
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0 }
     }
 }
 
-/// Per-ship averages over one finished match.
+/// One finished match, seen from team 0: per-ship averages and how it ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EpisodeStats {
+    /// Which slot the match ran in, and how many matches that slot had finished before it.
+    pub env: u32,
+    pub episode: u32,
     pub minutes: f32,
     pub collected: f32,
     pub levels: f32,
     pub kills: f32,
     pub deaths: f32,
+    /// Team 0's base was the last one standing.
+    pub won: bool,
+    /// Team 0's base was destroyed.
+    pub lost: bool,
 }
 
 impl EpisodeStats {
-    fn of(world: &World) -> Self {
-        let n = world.ships.len() as f32;
-        let mean = |f: fn(&swarm_sim::Ship) -> u32| world.ships.iter().map(f).sum::<u32>() as f32 / n;
+    fn of(world: &World, env: u64, episode: u64) -> Self {
+        let team: Vec<&swarm_sim::Ship> = world.ships.iter().filter(|s| s.team == 0).collect();
+        let mean = |f: fn(&swarm_sim::Ship) -> u32| team.iter().map(|s| f(s)).sum::<u32>() as f32 / team.len() as f32;
         EpisodeStats {
+            env: env as u32,
+            episode: episode as u32,
             minutes: world.tick as f32 * world.cfg.dt / 60.0,
             collected: mean(|s| s.collected),
             levels: mean(|s| s.levels.iter().map(|l| *l as u32).sum()),
             kills: mean(|s| s.kills),
             deaths: mean(|s| s.deaths),
+            won: world.winner() == Some(0),
+            lost: !world.bases[0].alive(),
         }
     }
 }
 
 struct Slot {
     world: World,
+    commander: ScriptedCommander,
     index: u64,
     episode: u64,
 }
@@ -66,19 +89,39 @@ pub struct VecEnv {
     cfg: Config,
     rewards: Rewards,
     frame_skip: u32,
+    /// Teams 0..learners take the actions passed to `step`; the rest are scripted.
+    learners: usize,
     seed: u64,
     slots: Vec<Slot>,
     finished: Vec<EpisodeStats>,
 }
 
 impl VecEnv {
-    /// `frame_skip` is how many ticks each chosen action is held for.
+    /// `frame_skip` is how many ticks each chosen action is held for. Every team is a learner.
     pub fn new(cfg: Config, envs: usize, seed: u64, frame_skip: u32, rewards: Rewards) -> Self {
-        assert!(envs > 0 && frame_skip > 0 && cfg.teams * cfg.ships_per_team > 0);
+        let learners = cfg.teams;
+        Self::with_learners(cfg, envs, seed, frame_skip, rewards, learners)
+    }
+
+    /// Teams `0..learners` are driven through `step`; the others fly on the scripted bot
+    /// under a scripted commander. Scripted ships still have agent slots; see [`VecEnv::controlled`].
+    pub fn with_learners(cfg: Config, envs: usize, seed: u64, frame_skip: u32, rewards: Rewards, learners: usize) -> Self {
+        assert!(envs > 0 && frame_skip > 0 && cfg.teams * cfg.ships_per_team > 0 && learners <= cfg.teams);
         let slots = (0..envs as u64)
-            .map(|index| Slot { world: World::new(cfg.clone(), Self::seed_of(seed, index, 0, envs as u64)), index, episode: 0 })
+            .map(|index| {
+                let seed = Self::seed_of(seed, index, 0, envs as u64);
+                Slot { world: World::new(cfg.clone(), seed), commander: ScriptedCommander::new(seed), index, episode: 0 }
+            })
             .collect();
-        VecEnv { cfg, rewards, frame_skip, seed, slots, finished: Vec::new() }
+        VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new() }
+    }
+
+    /// One byte per agent: 1 where `step` uses the action passed in, 0 where the ship is scripted.
+    pub fn controlled(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), self.agents());
+        for (agent, flag) in out.iter_mut().enumerate() {
+            *flag = ((agent % self.ships()) / self.cfg.ships_per_team < self.learners) as u8;
+        }
     }
 
     /// Every match of every slot gets its own seed, so runs are reproducible and maps never repeat.
@@ -139,6 +182,7 @@ impl VecEnv {
         let agents = self.agents();
         assert!(actions.len() == agents && rewards.len() == agents && dones.len() == agents);
         let (pay, frame_skip, seed, envs, cfg) = (self.rewards, self.frame_skip, self.seed, self.envs() as u64, &self.cfg);
+        let (learners, per_team) = (self.learners, self.cfg.ships_per_team);
         let finished: Vec<EpisodeStats> = self
             .slots
             .par_iter_mut()
@@ -149,9 +193,29 @@ impl VecEnv {
                 rewards.fill(0.0);
                 dones.fill(0);
                 let mut held: Vec<Action> = actions.iter().map(|b| decode(*b)).collect();
+                let team_of = |ship: usize| ship / per_team;
                 for _ in 0..frame_skip {
+                    if learners < cfg.teams {
+                        // Scripted teams decide every tick, as they do in the game.
+                        if slot.world.tick % COMMAND_EVERY == 0 {
+                            for team in learners..cfg.teams {
+                                slot.commander.command(&mut slot.world, team as u8);
+                            }
+                        }
+                        let mut bot = ScriptedBot;
+                        for ship in learners * per_team..held.len() {
+                            held[ship] = bot.act(&observe(&slot.world, ship), &slot.world.cfg);
+                        }
+                    }
                     for event in slot.world.step(&held) {
                         match *event {
+                            Event::BaseHit { by, team, damage } => {
+                                rewards[by as usize] += pay.base_hit * damage;
+                                (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] -= pay.base_lost * damage);
+                            }
+                            Event::BaseDestroyed { team, .. } => {
+                                (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] -= pay.lose);
+                            }
                             Event::Collected { ship } => rewards[ship as usize] += pay.collect,
                             Event::RockDestroyed { by: Some(ship), size } => rewards[ship as usize] += pay.rock * size as f32,
                             Event::RockDestroyed { by: None, .. } => {}
@@ -169,9 +233,14 @@ impl VecEnv {
                     // An upgrade is bought once, not once per held tick.
                     held.iter_mut().for_each(|a| a.buy = None);
                     if slot.world.done() {
-                        let stats = EpisodeStats::of(&slot.world);
+                        if let Some(winner) = slot.world.winner() {
+                            (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win);
+                        }
+                        let stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
                         slot.episode += 1;
-                        slot.world = World::new(cfg.clone(), Self::seed_of(seed, slot.index, slot.episode, envs));
+                        let next = Self::seed_of(seed, slot.index, slot.episode, envs);
+                        slot.world = World::new(cfg.clone(), next);
+                        slot.commander = ScriptedCommander::new(next);
                         dones.fill(1);
                         return Some(stats);
                     }
@@ -237,10 +306,36 @@ mod tests {
         let cfg = Config { rock_count: 0, ..mining() };
         let mut env = VecEnv::new(cfg, 1, 1, 3, Rewards::default());
         env.slots[0].world.ships[0].cargo = 100;
-        let buy = replay::encode(&Action { buy: Some(swarm_sim::Upgrade::Damage), ..Action::default() });
+        let buy = replay::encode(&Action { buy: Some(swarm_sim::Buy::Upgrade(swarm_sim::Upgrade::Attack)), ..Action::default() });
         let (mut rewards, mut dones) = (vec![0f32; 4], vec![0u8; 4]);
         env.step(&[buy, 0, 0, 0], &mut rewards, &mut dones);
-        assert_eq!(env.world(0).ships[0].levels[swarm_sim::Upgrade::Damage as usize], 1);
+        assert_eq!(env.world(0).ships[0].levels[swarm_sim::Upgrade::Attack as usize], 1);
         assert_eq!(rewards[0], Rewards::default().buy);
+    }
+
+    #[test]
+    fn scripted_teams_ignore_passed_actions_and_matches_end_with_a_winner() {
+        let pay = Rewards { win: 10.0, lose: 10.0, base_hit: 0.1, ..Rewards::default() };
+        let mut env = VecEnv::with_learners(Config::default(), 8, 3, 3, pay, 1);
+        let agents = env.agents();
+        let mut mask = vec![0u8; agents];
+        env.controlled(&mut mask);
+        // 3 teams of 5: the first 5 ships of each match are the learner's.
+        assert_eq!(&mask[..15], &[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        // The learner team does nothing at all; the scripted teams must still play and finish matches.
+        let (actions, mut rewards, mut dones) = (vec![0u8; agents], vec![0f32; agents], vec![0u8; agents]);
+        let mut stats = Vec::new();
+        for _ in 0..3000 {
+            env.step(&actions, &mut rewards, &mut dones);
+            stats.extend(env.take_stats());
+            if stats.len() >= 8 {
+                break;
+            }
+        }
+        assert!(stats.len() >= 8, "only {} matches ended", stats.len());
+        // An idle team can still win when the other two destroy each other's bases, but it mostly loses.
+        assert!(stats.iter().all(|s| !(s.won && s.lost)));
+        assert!(stats.iter().filter(|s| s.lost).count() * 2 >= stats.len(), "an idle team should usually lose its base");
     }
 }

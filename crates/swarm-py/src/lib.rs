@@ -24,13 +24,16 @@ struct Env {
     rewards: Vec<f32>,
     dones: Vec<u8>,
     scripted: Vec<u8>,
+    controlled: Vec<u8>,
 }
 
 #[pymethods]
 impl Env {
-    /// `rewards` overrides reward weights by name: collect, rock, buy, hit, kill, crash, death.
+    /// `rewards` overrides reward weights by name: collect, rock, buy, hit, kill, crash, death,
+    /// base_hit, base_lost, win, lose. Teams `0..learners` take the actions passed to `step`;
+    /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
-    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=1, ships_per_team=4, rock_count=40, world_size=1400.0, max_ticks=1800, rewards=None))]
+    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=1, ships_per_team=4, rock_count=40, world_size=1400.0, max_ticks=1800, rewards=None, learners=None, base_hp=100.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         envs: usize,
@@ -42,7 +45,13 @@ impl Env {
         world_size: f32,
         max_ticks: u32,
         rewards: Option<HashMap<String, f32>>,
+        learners: Option<usize>,
+        base_hp: f32,
     ) -> PyResult<Self> {
+        let learners = learners.unwrap_or(teams);
+        if learners > teams || !(base_hp > 0.0) {
+            return Err(PyValueError::new_err("learners cannot exceed teams; base_hp must be positive"));
+        }
         if envs == 0 || frame_skip == 0 || teams == 0 || ships_per_team == 0 || max_ticks == 0 || !(world_size >= 400.0) {
             return Err(PyValueError::new_err("envs, frame_skip, teams, ships_per_team and max_ticks must be positive; world_size at least 400"));
         }
@@ -56,14 +65,20 @@ impl Env {
                 "kill" => &mut pay.kill,
                 "crash" => &mut pay.crash,
                 "death" => &mut pay.death,
+                "base_hit" => &mut pay.base_hit,
+                "base_lost" => &mut pay.base_lost,
+                "win" => &mut pay.win,
+                "lose" => &mut pay.lose,
                 other => return Err(PyValueError::new_err(format!("unknown reward weight: {other}"))),
             };
             *slot = value;
         }
-        let cfg = Config { teams, ships_per_team, rock_count, world_size, max_ticks, ..Config::default() };
-        let inner = VecEnv::new(cfg, envs, seed, frame_skip, pay);
+        let cfg = Config { teams, ships_per_team, rock_count, world_size, max_ticks, base_hp, ..Config::default() };
+        let inner = VecEnv::with_learners(cfg, envs, seed, frame_skip, pay, learners);
         let agents = inner.agents();
-        Ok(Env { obs: vec![0.0; agents * OBS_LEN], rewards: vec![0.0; agents], dones: vec![0; agents], scripted: vec![0; agents], inner })
+        let mut controlled = vec![0; agents];
+        inner.controlled(&mut controlled);
+        Ok(Env { obs: vec![0.0; agents * OBS_LEN], rewards: vec![0.0; agents], dones: vec![0; agents], scripted: vec![0; agents], controlled, inner })
     }
 
     #[getter]
@@ -105,10 +120,20 @@ impl Env {
         PyBytes::new(py, &self.scripted)
     }
 
-    /// Matches finished since the last call, as per-ship averages:
-    /// (minutes, crystals collected, upgrade levels, kills, deaths).
-    fn take_stats(&mut self) -> Vec<(f32, f32, f32, f32, f32)> {
-        self.inner.take_stats().into_iter().map(|s| (s.minutes, s.collected, s.levels, s.kills, s.deaths)).collect()
+    /// uint8 per agent: 1 where `step` uses the action passed in, 0 where the ship is scripted.
+    fn controlled<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.controlled)
+    }
+
+    /// Matches finished since the last call, seen from team 0: per-ship averages
+    /// (minutes, crystals collected, upgrade levels, kills, deaths), won and lost as 0 or 1,
+    /// then the slot the match ran in and how many matches that slot had finished before it.
+    fn take_stats(&mut self) -> Vec<(f32, f32, f32, f32, f32, f32, f32, u32, u32)> {
+        self.inner
+            .take_stats()
+            .into_iter()
+            .map(|s| (s.minutes, s.collected, s.levels, s.kills, s.deaths, s.won as u8 as f32, s.lost as u8 as f32, s.env, s.episode))
+            .collect()
     }
 }
 

@@ -1,6 +1,6 @@
-use crate::obs::{Near, Observation};
+use crate::obs::{BaseObs, Near, Observation};
 use crate::rng::Rng;
-use crate::sim::{Action, Config, Order, OrderKind, UPGRADES, Upgrade, Vec2, World};
+use crate::sim::{Action, Buy, Config, Order, OrderKind, TIERS, UPGRADES, Upgrade, Vec2, World};
 
 /// Anything that flies a ship: a human's input, a scripted bot, a trained
 /// policy, a remote agent.
@@ -14,19 +14,13 @@ pub trait Controller {
 pub struct ScriptedBot;
 
 /// Upgrades in the order the bot prefers them when levels are tied.
-const PRIORITY: [Upgrade; 8] = [
-    Upgrade::Damage,
-    Upgrade::EnergyRegen,
-    Upgrade::Speed,
-    Upgrade::HullCap,
-    Upgrade::Agility,
-    Upgrade::EnergyCap,
-    Upgrade::HullRegen,
-    Upgrade::Cargo,
-];
+const PRIORITY: [Upgrade; 6] =
+    [Upgrade::Attack, Upgrade::FireRate, Upgrade::Speed, Upgrade::Shield, Upgrade::Health, Upgrade::Regen];
 
 const AIM: f32 = 0.1;
 const FIGHT_RANGE: f32 = 260.0;
+/// Below this share of its hull a ship with a base to go to breaks off for repairs.
+const RETREAT: f32 = 0.35;
 
 impl ScriptedBot {
     fn turn_to(angle: f32) -> i8 {
@@ -67,11 +61,19 @@ impl ScriptedBot {
         None
     }
 
-    fn shoot(at: &Near, keep: f32, obs: &Observation, cfg: &Config) -> Action {
-        let mut act = Self::fly(at.pos, at.radius + keep, obs, cfg);
-        act.fire = at.pos.y.atan2(at.pos.x).abs() < AIM.max((at.radius / at.dist.max(1.0)).atan())
-            && at.dist < cfg.shot_range() * 0.9;
+    /// Closes to `keep` from a target of the given radius and fires once lined up and in range.
+    fn shoot_at(pos: Vec2, dist: f32, radius: f32, keep: f32, obs: &Observation, cfg: &Config) -> Action {
+        let mut act = Self::fly(pos, radius + keep, obs, cfg);
+        act.fire = pos.y.atan2(pos.x).abs() < AIM.max((radius / dist.max(1.0)).atan()) && dist < cfg.shot_range() * 0.9;
         act
+    }
+
+    fn shoot(at: &Near, keep: f32, obs: &Observation, cfg: &Config) -> Action {
+        Self::shoot_at(at.pos, at.dist, at.radius, keep, obs, cfg)
+    }
+
+    fn siege(base: &BaseObs, obs: &Observation, cfg: &Config) -> Action {
+        Self::shoot_at(base.pos, base.dist, cfg.base_radius, 150.0, obs, cfg)
     }
 
     fn mine(obs: &Observation, cfg: &Config) -> Action {
@@ -86,6 +88,17 @@ impl ScriptedBot {
             None => Action { thrust: true, ..Action::default() },
         }
     }
+
+    /// Buys one level of everything, then saves up for the next tier, then spreads
+    /// crystals evenly over the upgrades.
+    fn shop(obs: &Observation, cfg: &Config) -> Option<Buy> {
+        let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
+        let lowest = obs.levels[next as usize];
+        match cfg.cost(lowest, obs.tier) {
+            Some(cost) if lowest == 0 || obs.tier == TIERS => (obs.cargo >= cost).then_some(Buy::Upgrade(next)),
+            _ => (obs.tier < TIERS && obs.cargo >= cfg.tier_cost).then_some(Buy::Tier),
+        }
+    }
 }
 
 impl Controller for ScriptedBot {
@@ -95,69 +108,84 @@ impl Controller for ScriptedBot {
         }
         let enemy = obs.ships.iter().find(|s| s.enemy);
         let healthy = obs.hull > 0.4 * obs.hull_max;
-        let mut act = match obs.order {
-            OrderKind::Mine => match enemy {
-                Some(e) if e.dist < FIGHT_RANGE && healthy => Self::shoot(e, 160.0, obs, cfg),
-                _ => Self::mine(obs, cfg),
-            },
-            OrderKind::Attack => match enemy {
-                Some(e) => Self::shoot(e, 160.0, obs, cfg),
-                None if obs.target.len() > 150.0 => Self::fly(obs.target, 0.0, obs, cfg),
-                None => Self::mine(obs, cfg),
-            },
-            OrderKind::Defend => match enemy {
-                _ if obs.target.len() > 350.0 => Self::fly(obs.target, 0.0, obs, cfg),
-                Some(e) => Self::shoot(e, 160.0, obs, cfg),
-                None => Self::mine(obs, cfg),
-            },
-            OrderKind::Regroup => match enemy {
-                _ if obs.target.len() > 120.0 => Self::fly(obs.target, 0.0, obs, cfg),
-                Some(e) if e.dist < FIGHT_RANGE => Self::shoot(e, 160.0, obs, cfg),
-                _ => Action::default(),
-            },
+        let home = obs.base.hp > 0.0;
+        let mut act = if home && obs.hull < RETREAT * obs.hull_max && obs.base.dist > cfg.base_heal_radius * 0.6 {
+            // Badly hurt: back to the base for repairs.
+            Self::fly(obs.base.pos, 0.0, obs, cfg)
+        } else {
+            match obs.order {
+                OrderKind::Mine => match enemy {
+                    Some(e) if e.dist < FIGHT_RANGE && healthy => Self::shoot(e, 160.0, obs, cfg),
+                    _ => Self::mine(obs, cfg),
+                },
+                OrderKind::Attack => match (enemy, obs.enemy_bases.first()) {
+                    (Some(e), _) if e.dist < FIGHT_RANGE => Self::shoot(e, 160.0, obs, cfg),
+                    // An enemy base in reach matters more than anything farther away.
+                    (_, Some(base)) if base.dist < cfg.view_range => Self::siege(base, obs, cfg),
+                    (Some(e), _) => Self::shoot(e, 160.0, obs, cfg),
+                    _ if obs.target.len() > 150.0 => Self::fly(obs.target, 0.0, obs, cfg),
+                    _ => Self::mine(obs, cfg),
+                },
+                OrderKind::Defend => match enemy {
+                    _ if obs.target.len() > 350.0 => Self::fly(obs.target, 0.0, obs, cfg),
+                    Some(e) => Self::shoot(e, 160.0, obs, cfg),
+                    None => Self::mine(obs, cfg),
+                },
+                OrderKind::Regroup => match enemy {
+                    _ if obs.target.len() > 120.0 => Self::fly(obs.target, 0.0, obs, cfg),
+                    Some(e) if e.dist < FIGHT_RANGE => Self::shoot(e, 160.0, obs, cfg),
+                    _ => Action::default(),
+                },
+            }
         };
         if let Some(dodge) = Self::dodge(obs, cfg) {
             act = Action { fire: act.fire, ..dodge };
         }
-        // Spread crystals evenly: buy the lowest-level upgrade as soon as it is affordable.
-        let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize]);
-        if let Some(u) = next {
-            if cfg.cost(obs.levels[u as usize]).is_some_and(|cost| obs.cargo >= cost) {
-                act.buy = Some(u);
-            }
-        }
+        act.buy = Self::shop(obs, cfg);
         debug_assert_eq!(UPGRADES.len(), PRIORITY.len());
         act
     }
 }
 
-/// Hand-written commander for teams no human leads: ships that have upgraded
-/// enough are sent to raid another team's base, the rest keep mining.
+/// Hand-written commander for teams no human leads: one ship guards the base,
+/// ships that have upgraded enough raid the nearest enemy base still standing,
+/// the rest keep mining.
 #[derive(Clone, Debug)]
 pub struct ScriptedCommander {
     rng: Rng,
+    /// The enemy team each team is currently raiding.
+    raiding: Vec<Option<u8>>,
 }
 
 impl ScriptedCommander {
     /// Upgrade levels a ship needs before it is sent to fight.
-    const RAID_LEVELS: u32 = 6;
+    const RAID_LEVELS: u32 = 5;
 
     pub fn new(seed: u64) -> Self {
-        ScriptedCommander { rng: Rng::new(seed) }
+        ScriptedCommander { rng: Rng::new(seed), raiding: Vec::new() }
     }
 
     /// Re-issues orders to one team and returns how many ships were sent to raid.
     pub fn command(&mut self, world: &mut World, team: u8) -> usize {
-        let teams = world.bases.len() as u32;
-        if teams < 2 {
+        let home = world.bases[team as usize].pos;
+        let standing: Vec<u8> = (0..world.bases.len() as u8).filter(|t| *t != team && world.bases[*t as usize].alive()).collect();
+        if standing.is_empty() {
             return 0;
         }
-        let other = (team as u32 + 1 + self.rng.below(teams - 1)) % teams;
-        let target = world.bases[other as usize];
-        let mut raiders = 0;
+        // Pick an enemy at random and stay on it until its base is gone, so no team is everyone's first target.
+        self.raiding.resize(world.bases.len(), None);
+        let current = self.raiding[team as usize].filter(|t| standing.contains(t));
+        let enemy = current.unwrap_or_else(|| standing[self.rng.below(standing.len() as u32) as usize]);
+        self.raiding[team as usize] = Some(enemy);
+        let target = world.bases[enemy as usize].pos;
+        let guards_home = world.bases[team as usize].alive();
+        let (mut raiders, mut guard_set) = (0, false);
         for ship in world.ships.iter_mut().filter(|s| s.team == team) {
             let levels: u32 = ship.levels.iter().map(|l| *l as u32).sum();
-            ship.order = if levels >= Self::RAID_LEVELS {
+            ship.order = if guards_home && !guard_set {
+                guard_set = true;
+                Order { kind: OrderKind::Defend, target: home }
+            } else if levels >= Self::RAID_LEVELS || !guards_home {
                 raiders += 1;
                 Order { kind: OrderKind::Attack, target }
             } else {

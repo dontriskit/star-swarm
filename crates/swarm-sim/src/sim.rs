@@ -39,26 +39,33 @@ impl Vec2 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Upgrade {
-    HullCap,
-    HullRegen,
-    EnergyCap,
-    EnergyRegen,
-    Damage,
+    /// Damage per shot.
+    Attack,
+    /// Hull points.
+    Health,
+    /// Shots per second.
+    FireRate,
+    /// Shield points. Shields take damage before the hull and grow back on their own.
+    Shield,
+    /// Thrust and top speed.
     Speed,
-    Agility,
-    Cargo,
+    /// How fast shields grow back.
+    Regen,
 }
 
-pub const UPGRADES: [Upgrade; 8] = [
-    Upgrade::HullCap,
-    Upgrade::HullRegen,
-    Upgrade::EnergyCap,
-    Upgrade::EnergyRegen,
-    Upgrade::Damage,
-    Upgrade::Speed,
-    Upgrade::Agility,
-    Upgrade::Cargo,
-];
+pub const UPGRADES: [Upgrade; 6] =
+    [Upgrade::Attack, Upgrade::Health, Upgrade::FireRate, Upgrade::Shield, Upgrade::Speed, Upgrade::Regen];
+
+/// What a ship can spend crystals on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Buy {
+    Upgrade(Upgrade),
+    /// Move up to the next ship tier: stronger hull, shields and guns, higher upgrade cap.
+    Tier,
+}
+
+/// Ship tiers run from 1 to this.
+pub const TIERS: u8 = 2;
 
 /// What a commander tells a ship to do. The ship still flies itself; the order
 /// is part of its observation.
@@ -91,7 +98,7 @@ pub struct Action {
     /// -1 turns right, 1 turns left, 0 holds.
     pub turn: i8,
     pub fire: bool,
-    pub buy: Option<Upgrade>,
+    pub buy: Option<Buy>,
 }
 
 #[derive(Clone, Debug)]
@@ -109,13 +116,27 @@ pub struct Config {
     pub max_speed: f32,
     pub turn_rate: f32,
     pub hull: f32,
-    pub hull_regen: f32,
-    pub energy: f32,
-    pub energy_regen: f32,
-    pub cargo: u32,
-    pub cargo_per_level: u32,
+    pub shield: f32,
+    /// Shield points per second once regeneration has started.
+    pub shield_regen: f32,
+    /// Ticks without taking damage before shields start to grow back.
+    pub shield_delay: u16,
+    /// Cargo room per tier.
+    pub cargo: [u32; TIERS as usize],
+    /// Hull, shield and damage multiplier per tier.
+    pub tier_power: [f32; TIERS as usize],
+    /// Highest upgrade level per tier.
+    pub tier_levels: [u8; TIERS as usize],
+    /// Crystals to move from tier 1 to tier 2.
+    pub tier_cost: u32,
 
-    pub shot_cost: f32,
+    pub base_hp: f32,
+    pub base_radius: f32,
+    /// Ships this close to their own standing base are repaired.
+    pub base_heal_radius: f32,
+    /// Hull points per second repaired at the base.
+    pub base_heal: f32,
+
     pub shot_damage: f32,
     pub shot_speed: f32,
     pub shot_ticks: u16,
@@ -129,7 +150,6 @@ pub struct Config {
     pub crystal_ticks: u16,
     pub pickup_radius: f32,
 
-    pub upgrade_max: u8,
     pub upgrade_cost: u32,
     pub upgrade_step: f32,
 
@@ -153,25 +173,29 @@ impl Default for Config {
             max_speed: 240.0,
             turn_rate: 3.2,
             hull: 100.0,
-            hull_regen: 2.0,
-            energy: 60.0,
-            energy_regen: 12.0,
-            cargo: 40,
-            cargo_per_level: 20,
-            shot_cost: 8.0,
+            shield: 40.0,
+            shield_regen: 4.0,
+            shield_delay: 60,
+            cargo: [60, 120],
+            tier_power: [1.0, 1.5],
+            tier_levels: [3, 5],
+            tier_cost: 60,
+            base_hp: 100.0,
+            base_radius: 60.0,
+            base_heal_radius: 120.0,
+            base_heal: 10.0,
             shot_damage: 10.0,
             shot_speed: 520.0,
             shot_ticks: 27,
-            shot_cooldown: 5,
+            shot_cooldown: 8,
             rock_radius: 18.0,
             rock_hp: 30.0,
             rock_speed: 12.0,
             crash_damage: 0.15,
             crystal_ticks: 600,
             pickup_radius: 26.0,
-            upgrade_max: 3,
             upgrade_cost: 10,
-            upgrade_step: 0.25,
+            upgrade_step: 0.2,
             respawn_ticks: 90,
             kill_score: 20,
             view_range: 600.0,
@@ -183,18 +207,43 @@ impl Config {
     fn boost(&self, ship: &Ship, u: Upgrade) -> f32 {
         1.0 + self.upgrade_step * ship.levels[u as usize] as f32
     }
-    pub fn hull_max(&self, s: &Ship) -> f32 {
-        self.hull * self.boost(s, Upgrade::HullCap)
+    fn power(&self, ship: &Ship) -> f32 {
+        self.tier_power[ship.tier as usize - 1]
     }
-    pub fn energy_max(&self, s: &Ship) -> f32 {
-        self.energy * self.boost(s, Upgrade::EnergyCap)
+    pub fn hull_max(&self, s: &Ship) -> f32 {
+        self.hull * self.power(s) * self.boost(s, Upgrade::Health)
+    }
+    pub fn shield_max(&self, s: &Ship) -> f32 {
+        self.shield * self.power(s) * self.boost(s, Upgrade::Shield)
+    }
+    pub fn damage(&self, s: &Ship) -> f32 {
+        self.shot_damage * self.power(s) * self.boost(s, Upgrade::Attack)
+    }
+    /// Ticks between shots.
+    pub fn cooldown(&self, s: &Ship) -> u16 {
+        ((self.shot_cooldown as f32 / self.boost(s, Upgrade::FireRate)).round() as u16).max(2)
     }
     pub fn cargo_max(&self, s: &Ship) -> u32 {
-        self.cargo + self.cargo_per_level * s.levels[Upgrade::Cargo as usize] as u32
+        self.cargo[s.tier as usize - 1]
     }
-    /// Price of the next level of an upgrade, or None at the cap.
-    pub fn cost(&self, level: u8) -> Option<u32> {
-        (level < self.upgrade_max).then(|| self.upgrade_cost * (level as u32 + 1))
+    /// Highest upgrade level a ship of this tier can reach.
+    pub fn max_level(&self, tier: u8) -> u8 {
+        self.tier_levels[tier as usize - 1]
+    }
+    /// The highest upgrade level any ship can reach.
+    pub fn top_level(&self) -> u8 {
+        self.tier_levels[TIERS as usize - 1]
+    }
+    /// Price of the next level of an upgrade for a ship of this tier, or None at the cap.
+    pub fn cost(&self, level: u8, tier: u8) -> Option<u32> {
+        (level < self.max_level(tier)).then(|| self.upgrade_cost * (level as u32 + 1))
+    }
+    /// Price of what a ship wants to buy, or None when it cannot be bought at all.
+    pub fn price(&self, s: &Ship, buy: Buy) -> Option<u32> {
+        match buy {
+            Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
+            Buy::Tier => (s.tier < TIERS).then_some(self.tier_cost),
+        }
     }
     pub fn shot_range(&self) -> f32 {
         self.shot_speed * self.shot_ticks as f32 * self.dt
@@ -214,9 +263,13 @@ pub struct Ship {
     pub vel: Vec2,
     pub heading: f32,
     pub hull: f32,
-    pub energy: f32,
+    pub shield: f32,
+    /// Ticks left before shields start growing back.
+    pub shield_wait: u16,
+    /// 1 or 2.
+    pub tier: u8,
     pub cargo: u32,
-    pub levels: [u8; 8],
+    pub levels: [u8; 6],
     pub cooldown: u16,
     pub alive: bool,
     pub respawn: u16,
@@ -253,12 +306,27 @@ pub struct Shot {
     pub team: u8,
 }
 
+/// A team's home: where its ships appear and get repaired. Losing it loses the match.
+#[derive(Clone, Debug)]
+pub struct Base {
+    pub pos: Vec2,
+    pub hp: f32,
+}
+
+impl Base {
+    pub fn alive(&self) -> bool {
+        self.hp > 0.0
+    }
+}
+
 /// What happened during one step. Rewards and the GUI's effects read these.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     RockDestroyed { by: Option<u16>, size: u8 },
     Collected { ship: u16 },
-    Bought { ship: u16, upgrade: Upgrade },
+    Bought { ship: u16, what: Buy },
+    BaseHit { by: u16, team: u8, damage: f32 },
+    BaseDestroyed { by: u16, team: u8 },
     Hit { by: u16, victim: u16, damage: f32 },
     Crashed { ship: u16, damage: f32 },
     Killed { by: Option<u16>, victim: u16 },
@@ -272,8 +340,8 @@ pub struct World {
     pub rocks: Vec<Rock>,
     pub crystals: Vec<Crystal>,
     pub shots: Vec<Shot>,
-    /// One spawn point per team.
-    pub bases: Vec<Vec2>,
+    /// One per team, indexed by team.
+    pub bases: Vec<Base>,
     pub events: Vec<Event>,
     rng: Rng,
 }
@@ -284,11 +352,12 @@ const MAX_DROPPED: u32 = 8;
 impl World {
     pub fn new(cfg: Config, seed: u64) -> Self {
         let mut rng = Rng::new(seed);
-        let center = cfg.world_size / 2.0;
-        let bases: Vec<Vec2> = (0..cfg.teams)
+        // Evenly spaced along the diagonal. The map wraps, so every team sees the
+        // same layout from its own base and none starts closer to its enemies.
+        let bases: Vec<Base> = (0..cfg.teams)
             .map(|t| {
-                let a = std::f32::consts::TAU * t as f32 / cfg.teams as f32;
-                Vec2::new(center, center).add(Vec2::from_angle(a).scale(cfg.world_size * 0.35))
+                let along = (t as f32 + 0.5) / cfg.teams as f32 * cfg.world_size;
+                Base { pos: Vec2::new(along, along), hp: cfg.base_hp }
             })
             .collect();
         let mut world = World {
@@ -310,9 +379,11 @@ impl World {
                     vel: Vec2::default(),
                     heading: 0.0,
                     hull: 0.0,
-                    energy: 0.0,
+                    shield: 0.0,
+                    shield_wait: 0,
+                    tier: 1,
                     cargo: 0,
-                    levels: [0; 8],
+                    levels: [0; 6],
                     cooldown: 0,
                     alive: true,
                     respawn: 0,
@@ -335,8 +406,18 @@ impl World {
         world
     }
 
+    /// The match ends when time runs out or at most one base is left standing.
     pub fn done(&self) -> bool {
-        self.tick >= self.cfg.max_ticks
+        self.tick >= self.cfg.max_ticks || (self.bases.len() > 1 && self.standing() <= 1)
+    }
+
+    fn standing(&self) -> usize {
+        self.bases.iter().filter(|b| b.alive()).count()
+    }
+
+    /// The team whose base is the only one left, if the match has been won.
+    pub fn winner(&self) -> Option<u8> {
+        (self.bases.len() > 1 && self.standing() == 1).then(|| self.bases.iter().position(Base::alive).unwrap() as u8)
     }
 
     pub fn set_order(&mut self, ship: usize, order: Order) {
@@ -352,24 +433,33 @@ impl World {
         delta(self.cfg.world_size, a, b)
     }
 
-    fn place(cfg: &Config, bases: &[Vec2], rng: &mut Rng, ship: &mut Ship) {
-        let base = bases[ship.team as usize];
+    fn place(cfg: &Config, bases: &[Base], rng: &mut Rng, ship: &mut Ship) {
+        let base = bases[ship.team as usize].pos;
         let offset = Vec2::from_angle(rng.range(0.0, std::f32::consts::TAU)).scale(rng.range(20.0, 90.0));
         ship.pos = wrap(cfg.world_size, base.add(offset));
         ship.vel = Vec2::default();
         ship.heading = rng.range(0.0, std::f32::consts::TAU);
         ship.hull = cfg.hull_max(ship);
-        ship.energy = cfg.energy_max(ship);
+        ship.shield = cfg.shield_max(ship);
+        ship.shield_wait = 0;
         ship.cooldown = 0;
         ship.alive = true;
         ship.last_hit_by = None;
     }
 
-    fn new_rock(cfg: &Config, bases: &[Vec2], rng: &mut Rng) -> Rock {
+    /// Shields soak up damage first; what is left goes to the hull.
+    fn hurt(cfg: &Config, ship: &mut Ship, damage: f32) {
+        let absorbed = ship.shield.min(damage);
+        ship.shield -= absorbed;
+        ship.hull -= damage - absorbed;
+        ship.shield_wait = cfg.shield_delay;
+    }
+
+    fn new_rock(cfg: &Config, bases: &[Base], rng: &mut Rng) -> Rock {
         let mut pos = Vec2::default();
         for _ in 0..10 {
             pos = Vec2::new(rng.range(0.0, cfg.world_size), rng.range(0.0, cfg.world_size));
-            if bases.iter().all(|b| delta(cfg.world_size, *b, pos).len() > 200.0) {
+            if bases.iter().all(|b| delta(cfg.world_size, b.pos, pos).len() > 200.0) {
                 break;
             }
         }
@@ -397,24 +487,33 @@ impl World {
         for i in 0..self.ships.len() {
             let cfg = &self.cfg;
             let ship = &mut self.ships[i];
+            let home = &self.bases[ship.team as usize];
             if !ship.alive {
-                ship.respawn = ship.respawn.saturating_sub(1);
-                if ship.respawn == 0 {
-                    Self::place(cfg, &self.bases, &mut self.rng, ship);
+                // A team without a base gets no new ships.
+                if home.alive() {
+                    ship.respawn = ship.respawn.saturating_sub(1);
+                    if ship.respawn == 0 {
+                        Self::place(cfg, &self.bases, &mut self.rng, ship);
+                    }
                 }
                 continue;
             }
             let act = actions[i];
-            if let Some(u) = act.buy {
-                if let Some(cost) = cfg.cost(ship.levels[u as usize]) {
-                    if ship.cargo >= cost {
-                        ship.cargo -= cost;
-                        ship.levels[u as usize] += 1;
-                        self.events.push(Event::Bought { ship: i as u16, upgrade: u });
+            if let Some(what) = act.buy {
+                if let Some(cost) = cfg.price(ship, what).filter(|cost| ship.cargo >= *cost) {
+                    ship.cargo -= cost;
+                    match what {
+                        Buy::Upgrade(u) => ship.levels[u as usize] += 1,
+                        Buy::Tier => {
+                            ship.tier += 1;
+                            ship.hull = cfg.hull_max(ship);
+                            ship.shield = cfg.shield_max(ship);
+                        }
                     }
+                    self.events.push(Event::Bought { ship: i as u16, what });
                 }
             }
-            ship.heading += act.turn.clamp(-1, 1) as f32 * cfg.turn_rate * cfg.boost(ship, Upgrade::Agility) * dt;
+            ship.heading += act.turn.clamp(-1, 1) as f32 * cfg.turn_rate * dt;
             ship.heading = ship.heading.rem_euclid(std::f32::consts::TAU);
             let speed_boost = cfg.boost(ship, Upgrade::Speed);
             if act.thrust {
@@ -426,18 +525,23 @@ impl World {
                 ship.vel = ship.vel.scale(cap / speed);
             }
             ship.pos = wrap(size, ship.pos.add(ship.vel.scale(dt)));
-            ship.hull = (ship.hull + cfg.hull_regen * cfg.boost(ship, Upgrade::HullRegen) * dt).min(cfg.hull_max(ship));
-            ship.energy = (ship.energy + cfg.energy_regen * cfg.boost(ship, Upgrade::EnergyRegen) * dt).min(cfg.energy_max(ship));
+            if ship.shield_wait > 0 {
+                ship.shield_wait -= 1;
+            } else {
+                ship.shield = (ship.shield + cfg.shield_regen * cfg.boost(ship, Upgrade::Regen) * dt).min(cfg.shield_max(ship));
+            }
+            if home.alive() && delta(size, home.pos, ship.pos).len() < cfg.base_heal_radius {
+                ship.hull = (ship.hull + cfg.base_heal * dt).min(cfg.hull_max(ship));
+            }
             ship.cooldown = ship.cooldown.saturating_sub(1);
-            if act.fire && ship.cooldown == 0 && ship.energy >= cfg.shot_cost {
-                ship.energy -= cfg.shot_cost;
-                ship.cooldown = cfg.shot_cooldown;
+            if act.fire && ship.cooldown == 0 {
+                ship.cooldown = cfg.cooldown(ship);
                 let dir = Vec2::from_angle(ship.heading);
                 self.shots.push(Shot {
                     pos: wrap(size, ship.pos.add(dir.scale(cfg.ship_radius))),
                     vel: ship.vel.add(dir.scale(cfg.shot_speed)),
                     ticks: cfg.shot_ticks,
-                    damage: cfg.shot_damage * cfg.boost(ship, Upgrade::Damage),
+                    damage: cfg.damage(ship),
                     owner: i as u16,
                     team: ship.team,
                 });
@@ -462,9 +566,20 @@ impl World {
                 s.alive && s.team != shot.team && delta(size, s.pos, shot.pos).len() < self.cfg.ship_radius
             });
             if let Some(v) = hit {
-                self.ships[v].hull -= shot.damage;
+                Self::hurt(&self.cfg, &mut self.ships[v], shot.damage);
                 self.ships[v].last_hit_by = Some(shot.owner);
                 self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage: shot.damage });
+                shot.ticks = 0;
+                continue;
+            }
+            let base = self.bases.iter().position(|b| b.alive() && delta(size, b.pos, shot.pos).len() < self.cfg.base_radius);
+            if let Some(team) = base.filter(|team| *team as u8 != shot.team) {
+                let damage = shot.damage.min(self.bases[team].hp);
+                self.bases[team].hp -= shot.damage;
+                self.events.push(Event::BaseHit { by: shot.owner, team: team as u8, damage });
+                if !self.bases[team].alive() {
+                    self.events.push(Event::BaseDestroyed { by: shot.owner, team: team as u8 });
+                }
                 shot.ticks = 0;
             }
         }
@@ -490,7 +605,7 @@ impl World {
                 if closing < 0.0 {
                     ship.vel = ship.vel.sub(n.scale(1.5 * closing));
                     let damage = -closing * self.cfg.crash_damage;
-                    ship.hull -= damage;
+                    Self::hurt(&self.cfg, ship, damage);
                     ship.last_hit_by = None;
                     self.events.push(Event::Crashed { ship: i as u16, damage });
                 }
@@ -567,9 +682,10 @@ impl World {
         };
         put(self.tick);
         for s in &self.ships {
-            for f in [s.pos.x, s.pos.y, s.vel.x, s.vel.y, s.heading, s.hull, s.energy] {
+            for f in [s.pos.x, s.pos.y, s.vel.x, s.vel.y, s.heading, s.hull, s.shield] {
                 put(f.to_bits());
             }
+            put(s.tier as u32);
             put(s.cargo);
             put(s.score);
             put(s.alive as u32);
@@ -582,6 +698,9 @@ impl World {
             for f in [r.pos.x, r.pos.y, r.hp] {
                 put(f.to_bits());
             }
+        }
+        for b in &self.bases {
+            put(b.hp.to_bits());
         }
         put(self.crystals.len() as u32);
         for c in &self.crystals {

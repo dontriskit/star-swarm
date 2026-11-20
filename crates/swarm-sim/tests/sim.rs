@@ -66,15 +66,98 @@ fn regroup_order_gathers_the_team() {
 }
 
 #[test]
-fn buying_spends_cargo_and_stops_at_the_cap() {
+fn buying_spends_cargo_and_stops_at_the_tier_cap() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 2);
     world.ships[0].cargo = 1000;
     let mut actions = vec![Action::default(); world.ships.len()];
-    actions[0].buy = Some(Upgrade::Damage);
+    actions[0].buy = Some(Buy::Upgrade(Upgrade::Attack));
     for _ in 0..10 {
         world.step(&actions);
     }
-    assert_eq!(world.ships[0].levels[Upgrade::Damage as usize], 3);
-    assert_eq!(world.ships[0].cargo, 1000 - (10 + 20 + 30));
+    // Tier 1 stops at level 3: 10 + 20 + 30 crystals.
+    assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 3);
+    assert_eq!(world.ships[0].cargo, 1000 - 60);
+
+    actions[0].buy = Some(Buy::Tier);
+    world.step(&actions);
+    world.step(&actions);
+    assert_eq!(world.ships[0].tier, 2);
+    assert_eq!(world.ships[0].cargo, 1000 - 60 - 60, "the tier is paid for once");
+    assert_eq!(world.ships[0].hull, world.cfg.hull_max(&world.ships[0]));
+    assert!(world.cfg.hull_max(&world.ships[0]) > world.cfg.hull);
+
+    // Tier 2 raises the cap to level 5: 40 + 50 more crystals.
+    actions[0].buy = Some(Buy::Upgrade(Upgrade::Attack));
+    for _ in 0..10 {
+        world.step(&actions);
+    }
+    assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 5);
+    assert_eq!(world.ships[0].cargo, 1000 - 60 - 60 - 90);
+}
+
+/// Two teams, no rocks; ship 0 (team 0) sits in front of team 1's base, pointing at it.
+fn siege() -> World {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, ..Config::default() };
+    let mut world = World::new(cfg, 4);
+    let target = world.bases[1].pos;
+    world.ships[0].pos = world.wrap(Vec2::new(target.x - 200.0, target.y));
+    world.ships[0].heading = 0.0;
+    // Park the defender far away so it neither blocks shots nor respawns into them.
+    world.ships[1].pos = world.wrap(Vec2::new(target.x, target.y + 900.0));
+    world
+}
+
+#[test]
+fn destroying_every_other_base_wins_the_match() {
+    let mut world = siege();
+    assert_eq!(world.bases[1].hp, 100.0);
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    let mut destroyed = false;
+    while !world.done() {
+        destroyed |= world.step(&fire).iter().any(|e| matches!(e, Event::BaseDestroyed { team: 1, by: 0 }));
+    }
+    assert!(destroyed);
+    assert_eq!(world.winner(), Some(0));
+    assert!(world.tick < 600, "ten shots of 10 should not take {} ticks", world.tick);
+}
+
+#[test]
+fn a_team_without_a_base_gets_no_new_ships() {
+    let mut world = siege();
+    // A third team keeps the match going after team 1 loses its base.
+    world.bases.push(Base { pos: Vec2::new(100.0, 100.0), hp: 100.0 });
+    world.bases[1].hp = 0.0;
+    world.ships[1].alive = false;
+    world.ships[1].respawn = 1;
+    for _ in 0..200 {
+        world.step(&[Action::default(); 2]);
+    }
+    assert!(!world.ships[1].alive);
+    assert_eq!(world.winner(), None);
+}
+
+#[test]
+fn shields_take_the_damage_first_and_grow_back() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, ..Config::default() };
+    let mut world = World::new(cfg, 6);
+    let at = world.ships[1].pos;
+    world.ships[0].pos = world.wrap(Vec2::new(at.x - 150.0, at.y));
+    world.ships[0].heading = 0.0;
+    let mut actions = [Action { fire: true, ..Action::default() }, Action::default()];
+    // One shot of 10 against 40 shield.
+    while !world.step(&actions).iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })) {}
+    actions[0].fire = false;
+    assert_eq!(world.ships[1].hull, 100.0);
+    assert!(world.ships[1].shield <= 30.0);
+    // Let shots already in flight land or expire, then wait out the delay.
+    for _ in 0..40 {
+        world.step(&actions);
+    }
+    let low = world.ships[1].shield;
+    for _ in 0..400 {
+        world.step(&actions);
+    }
+    assert!(world.ships[1].shield > low);
+    assert_eq!(world.ships[1].shield, world.cfg.shield_max(&world.ships[1]));
 }

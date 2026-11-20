@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use crate::bot::Controller;
 use crate::obs::{OBS_LEN, Observation};
-use crate::sim::{Action, Config, UPGRADES};
+use crate::sim::{Action, Config};
 
-const MAGIC: &[u8; 8] = b"SWPOL001";
+const MAGIC: &[u8; 8] = b"SWPOL002";
 /// Action heads in the order the trainer uses: thrust, turn, fire, buy.
-const HEADS: [usize; 4] = [2, 3, 2, 9];
+const HEADS: [usize; 4] = [2, 3, 2, 8];
 
 struct Layer {
     inputs: usize,
@@ -91,7 +91,7 @@ impl Net {
             thrust: pick[0] == 1,
             turn: pick[1] as i8 - 1,
             fire: pick[2] == 1,
-            buy: pick[3].checked_sub(1).and_then(|i| UPGRADES.get(i).copied()),
+            buy: crate::replay::buy_of(pick[3] as u8),
         }
     }
 }

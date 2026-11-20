@@ -59,15 +59,16 @@ struct Game {
 }
 
 impl Game {
-    /// Your fleet mines on a trained network; ships given any other order, or with an enemy
-    /// close by, are flown by the scripted bot. The other teams stay scripted.
+    /// Your fleet flies on a trained network while its order is "Kop" (the network was trained
+    /// without orders); ships given any other order are flown by the scripted bot. The other
+    /// teams stay scripted.
     fn with_model(seed: u64, net: Arc<Net>) -> Self {
         let mut game = Game::new(seed, None);
         for i in game.my_ships().collect::<Vec<_>>() {
-            game.pilots[i] = Box::new(HybridBot::new(net.clone(), true));
+            game.pilots[i] = Box::new(HybridBot::new(net.clone(), false));
         }
         game.model = Some(net);
-        game.status = "Twoja flota kopie na modelu. Wybierz rozkaz i kliknij punkt na mapie, żeby wysłać ją do walki.".into();
+        game.status = "Twoja flota leci na modelu. Inny rozkaz niż Kop oddaje wybrane statki botowi skryptowemu.".into();
         game
     }
 
@@ -152,8 +153,10 @@ impl Game {
             }
         }
         if self.world.done() {
-            let best = (0..self.world.bases.len()).max_by_key(|t| self.team_score(*t as u8)).unwrap_or(0);
-            self.status = format!("Koniec meczu. Wygrywają {}.", TEAM_NAMES[best % TEAM_NAMES.len()]);
+            self.status = match self.world.winner() {
+                Some(team) => format!("Koniec meczu. Wygrywają {}: ich baza została jako jedyna.", TEAM_NAMES[team as usize % TEAM_NAMES.len()]),
+                None => "Koniec czasu. Nikt nie zniszczył wszystkich cudzych baz.".into(),
+            };
         }
     }
 
@@ -232,7 +235,8 @@ impl Game {
         let muted = rgb(0x8a93a6);
 
         let teams = (0..self.world.bases.len()).map(|t| {
-            let alive = self.world.ships.iter().filter(|s| s.team == t as u8 && s.alive).count();
+            let base = &self.world.bases[t];
+            let base_text = if base.alive() { format!("{:.0}", base.hp) } else { "zniszczona".to_string() };
             let name = TEAM_NAMES[t % TEAM_NAMES.len()];
             let crystals: u32 = self.world.ships.iter().filter(|s| s.team == t as u8).map(|s| s.collected).sum();
             let who = match (t as u8 == MY_TEAM, self.model.is_some()) {
@@ -246,7 +250,7 @@ impl Game {
                 .gap_2()
                 .child(div().size_3().rounded_sm().bg(rgb(TEAM_COLORS[t % TEAM_COLORS.len()])))
                 .child(div().flex_1().child(who))
-                .child(div().w(px(52.)).flex().justify_end().text_color(muted).child(alive.to_string()))
+                .child(div().w(px(84.)).flex().justify_end().child(base_text))
                 .child(div().w(px(72.)).flex().justify_end().child(crystals.to_string()))
                 .child(div().w(px(56.)).flex().justify_end().child(self.team_score(t as u8).to_string()))
         });
@@ -255,7 +259,7 @@ impl Game {
             .gap_2()
             .text_color(muted)
             .child(div().flex_1().child("Drużyna"))
-            .child(div().w(px(52.)).flex().justify_end().child("W grze"))
+            .child(div().w(px(84.)).flex().justify_end().child("Baza (HP)"))
             .child(div().w(px(72.)).flex().justify_end().child("Kryształy"))
             .child(div().w(px(56.)).flex().justify_end().child("Wynik"));
 
@@ -275,10 +279,12 @@ impl Game {
             .flex()
             .px_2()
             .text_color(muted)
-            .child(column(76., "Statek".into()))
-            .child(column(84., "Kadłub".into()))
-            .child(column(76., "Ładunek".into()))
-            .child(column(64., "Ulepsz.".into()))
+            .child(column(72., "Statek".into()))
+            .child(column(72., "Kadłub".into()))
+            .child(column(60., "Tarcza".into()))
+            .child(column(68., "Ładunek".into()))
+            .child(column(40., "Tier".into()))
+            .child(column(56., "Ulepsz.".into()))
             .child("Rozkaz");
         let fleet = self.my_ships().enumerate().map(|(n, i)| {
             let ship = &self.world.ships[i];
@@ -297,21 +303,25 @@ impl Game {
                     this.toggle(i);
                     cx.notify();
                 }))
-                .child(column(76., format!("Statek {}", n + 1)));
+                .child(column(72., format!("Statek {}", n + 1)));
             #[cfg(test)]
             let row = row.debug_selector(move || format!("ship-{n}"));
             if ship.alive {
-                row.child(column(84., format!("{:.0}/{:.0}", ship.hull.max(0.0), cfg.hull_max(ship))))
-                    .child(column(76., format!("{}/{}", ship.cargo, cfg.cargo_max(ship))))
-                    .child(column(64., format!("{levels}/{}", 8 * cfg.upgrade_max as u32)))
+                row.child(column(72., format!("{:.0}/{:.0}", ship.hull.max(0.0), cfg.hull_max(ship))))
+                    .child(column(60., format!("{:.0}/{:.0}", ship.shield, cfg.shield_max(ship))))
+                    .child(column(68., format!("{}/{}", ship.cargo, cfg.cargo_max(ship))))
+                    .child(column(40., ship.tier.to_string()))
+                    .child(column(56., format!("{levels}/{}", 6 * cfg.max_level(ship.tier) as u32)))
                     .child(order_name(ship.order.kind))
-            } else {
+            } else if self.world.bases[MY_TEAM as usize].alive() {
                 row.child(div().text_color(muted).child("odradza się"))
+            } else {
+                row.child(div().text_color(muted).child("zniszczony, baza nie istnieje"))
             }
         });
 
         div()
-            .w(px(400.))
+            .w(px(470.))
             .h_full()
             .flex()
             .flex_col()
@@ -358,7 +368,7 @@ impl Game {
             .child(div().text_color(muted).child(if self.playback.is_some() {
                 "Powtórka (rozkazy wyłączone)"
             } else if self.model.is_some() {
-                "Rozkaz (Kop: leci model; pozostałe i obrona: skrypt)"
+                "Rozkaz (Kop: leci model; pozostałe: skrypt)"
             } else {
                 "Rozkaz"
             }))
@@ -572,9 +582,11 @@ mod window_tests {
                 let expected = if i == picked[0] { OrderKind::Regroup } else { OrderKind::Mine };
                 assert_eq!(ship.order.kind, expected, "ship {i}");
             }
-            // The map is the 800 px square left of the 400 px panel.
+            // The map is the 730 px square in the 730 x 800 area left of the 470 px panel.
+            let scale = g.world.cfg.world_size / 730.0;
+            let expected = Vec2::new(300.0 * scale, (400.0 - 35.0) * scale);
             let target = g.world.ships[picked[0]].order.target;
-            assert!(g.world.delta(target, Vec2::new(900.0, 1200.0)).len() < 2.0, "target {target:?}");
+            assert!(g.world.delta(target, expected).len() < 2.0, "target {target:?}");
         });
     }
 

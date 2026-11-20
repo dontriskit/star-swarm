@@ -17,11 +17,11 @@ p.add_argument("policy")
 p.add_argument("out")
 p.add_argument("--seed", type=int, default=7)
 p.add_argument("--frame-skip", type=int, default=3)
-p.add_argument("--teams", type=int, default=1)
-p.add_argument("--ships-per-team", type=int, default=4)
-p.add_argument("--rocks", type=int, default=40)
-p.add_argument("--world-size", type=float, default=1400.0)
-p.add_argument("--max-ticks", type=int, default=5400)
+p.add_argument("--teams", type=int, default=3)
+p.add_argument("--ships-per-team", type=int, default=5)
+p.add_argument("--rocks", type=int, default=90)
+p.add_argument("--world-size", type=float, default=2400.0)
+p.add_argument("--max-ticks", type=int, default=9000)
 args = p.parse_args()
 
 saved = torch.load(args.policy, map_location="cpu")
@@ -42,11 +42,11 @@ with torch.no_grad():
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0002")
+    f.write(b"SWRP0003")
     f.write(struct.pack("<QfHHII", args.seed, args.world_size, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
     f.write(struct.pack("<Q", len(frames)))
     f.write(frames)
     f.write(struct.pack("<I", 0))  # no state hashes: playback is not verified
 
-minutes, collected, levels, kills, deaths = stats[0]
+minutes, collected, levels, kills, deaths = stats[0][:5]
 print(f"{args.out}: {minutes:.0f} min, {collected / minutes:.1f} crystals per ship per minute, {levels:.1f} upgrade levels per ship")

@@ -17,7 +17,8 @@ fn main() {
         env.step(&actions, &mut rewards, &mut dones);
         stats.extend(env.take_stats());
     }
-    stats.truncate(matches);
+    // The first match of every slot, so short matches are not counted more often than long ones.
+    stats.retain(|s| s.episode == 0);
     let mean = |f: fn(&swarm_env::EpisodeStats) -> f32| stats.iter().map(f).sum::<f32>() / matches as f32;
     println!(
         "frame skip {frame_skip}, {matches} matches: {:.1} crystals per ship per minute, {:.2} upgrade levels, {:.3} deaths",

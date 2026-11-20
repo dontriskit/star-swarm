@@ -2,6 +2,12 @@
 
 A team space game where a human commands a fleet of AI-flown ships. Ships break rocks, collect crystals, buy upgrades and fight other teams; the commander sets orders, the ships fly themselves.
 
+## Rules
+
+- Every team has a base (100 HP by default). A team wins when every other base is destroyed. A team without a base gets no new ships.
+- Crystals from broken rocks buy six upgrades: attack, health, fire rate, shields, speed, regeneration. Shields take damage before the hull and grow back on their own; the hull is repaired only next to the team's own base.
+- Ships have two tiers. Tier 2 costs 60 crystals, multiplies hull, shields and damage by 1.5, and raises the upgrade cap from level 3 to level 5.
+
 Built for people and for bots: humans, scripted bots and trained policies all drive ships through the same observation and action interface.
 
 ## Layout
@@ -38,17 +44,19 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r train/requirements.txt
 (cd crates/swarm-py && VIRTUAL_ENV=$PWD/../../.venv ../../.venv/bin/maturin develop --release)
 
-.venv/bin/python train/ppo.py --name mine --updates 300    # writes runs/mine/
+.venv/bin/python train/ppo.py --name win --updates 100 \
+    --reward win=20 --reward lose=20 --reward base_hit=0.2 --reward base_lost=0.05 \
+    --reward kill=3 --reward hit=0.02 --reward death=3     # writes runs/win/
 cargo run --release -p swarm-env --example throughput     # environment speed alone
 ```
 
 To see a trained policy fly your fleet against scripted teams, or to measure it over full matches:
 
 ```sh
-.venv/bin/python train/export.py runs/mine/policy.pt runs/mine/policy.swp       # weights file for the game
-cargo run --release -p swarm-gui -- --model runs/mine/policy.swp                 # watch it play
-cargo run --release -p swarm-sim --example versus -- runs/mine/policy.swp 20     # 20 matches, numbers per team
-.venv/bin/python train/watch.py runs/mine/policy.pt model.replay                 # one training-style match as a replay
+.venv/bin/python train/export.py runs/win/policy.pt runs/win/policy.swp       # weights file for the game
+cargo run --release -p swarm-gui -- --model runs/win/policy.swp                 # watch it play
+cargo run --release -p swarm-sim --example versus -- runs/win/policy.swp 20     # 20 matches, numbers per team
+.venv/bin/python train/watch.py runs/win/policy.pt model.replay                 # one training-style match as a replay
 ```
 
-The run first measures the scripted bot on a fixed set of matches, then trains, then plays the trained policy on the same matches. Each line of `runs/<name>/metrics.jsonl` is one measurement: crystals per ship per minute, upgrade levels per ship at the end of a match, deaths per ship.
+The run first measures the scripted bot on a fixed set of matches, then trains, then plays the trained policy on the same matches. Each line of `runs/<name>/metrics.jsonl` is one measurement for team 0: how often it won, how often it lost its base, crystals per ship per minute, upgrade levels, kills and deaths. In training, team 0 is flown by the policy and the other teams by the scripted bot.
