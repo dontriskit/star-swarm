@@ -136,6 +136,12 @@ pub struct Config {
     pub base_heal_radius: f32,
     /// Hull points per second repaired at the base.
     pub base_heal: f32,
+    /// A standing base shoots the nearest enemy ship within this range.
+    pub turret_range: f32,
+    /// Damage per turret shot; 0 switches turrets off.
+    pub turret_damage: f32,
+    /// Ticks between turret shots.
+    pub turret_cooldown: u16,
 
     pub shot_damage: f32,
     pub shot_speed: f32,
@@ -180,10 +186,13 @@ impl Default for Config {
             tier_power: [1.0, 1.5],
             tier_levels: [3, 5],
             tier_cost: 60,
-            base_hp: 100.0,
+            base_hp: 1000.0,
             base_radius: 60.0,
             base_heal_radius: 120.0,
             base_heal: 10.0,
+            turret_range: 380.0,
+            turret_damage: 15.0,
+            turret_cooldown: 8,
             shot_damage: 10.0,
             shot_speed: 520.0,
             shot_ticks: 27,
@@ -302,7 +311,8 @@ pub struct Shot {
     pub vel: Vec2,
     pub ticks: u16,
     pub damage: f32,
-    pub owner: u16,
+    /// The ship that fired it; None for a base turret.
+    pub owner: Option<u16>,
     pub team: u8,
 }
 
@@ -311,6 +321,8 @@ pub struct Shot {
 pub struct Base {
     pub pos: Vec2,
     pub hp: f32,
+    /// Ticks until the turret can fire again.
+    pub cooldown: u16,
 }
 
 impl Base {
@@ -327,7 +339,8 @@ pub enum Event {
     Bought { ship: u16, what: Buy },
     BaseHit { by: u16, team: u8, damage: f32 },
     BaseDestroyed { by: u16, team: u8 },
-    Hit { by: u16, victim: u16, damage: f32 },
+    /// `by` is None when a base turret did it.
+    Hit { by: Option<u16>, victim: u16, damage: f32 },
     Crashed { ship: u16, damage: f32 },
     Killed { by: Option<u16>, victim: u16 },
 }
@@ -357,7 +370,7 @@ impl World {
         let bases: Vec<Base> = (0..cfg.teams)
             .map(|t| {
                 let along = (t as f32 + 0.5) / cfg.teams as f32 * cfg.world_size;
-                Base { pos: Vec2::new(along, along), hp: cfg.base_hp }
+                Base { pos: Vec2::new(along, along), hp: cfg.base_hp, cooldown: 0 }
             })
             .collect();
         let mut world = World {
@@ -542,9 +555,39 @@ impl World {
                     vel: ship.vel.add(dir.scale(cfg.shot_speed)),
                     ticks: cfg.shot_ticks,
                     damage: cfg.damage(ship),
-                    owner: i as u16,
+                    owner: Some(i as u16),
                     team: ship.team,
                 });
+            }
+        }
+
+        // Turrets: every standing base fires at the nearest enemy ship in range, leading its target.
+        if self.cfg.turret_damage > 0.0 {
+            for (team, base) in self.bases.iter_mut().enumerate() {
+                base.cooldown = base.cooldown.saturating_sub(1);
+                if !base.alive() || base.cooldown > 0 {
+                    continue;
+                }
+                let target = self
+                    .ships
+                    .iter()
+                    .filter(|s| s.alive && s.team as usize != team)
+                    .map(|s| (delta(size, base.pos, s.pos), s.vel))
+                    .filter(|(d, _)| d.len() < self.cfg.turret_range)
+                    .min_by(|a, b| a.0.len().total_cmp(&b.0.len()));
+                if let Some((to, vel)) = target {
+                    let lead = to.add(vel.scale(to.len() / self.cfg.shot_speed));
+                    let dir = lead.scale(1.0 / lead.len().max(1e-3));
+                    base.cooldown = self.cfg.turret_cooldown;
+                    self.shots.push(Shot {
+                        pos: wrap(size, base.pos.add(dir.scale(self.cfg.base_radius))),
+                        vel: dir.scale(self.cfg.shot_speed),
+                        ticks: self.cfg.shot_ticks,
+                        damage: self.cfg.turret_damage,
+                        owner: None,
+                        team: team as u8,
+                    });
+                }
             }
         }
 
@@ -558,7 +601,7 @@ impl World {
                 .find(|r| r.hp > 0.0 && delta(size, r.pos, shot.pos).len() < self.cfg.rock_radius * r.size as f32)
             {
                 rock.hp -= shot.damage;
-                rock.last_hit_by = Some(shot.owner);
+                rock.last_hit_by = shot.owner;
                 shot.ticks = 0;
                 continue;
             }
@@ -567,18 +610,20 @@ impl World {
             });
             if let Some(v) = hit {
                 Self::hurt(&self.cfg, &mut self.ships[v], shot.damage);
-                self.ships[v].last_hit_by = Some(shot.owner);
+                self.ships[v].last_hit_by = shot.owner;
                 self.events.push(Event::Hit { by: shot.owner, victim: v as u16, damage: shot.damage });
                 shot.ticks = 0;
                 continue;
             }
+            // Only ships' shots damage bases; turret shots pass over them.
+            let Some(owner) = shot.owner else { continue };
             let base = self.bases.iter().position(|b| b.alive() && delta(size, b.pos, shot.pos).len() < self.cfg.base_radius);
             if let Some(team) = base.filter(|team| *team as u8 != shot.team) {
                 let damage = shot.damage.min(self.bases[team].hp);
                 self.bases[team].hp -= shot.damage;
-                self.events.push(Event::BaseHit { by: shot.owner, team: team as u8, damage });
+                self.events.push(Event::BaseHit { by: owner, team: team as u8, damage });
                 if !self.bases[team].alive() {
-                    self.events.push(Event::BaseDestroyed { by: shot.owner, team: team as u8 });
+                    self.events.push(Event::BaseDestroyed { by: owner, team: team as u8 });
                 }
                 shot.ticks = 0;
             }

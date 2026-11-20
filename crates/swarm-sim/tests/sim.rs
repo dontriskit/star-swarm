@@ -53,7 +53,8 @@ fn observation_vector_has_fixed_length_and_is_finite() {
 fn regroup_order_gathers_the_team() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 5);
-    let target = Vec2::new(1200.0, 1200.0);
+    // Away from every base: turrets shoot ships that gather next to an enemy base.
+    let target = Vec2::new(1800.0, 600.0);
     let team: Vec<usize> = (0..world.ships.len()).filter(|i| world.ships[*i].team == 0).collect();
     for &i in &team {
         world.set_order(i, Order { kind: OrderKind::Regroup, target });
@@ -97,8 +98,8 @@ fn buying_spends_cargo_and_stops_at_the_tier_cap() {
 }
 
 /// Two teams, no rocks; ship 0 (team 0) sits in front of team 1's base, pointing at it.
-fn siege() -> World {
-    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, ..Config::default() };
+fn siege(cfg: Config) -> World {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, ..cfg };
     let mut world = World::new(cfg, 4);
     let target = world.bases[1].pos;
     world.ships[0].pos = world.wrap(Vec2::new(target.x - 200.0, target.y));
@@ -110,7 +111,8 @@ fn siege() -> World {
 
 #[test]
 fn destroying_every_other_base_wins_the_match() {
-    let mut world = siege();
+    // An undefended base of 100 HP falls to ten shots.
+    let mut world = siege(Config { base_hp: 100.0, turret_damage: 0.0, ..Config::default() });
     assert_eq!(world.bases[1].hp, 100.0);
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
     let mut destroyed = false;
@@ -124,9 +126,9 @@ fn destroying_every_other_base_wins_the_match() {
 
 #[test]
 fn a_team_without_a_base_gets_no_new_ships() {
-    let mut world = siege();
+    let mut world = siege(Config::default());
     // A third team keeps the match going after team 1 loses its base.
-    world.bases.push(Base { pos: Vec2::new(100.0, 100.0), hp: 100.0 });
+    world.bases.push(Base { pos: Vec2::new(100.0, 100.0), hp: 100.0, cooldown: 0 });
     world.bases[1].hp = 0.0;
     world.ships[1].alive = false;
     world.ships[1].respawn = 1;
@@ -138,8 +140,25 @@ fn a_team_without_a_base_gets_no_new_ships() {
 }
 
 #[test]
+fn a_turret_destroys_a_lone_basic_ship_before_the_base_falls() {
+    let mut world = siege(Config::default());
+    let fire = [Action { fire: true, ..Action::default() }, Action::default()];
+    let mut killed_by_turret = false;
+    for _ in 0..600 {
+        killed_by_turret |= world.step(&fire).iter().any(|e| matches!(e, Event::Killed { by: None, victim: 0 }));
+        if killed_by_turret {
+            break;
+        }
+    }
+    assert!(killed_by_turret, "the attacker survived 20 s in front of a turret");
+    assert!(world.bases[1].alive());
+    assert!(world.bases[1].hp < world.cfg.base_hp, "the attacker should have landed some shots first");
+    assert_eq!(world.winner(), None);
+}
+
+#[test]
 fn shields_take_the_damage_first_and_grow_back() {
-    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, ..Config::default() };
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
     let mut world = World::new(cfg, 6);
     let at = world.ships[1].pos;
     world.ships[0].pos = world.wrap(Vec2::new(at.x - 150.0, at.y));

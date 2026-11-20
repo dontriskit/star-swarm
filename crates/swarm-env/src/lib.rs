@@ -220,7 +220,8 @@ impl VecEnv {
                             Event::RockDestroyed { by: Some(ship), size } => rewards[ship as usize] += pay.rock * size as f32,
                             Event::RockDestroyed { by: None, .. } => {}
                             Event::Bought { ship, .. } => rewards[ship as usize] += pay.buy,
-                            Event::Hit { by, damage, .. } => rewards[by as usize] += pay.hit * damage,
+                            Event::Hit { by: Some(by), damage, .. } => rewards[by as usize] += pay.hit * damage,
+                            Event::Hit { by: None, .. } => {}
                             Event::Crashed { ship, damage } => rewards[ship as usize] -= pay.crash * damage,
                             Event::Killed { by, victim } => {
                                 rewards[victim as usize] -= pay.death;

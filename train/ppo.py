@@ -50,6 +50,22 @@ class Policy(nn.Module):
         return self.log_prob(dists, actions), sum(d.entropy() for d in dists), value
 
 
+def forget(policy: Policy, how: str, device, hidden: int):
+    """Ways to loosen a loaded policy's grip on what it learned, before training it on something new."""
+    fresh = Policy(hidden).to(device)
+    with torch.no_grad():
+        if how == "head":
+            # Keep what the network sees (the trunk), forget what it does with it.
+            policy.logits.load_state_dict(fresh.logits.state_dict())
+            policy.value.load_state_dict(fresh.value.state_dict())
+        elif how == "shrink":
+            # Shrink and perturb: pull every weight halfway to zero and add a fresh random network on top.
+            for old, new in zip(policy.parameters(), fresh.parameters()):
+                old.mul_(0.5).add_(new, alpha=0.5)
+        elif how != "none":
+            raise ValueError(f"unknown --forget: {how}")
+
+
 def pack(actions: torch.Tensor) -> bytes:
     """One byte per agent, the encoding Env.step expects."""
     a = actions
@@ -73,6 +89,7 @@ def make_env(args, envs: int, seed: int, learners: int | None = None) -> Env:
         rewards={name: float(weight) for name, weight in (pair.split("=") for pair in args.reward)},
         learners=args.learners if learners is None else learners,
         base_hp=args.base_hp,
+        turret_damage=args.turret_damage,
     )
 
 
@@ -141,6 +158,7 @@ def train(args):
     policy = Policy(args.hidden).to(device)
     if args.init:
         policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
+        forget(policy, args.forget, device, args.hidden)
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
 
     obs_buf = torch.zeros(steps, n, OBS_LEN, device=device)
@@ -240,6 +258,8 @@ if __name__ == "__main__":
     p.add_argument("--entropy-coef", type=float, default=0.01)
     p.add_argument("--entropy-end", type=float, default=None, help="entropy coefficient at the last update (default: no fading)")
     p.add_argument("--init", default=None, metavar="POLICY.PT", help="start from a saved policy")
+    p.add_argument("--forget", default="none", choices=["none", "head", "shrink"],
+                   help="with --init: reset the action and value heads, or shrink every weight and add noise")
     p.add_argument("--log-every", type=int, default=10)
     # The match: the full game, three teams of five, up to five minutes, a decision every 0.1 s.
     p.add_argument("--frame-skip", type=int, default=3)
@@ -248,7 +268,8 @@ if __name__ == "__main__":
     p.add_argument("--rocks", type=int, default=90)
     p.add_argument("--world-size", type=float, default=2400.0)
     p.add_argument("--max-ticks", type=int, default=9000)
-    p.add_argument("--base-hp", type=float, default=100.0)
+    p.add_argument("--base-hp", type=float, default=1000.0)
+    p.add_argument("--turret-damage", type=float, default=15.0, help="damage per base turret shot; 0 switches turrets off")
     p.add_argument("--learners", type=int, default=1, help="teams flown by the policy in training; the rest are scripted")
     p.add_argument("--reward", action="append", default=[], metavar="NAME=WEIGHT", help="override a reward weight, e.g. --reward buy=4")
     args = p.parse_args()

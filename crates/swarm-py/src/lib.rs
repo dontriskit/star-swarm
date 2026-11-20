@@ -33,7 +33,7 @@ impl Env {
     /// base_hit, base_lost, win, lose. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
-    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=1, ships_per_team=4, rock_count=40, world_size=1400.0, max_ticks=1800, rewards=None, learners=None, base_hp=100.0))]
+    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=1, ships_per_team=4, rock_count=40, world_size=1400.0, max_ticks=1800, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         envs: usize,
@@ -47,6 +47,7 @@ impl Env {
         rewards: Option<HashMap<String, f32>>,
         learners: Option<usize>,
         base_hp: f32,
+        turret_damage: f32,
     ) -> PyResult<Self> {
         let learners = learners.unwrap_or(teams);
         if learners > teams || !(base_hp > 0.0) {
@@ -73,7 +74,7 @@ impl Env {
             };
             *slot = value;
         }
-        let cfg = Config { teams, ships_per_team, rock_count, world_size, max_ticks, base_hp, ..Config::default() };
+        let cfg = Config { teams, ships_per_team, rock_count, world_size, max_ticks, base_hp, turret_damage: turret_damage.max(0.0), ..Config::default() };
         let inner = VecEnv::with_learners(cfg, envs, seed, frame_skip, pay, learners);
         let agents = inner.agents();
         let mut controlled = vec![0; agents];
