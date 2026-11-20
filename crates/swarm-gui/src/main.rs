@@ -1049,7 +1049,7 @@ mod tests {
         let mut game = game();
         let base = game.world.bases[MY_TEAM as usize].pos;
         let middle = on_screen(&game, base);
-        assert!(game.camera.zoom > 1.5, "on a big planet the view opens zoomed in on the home field");
+        assert!(game.camera.zoom > 1.2, "on a big planet the view opens zoomed in on the home field");
         assert!((f32::from(middle.x) - 300.0).abs() < 0.5 && (f32::from(middle.y) - 300.0).abs() < 0.5);
         let view = map::View::new(game.map_bounds.get(), game.camera);
         let there = spot(&game);

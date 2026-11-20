@@ -400,17 +400,17 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            radius: 4800.0,
+            radius: 3200.0,
             farm_kinds: [(1, 2, 10), (3, 3, 7), (4, 5, 5), (1, 5, 1)],
-            home_zone: 2200.0,
-            contest_margin: 1500.0,
+            home_zone: 1500.0,
+            contest_margin: 1000.0,
             home_farm: 600.0,
             rock_regrow: 12000,
             farm_radius: 200.0,
             dt: 1.0 / 20.0,
             teams: 3,
-            ships_per_team: 7,
-            rock_count: 1760,
+            ships_per_team: 9,
+            rock_count: 780,
             max_ticks: 36000,
             ship_radius: 20.0,
             ship_radii: [20.0, 25.0, 30.0, 36.0, 42.0, 50.0, 60.0],
@@ -1027,8 +1027,10 @@ impl World {
         // The kind of farm at a place in the first team's wedge: 0 small, 1 medium, 2 big.
         let rivals: Vec<Vec3> = world.bases.iter().skip(1).map(|b| b.pos).collect();
         let kind_at = |cfg: &Config, pos: Vec3| {
-            let mine = geo::chord(radius, home, pos);
-            let theirs = rivals.iter().map(|r| geo::chord(radius, *r, pos)).fold(f32::MAX, f32::min);
+            // Distances along the surface, as a ship would fly them.
+            let along = |a: Vec3, b: Vec3| radius * a.dot(b).clamp(-1.0, 1.0).acos();
+            let mine = along(home, pos);
+            let theirs = rivals.iter().map(|r| along(*r, pos)).fold(f32::MAX, f32::min);
             if mine < cfg.home_zone {
                 0
             } else if theirs - mine < cfg.contest_margin {

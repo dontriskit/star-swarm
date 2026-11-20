@@ -52,15 +52,15 @@ fn bases_are_equally_far_apart() {
     let d01 = world.dist(world.bases[0].pos, world.bases[1].pos);
     let d12 = world.dist(world.bases[1].pos, world.bases[2].pos);
     let d20 = world.dist(world.bases[2].pos, world.bases[0].pos);
-    // A third of the way around a planet of radius 4800.
-    assert!((d01 - 10053.1).abs() < 5.0, "{d01}");
+    // A third of the way around a planet of radius 3200.
+    assert!((d01 - 6702.1).abs() < 5.0, "{d01}");
     assert!((d01 - d12).abs() < 5.0 && (d12 - d20).abs() < 5.0);
 }
 
 #[test]
 fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let world = World::new(Config::default(), 4);
-    assert_eq!(world.rocks.len(), 1760 + 10, "the rocks asked for, and the two lodes at the poles");
+    assert_eq!(world.rocks.len(), 780 + 10, "the rocks asked for, and the two lodes at the poles");
     assert!(world.rocks.iter().all(|r| r.farm.is_some()), "every rock is in a farm, a straggler in one of its own");
     // Every farm holds rocks of its own sizes, inside its radius.
     for (f, farm) in world.farms.iter().enumerate() {
@@ -89,16 +89,16 @@ fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let (small, medium, big) = ((1, 2), (3, 3), (4, 5));
     for farm in world.farms.iter().filter(|f| f.sizes != (1, 5)) {
         let (mine, theirs) = nearest_two(farm.pos);
-        if mine < 2100.0 {
+        if mine < 1450.0 {
             assert_eq!(farm.sizes, small, "{mine} from its base");
-        } else if mine > 2300.0 && theirs - mine < 1300.0 {
+        } else if mine > 1550.0 && theirs - mine < 900.0 {
             assert_eq!(farm.sizes, big, "{mine} and {theirs} from the two nearest bases");
-        } else if mine > 2300.0 && theirs - mine > 1700.0 {
+        } else if mine > 1550.0 && theirs - mine > 1100.0 {
             assert_eq!(farm.sizes, medium, "{mine} and {theirs} from the two nearest bases");
         }
     }
     let count = |sizes: (u8, u8)| world.farms.iter().filter(|f| f.sizes == sizes).count();
-    assert!(count(small) >= 20 && count(medium) >= 20 && count(big) >= 20, "{} small, {} medium, {} big", count(small), count(medium), count(big));
+    assert!(count(small) >= 9 && count(medium) >= 9 && count(big) >= 9, "{} small, {} medium, {} big", count(small), count(medium), count(big));
 
     // A farm of small rocks next to home; a lode of big rocks exactly half-way between every
     // two bases, and one at each pole, as far from all three.
@@ -108,19 +108,19 @@ fn small_rocks_grow_by_the_bases_and_big_ones_where_teams_meet() {
     let lodes: Vec<&Farm> = world.farms.iter().filter(|f| f.sizes == big).filter(|f| { let (a, b) = nearest_two(f.pos); (a - b).abs() < 1.0 }).collect();
     assert_eq!(lodes.len(), 5, "three between the bases and two at the poles");
     assert_eq!(lodes.iter().filter(|f| f.pos.z.abs() > 0.999).count(), 2);
-    assert!(lodes.iter().filter(|f| f.pos.z.abs() < 0.001).all(|f| (nearest_two(f.pos).0 - 5026.5).abs() < 2.0), "half of the 10053 between two bases");
+    assert!(lodes.iter().filter(|f| f.pos.z.abs() < 0.001).all(|f| (nearest_two(f.pos).0 - 3351.0).abs() < 2.0), "half of the 6702 between two bases");
 
     // Several farms known from home, farms out to the far side, and open space between farms.
     let obs = observe(&world, 0);
     assert_eq!(obs.fields.len(), 8);
     assert!(obs.fields[0].dist < obs.fields[7].dist && obs.fields[7].dist < 3000.0, "{:?}", obs.fields[7]);
     let far = world.farms.iter().map(|f| world.dist(home, f.pos)).fold(0.0, f32::max);
-    assert!(far > 12000.0, "the farthest farm is {far} away");
+    assert!(far > 8000.0, "the farthest farm is {far} away");
     let gap = (2..third).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| world.dist(world.farms[i].pos, world.farms[j].pos)).fold(f32::MAX, f32::min);
     assert!(gap > 2.0 * world.cfg.farm_radius + 100.0, "the closest two farms are {gap} apart");
 
     // The rock index finds exactly the rocks a plain search finds.
-    for ship in [0usize, 7, 14] {
+    for ship in [0usize, 9, 18] {
         let p = world.offset(world.ships[ship].pos, 1.0, 900.0);
         for reach in [80.0, 1040.0, 1500.0] {
             let mut found: Vec<usize> = Vec::new();
@@ -755,7 +755,7 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     let mut world = World::new(cfg, 4);
     let n = world.ships.len();
     let per_team = world.cfg.ships_per_team;
-    assert_eq!(per_team, 7);
+    assert_eq!(per_team, 9);
     let pick = |world: &mut World, modes: &[(usize, Plan)]| {
         let mut actions = vec![Action::default(); n];
         for (ship, mode) in modes {
@@ -777,11 +777,11 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     assert!(world.dist(world.ships[3].order.target, world.bases[0].pos) < 1.0);
     assert!(kinds(&world).iter().enumerate().all(|(i, k)| i == 3 || *k == OrderKind::Mine));
 
-    // Three of seven want to attack: not half the team, so nobody attacks.
-    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB)]);
+    // Four of nine want to attack: not half the team, so nobody attacks.
+    pick(&mut world, &[(0, Plan::AttackA), (1, Plan::AttackA), (2, Plan::AttackB), (5, Plan::AttackA)]);
     assert!(kinds(&world).iter().all(|k| *k != OrderKind::Attack), "{:?}", kinds(&world));
 
-    // A fourth joins: the whole team attacks, defender included, at the base most of them picked.
+    // A fifth joins: the whole team attacks, defender included, at the base most of them picked.
     pick(&mut world, &[(4, Plan::AttackA)]);
     assert!(kinds(&world).iter().all(|k| *k == OrderKind::Attack), "{:?}", kinds(&world));
     assert!(world.ships[..per_team].iter().all(|s| world.dist(s.order.target, world.bases[1].pos) < 1.0));
@@ -789,10 +789,10 @@ fn attacking_is_a_team_decision_and_farming_the_default() {
     assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
 
     // Team radar: a ship sees every teammate's mode and how the team splits.
-    // (The radar shows up to six teammates, which is all of them in a team of seven.)
+    // (The radar shows the six nearest of the eight teammates; the split counts them all.)
     let seen = observe(&world, 6);
     assert_eq!(seen.mates.len(), 6);
-    assert!((seen.votes[Plan::AttackA as usize] - 3.0 / per_team as f32).abs() < 1e-6);
+    assert!((seen.votes[Plan::AttackA as usize] - 4.0 / per_team as f32).abs() < 1e-6);
     assert!((seen.votes[Plan::AttackB as usize] - 1.0 / per_team as f32).abs() < 1e-6);
 
     // Two change their minds: the attack is off, and everyone is back to their own mode.
