@@ -19,8 +19,9 @@ from torch import nn
 
 from swarm_py import OBS_LEN, Env
 
-# Sizes of the five action heads: thrust, turn, fire, boost, buy.
-HEADS = (2, 3, 2, 2, 12)
+# Sizes of the six action heads: thrust, turn, fire, boost, buy, vote on the team plan.
+HEADS = (2, 3, 2, 2, 12, 5)
+PLANS = ("farm", "defend", "attack_a", "attack_b")
 REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt")
 CLASSES = ("basic", "lancer", "twin", "scatter")
 UPGRADES = ("attack", "health", "fire_rate", "shield", "speed", "regen", "agility", "ammo")
@@ -72,7 +73,7 @@ def forget(policy: Policy, how: str, device, hidden: int):
 def pack(actions: torch.Tensor) -> bytes:
     """One little-endian uint16 per agent, the encoding Env.step expects."""
     a = actions
-    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5)
+    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 9)
     return code.cpu().numpy().astype("<u2").tobytes()
 
 
@@ -119,6 +120,9 @@ def summarize(stats) -> dict:
         # What the ships turned into: share of each class and mean level of each upgrade at the end.
         "classes": {name: round(float(s[:, 9 + i].mean()), 3) for i, name in enumerate(CLASSES)},
         "upgrades": {name: round(float(s[:, 13 + i].mean()), 2) for i, name in enumerate(UPGRADES)},
+        "tiers": [round(float(s[:, 21 + i].mean()), 3) for i in range(3)],
+        # How much of a match the team spent under each plan it voted in.
+        "plans": {name: round(float(s[:, 24 + i].mean()), 3) for i, name in enumerate(PLANS)},
     }
 
 

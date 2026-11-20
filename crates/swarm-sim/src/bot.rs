@@ -115,14 +115,14 @@ impl ScriptedBot {
         }
     }
 
-    /// Buys one level of everything, then saves up for the next tier, then spreads
-    /// crystals evenly over the upgrades.
+    /// Buys one level of everything, then saves up for the next tier (which starts again
+    /// without upgrades); at the top tier it spreads crystals evenly over the upgrades.
     fn shop(&self, obs: &Observation, cfg: &Config) -> Option<Buy> {
         let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
         let lowest = obs.levels[next as usize];
         match cfg.cost(lowest, obs.tier) {
             Some(cost) if lowest == 0 || obs.tier == TIERS => (obs.cargo >= cost).then_some(Buy::Upgrade(next)),
-            _ => (obs.tier < TIERS && obs.cargo >= cfg.tier_cost).then_some(Buy::Tier(self.prefers)),
+            _ => (obs.tier < TIERS && obs.cargo >= cfg.tier_cost[obs.tier as usize - 1]).then_some(Buy::Tier(self.prefers)),
         }
     }
 }

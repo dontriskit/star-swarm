@@ -39,12 +39,12 @@ with torch.no_grad():
         env.step(actions)
         # The environment holds an action for frame_skip ticks and buys only on the first:
         # clear the four buy bits (5 to 8) of every 16-bit action for the held ticks.
-        held = (np.frombuffer(actions, dtype="<u2") & 0x1F).astype("<u2").tobytes()
+        held = (np.frombuffer(actions, dtype="<u2") & 0xFE1F).astype("<u2").tobytes()
         frames += actions + held * (args.frame_skip - 1)
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0005")
+    f.write(b"SWRP0006")
     f.write(struct.pack("<QfHHII", args.seed, args.radius, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
     f.write(struct.pack("<Q", len(frames) // 2))
     f.write(frames)

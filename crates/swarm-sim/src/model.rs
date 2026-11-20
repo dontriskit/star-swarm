@@ -9,9 +9,9 @@ use crate::bot::Controller;
 use crate::obs::{OBS_LEN, Observation};
 use crate::sim::{Action, Config};
 
-const MAGIC: &[u8; 8] = b"SWPOL003";
-/// Action heads in the order the trainer uses: thrust, turn, fire, boost, buy.
-const HEADS: [usize; 5] = [2, 3, 2, 2, crate::replay::BUY_CODES];
+const MAGIC: &[u8; 8] = b"SWPOL004";
+/// Action heads in the order the trainer uses: thrust, turn, fire, boost, buy, vote.
+const HEADS: [usize; 6] = [2, 3, 2, 2, crate::replay::BUY_CODES, crate::replay::VOTE_CODES];
 
 struct Layer {
     inputs: usize,
@@ -93,6 +93,7 @@ impl Net {
             fire: pick[2] == 1,
             boost: pick[3] == 1,
             buy: crate::replay::buy_of(pick[4] as u8),
+            vote: pick[5].checked_sub(1).and_then(|i| crate::sim::PLANS.get(i).copied()),
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::geo::{self, Vec3};
-use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, TIERS, UPGRADES, Vec2, World};
+use crate::sim::{CLASSES, Class, Config, ORDER_KINDS, OrderKind, PLANS, Plan, TIERS, UPGRADES, Vec2, World};
 
 /// How many of each kind of nearby object a ship sees.
 pub const NEAR: usize = 6;
@@ -7,7 +7,7 @@ pub const NEAR: usize = 6;
 pub const SHOTS: usize = 4;
 /// How many enemy bases a ship knows about (the nearest ones still standing).
 pub const BASES: usize = 2;
-const SELF_LEN: usize = 11 + CLASSES.len() + UPGRADES.len() + 4 + ORDER_KINDS + 2;
+const SELF_LEN: usize = 11 + CLASSES.len() + UPGRADES.len() + 4 + ORDER_KINDS + 2 + 2 * PLANS.len() + 2;
 const BASE_LEN: usize = 4;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
@@ -66,6 +66,12 @@ pub struct Observation {
     pub base: BaseObs,
     pub order: OrderKind,
     pub target: Vec2,
+    /// The ship's own standing vote on the team plan.
+    pub vote: Option<Plan>,
+    /// Share of the team's living ships voting for each plan, indexed by [`Plan`].
+    pub votes: [f32; 4],
+    /// The middle of the ship's living teammates, in its own frame; zero when it has none.
+    pub team: Vec2,
     /// Enemy bases still standing, nearest first, at most [`BASES`].
     pub enemy_bases: Vec<BaseObs>,
     /// Nearest first, at most [`NEAR`] each, within the view range.
@@ -113,6 +119,9 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         (0..world.bases.len()).filter(|t| *t != me.team as usize && world.bases[*t].alive()).map(base).collect();
     enemy_bases.sort_by(|a, b| a.dist.total_cmp(&b.dist));
     enemy_bases.truncate(BASES);
+    let mates = || world.ships.iter().enumerate().filter(|(i, s)| s.team == me.team && s.alive && *i != ship).map(|(_, s)| s);
+    let voters = mates().count() + me.alive as usize;
+    let middle = mates().fold(Vec3::default(), |sum, s| sum.add(s.pos));
     Observation {
         alive: me.alive,
         hull: me.hull.max(0.0),
@@ -133,6 +142,12 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         base: base(me.team as usize),
         order: me.order.kind,
         target: world.to_frame(me.pos, me.fwd, me.order.target),
+        vote: me.vote,
+        votes: PLANS.map(|p| {
+            let n = mates().filter(|s| s.vote == Some(p)).count() + (me.alive && me.vote == Some(p)) as usize;
+            if voters > 0 { n as f32 / voters as f32 } else { 0.0 }
+        }),
+        team: if middle.len() > 1e-3 { world.to_frame(me.pos, me.fwd, middle.unit()) } else { Vec2::default() },
         enemy_bases,
         rocks: nearest(
             world
@@ -152,7 +167,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
                 .iter()
                 .enumerate()
                 .filter(|(i, s)| *i != ship && s.alive)
-                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.ship_radius, s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)))
+                .filter_map(|(_, s)| see(s.pos, s.vel, cfg.radius_of(s), s.hull / cfg.hull_max(s), s.team != me.team, Some(s.fwd)))
                 .collect(),
             NEAR,
         ),
@@ -209,6 +224,13 @@ impl Observation {
         order[self.order as usize] = 1.0;
         put(&order);
         put(&[self.target.x / half, self.target.y / half]);
+        let mut vote = [0.0; PLANS.len()];
+        if let Some(p) = self.vote {
+            vote[p as usize] = 1.0;
+        }
+        put(&vote);
+        put(&self.votes);
+        put(&[self.team.x / half, self.team.y / half]);
         for slot in 0..BASES {
             match self.enemy_bases.get(slot) {
                 Some(b) => put(&[1.0, b.pos.x / half, b.pos.y / half, b.hp]),

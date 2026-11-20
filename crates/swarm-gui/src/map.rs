@@ -204,8 +204,8 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, area: Bo
 
     for (i, ship) in world.ships.iter().enumerate().filter(|(_, s)| s.alive) {
         let Some(center) = view.at(ship.pos) else { continue };
-        // Ships are drawn larger than life so they stay readable; tier 2 larger still.
-        let radius = (world.cfg.ship_radius * scale * 1.8).max(7.0) * if ship.tier > 1 { 1.4 } else { 1.0 };
+        // Ships are drawn larger than life so they stay readable; higher tiers are bigger.
+        let radius = (world.cfg.radius_of(ship) * scale * 1.8).max(7.0 * world.cfg.radius_of(ship) / world.cfg.ship_radius);
         let (fx, fy) = view.heading(ship.fwd);
         let corner = |turn: f32, reach: f32| {
             let (s, c) = turn.sin_cos();

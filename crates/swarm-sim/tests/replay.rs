@@ -6,12 +6,15 @@ fn every_action_survives_encoding() {
     let buys: Vec<Option<Buy>> = std::iter::once(None)
         .chain(UPGRADES.iter().copied().map(Buy::Upgrade).chain(TIER2.iter().copied().map(Buy::Tier)).map(Some))
         .collect();
+    let votes: Vec<Option<Plan>> = std::iter::once(None).chain(PLANS.iter().copied().map(Some)).collect();
     for thrust in [false, true] {
         for turn in [-1, 0, 1] {
             for (fire, boost) in [(false, false), (false, true), (true, false), (true, true)] {
                 for &buy in &buys {
-                    let a = Action { thrust, turn, fire, boost, buy };
-                    assert_eq!(decode(encode(&a)), a);
+                    for &vote in &votes {
+                        let a = Action { thrust, turn, fire, boost, buy, vote };
+                        assert_eq!(decode(encode(&a)), a);
+                    }
                 }
             }
         }

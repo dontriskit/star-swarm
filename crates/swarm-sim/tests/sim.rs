@@ -135,35 +135,64 @@ fn regroup_order_gathers_the_team() {
 }
 
 #[test]
-fn buying_spends_cargo_and_stops_at_the_tier_cap() {
+fn each_tier_has_a_higher_upgrade_cap_and_starts_again_without_upgrades() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 2);
     world.ships[0].cargo = 1000;
     let mut actions = vec![Action::default(); world.ships.len()];
-    actions[0].buy = Some(Buy::Upgrade(Upgrade::Attack));
-    for _ in 0..10 {
-        world.step(&actions);
-    }
+    let buy = |world: &mut World, actions: &mut Vec<Action>, what: Buy, times: usize| {
+        actions[0].buy = Some(what);
+        for _ in 0..times {
+            world.step(actions);
+        }
+    };
+
     // Tier 1 stops at level 3: 10 + 20 + 30 crystals.
+    buy(&mut world, &mut actions, Buy::Upgrade(Upgrade::Attack), 10);
     assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 3);
     assert_eq!(world.ships[0].cargo, 1000 - 60);
+    let full_tier1 = world.cfg.damage(&world.ships[0]);
 
-    actions[0].buy = Some(Buy::Tier(Class::Scatter));
-    world.step(&actions);
-    world.step(&actions);
-    assert_eq!(world.ships[0].tier, 2);
-    assert_eq!(world.ships[0].class, Class::Scatter);
-    assert_eq!(world.ships[0].cargo, 1000 - 60 - 60, "the tier is paid for once");
+    // Tier 2: paid for once, the class is chosen, the upgrades are gone.
+    buy(&mut world, &mut actions, Buy::Tier(Class::Twin), 1);
+    assert_eq!((world.ships[0].tier, world.ships[0].class), (2, Class::Twin));
+    assert_eq!(world.ships[0].levels, [0; 8]);
+    assert_eq!(world.ships[0].cargo, 1000 - 60 - 60);
     assert_eq!(world.ships[0].hull, world.cfg.hull_max(&world.ships[0]));
-    assert!(world.cfg.hull_max(&world.ships[0]) > world.cfg.hull);
 
-    // Tier 2 raises the cap to level 5: 40 + 50 more crystals.
-    actions[0].buy = Some(Buy::Upgrade(Upgrade::Attack));
-    for _ in 0..10 {
-        world.step(&actions);
-    }
+    // Tier 2 stops at level 4, tier 3 at level 5, and tier 3 keeps the class.
+    buy(&mut world, &mut actions, Buy::Upgrade(Upgrade::Attack), 10);
+    assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 4);
+    world.ships[0].cargo = 1000;
+    buy(&mut world, &mut actions, Buy::Tier(Class::Lancer), 1);
+    assert_eq!((world.ships[0].tier, world.ships[0].class, world.ships[0].cargo), (3, Class::Twin, 1000 - 120));
+    buy(&mut world, &mut actions, Buy::Upgrade(Upgrade::Attack), 10);
     assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 5);
-    assert_eq!(world.ships[0].cargo, 1000 - 60 - 60 - 90);
+    buy(&mut world, &mut actions, Buy::Tier(Class::Twin), 3);
+    assert_eq!(world.ships[0].tier, 3, "there is no tier 4");
+    let _ = full_tier1;
+}
+
+#[test]
+fn a_fresh_ship_of_the_next_tier_is_a_little_worse_than_a_full_one_below() {
+    let world = World::new(Config { rock_count: 0, ..Config::default() }, 2);
+    let cfg = &world.cfg;
+    let ship = |tier: u8, level: u8| {
+        let mut s = world.ships[0].clone();
+        s.tier = tier;
+        s.levels = [level; 8];
+        s
+    };
+    for tier in 1..TIERS {
+        let (full, fresh, upgraded) = (ship(tier, cfg.max_level(tier)), ship(tier + 1, 0), ship(tier + 1, cfg.max_level(tier + 1)));
+        for stat in [Config::hull_max, Config::shield_max, Config::ammo_max, Config::turn_rate_of] {
+            let (a, b, c) = (stat(cfg, &full), stat(cfg, &fresh), stat(cfg, &upgraded));
+            assert!(b < a && b > a * 0.9, "tier {} fresh {b} against tier {tier} full {a}", tier + 1);
+            assert!(c > a, "tier {} upgraded {c} against tier {tier} full {a}", tier + 1);
+        }
+    }
+    // Bigger ships take up more room.
+    assert!(cfg.radius_of(&ship(3, 0)) > cfg.radius_of(&ship(2, 0)) && cfg.radius_of(&ship(2, 0)) > cfg.radius_of(&ship(1, 0)));
 }
 
 /// Two teams, no rocks; ship 0 (team 0) sits 200 in front of team 1's base, pointing at it.
@@ -198,6 +227,8 @@ fn a_team_without_a_base_gets_no_new_ships() {
     let mut world = siege(Config::default());
     // A third team keeps the match going after team 1 loses its base.
     world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0 });
+    world.plans.push(None);
+    world.commanded.push(false);
     world.bases[1].hp = 0.0;
     world.ships[1].alive = false;
     world.ships[1].respawn = 1;
@@ -270,15 +301,20 @@ fn three_deaths_demote_a_ship() {
         assert!(world.ships[1].alive);
     };
 
-    // A tier-2 ship with upgrades above the tier-1 cap.
-    world.ships[1].tier = 2;
+    // A tier-3 ship with upgrades above the lower tiers' caps.
+    world.ships[1].tier = 3;
     world.ships[1].class = Class::Lancer;
     world.ships[1].levels = [5, 4, 3, 2, 1, 0, 5, 5];
     kill(&mut world);
     kill(&mut world);
-    assert_eq!((world.ships[1].tier, world.ships[1].lives), (2, 1), "two deaths cost lives only");
+    assert_eq!((world.ships[1].tier, world.ships[1].lives), (3, 1), "two deaths cost lives only");
     kill(&mut world);
-    assert_eq!((world.ships[1].tier, world.ships[1].class, world.ships[1].lives), (1, Class::Basic, 3));
+    assert_eq!((world.ships[1].tier, world.ships[1].class, world.ships[1].lives), (2, Class::Lancer, 3), "tier 2 keeps the class");
+    assert_eq!(world.ships[1].levels, [4, 4, 3, 2, 1, 0, 4, 4], "levels above the tier-2 cap are lost");
+    for _ in 0..3 {
+        kill(&mut world);
+    }
+    assert_eq!((world.ships[1].tier, world.ships[1].class), (1, Class::Basic));
     assert_eq!(world.ships[1].levels, [3, 3, 3, 2, 1, 0, 3, 3], "levels above the tier-1 cap are lost");
 
     // Three more deaths at tier 1 wipe the upgrades.
@@ -401,4 +437,89 @@ fn crystal_armor_can_be_switched_off() {
     while !world.step(&fire).iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })) {}
     assert_eq!(world.ships[1].cargo, 12);
     assert!(world.ships[1].hull < 100.0);
+}
+
+#[test]
+fn ships_take_up_room() {
+    // Two teammates flying at each other end up apart, not on top of each other, and unhurt.
+    let cfg = Config { teams: 1, ships_per_team: 2, rock_count: 0, ..Config::default() };
+    let mut world = World::new(cfg, 3);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 0.3, 200.0);
+    let (a, b) = (world.ships[0].pos, world.ships[1].pos);
+    world.face(0, b);
+    world.face(1, a);
+    let go = [Action { thrust: true, ..Action::default() }; 2];
+    let mut closest = f32::MAX;
+    for _ in 0..120 {
+        world.step(&go);
+        closest = closest.min(world.dist(world.ships[0].pos, world.ships[1].pos));
+    }
+    assert!(closest > 20.0, "two ships of radius 12 came within {closest}");
+    assert_eq!(world.ships[0].hull, 100.0);
+
+    // Enemies that ram each other are hurt.
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 3);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 0.3, 200.0);
+    let (a, b) = (world.ships[0].pos, world.ships[1].pos);
+    world.face(0, b);
+    world.face(1, a);
+    let mut rammed = false;
+    for _ in 0..120 {
+        rammed |= world.step(&go).iter().any(|e| matches!(e, Event::Crashed { .. }));
+    }
+    assert!(rammed);
+    assert!(world.ships[0].shield < 40.0 && world.ships[1].shield < 40.0);
+}
+
+#[test]
+fn the_plan_with_the_most_votes_becomes_the_teams_order() {
+    let cfg = Config { rock_count: 0, ..Config::default() };
+    let mut world = World::new(cfg, 4);
+    let n = world.ships.len();
+    let vote = |plans: [Option<Plan>; 5]| {
+        let mut actions = vec![Action::default(); n];
+        for (i, plan) in plans.into_iter().enumerate() {
+            actions[i].vote = plan;
+        }
+        actions
+    };
+    let count = |world: &mut World, actions: &[Action]| {
+        for _ in 0..world.cfg.plan_ticks {
+            world.step(actions);
+        }
+    };
+
+    // Nobody has voted: no plan, orders untouched.
+    count(&mut world, &vote([None; 5]));
+    assert_eq!(world.plans[0], None);
+    assert!(world.ships.iter().all(|s| s.order.kind == OrderKind::Mine));
+
+    // Three of five vote to attack the first enemy base: the whole team gets that order.
+    count(&mut world, &vote([Some(Plan::AttackA), Some(Plan::AttackA), Some(Plan::AttackA), Some(Plan::Farm), None]));
+    assert_eq!(world.plans[0], Some(Plan::AttackA));
+    let target = world.bases[1].pos;
+    for s in world.ships.iter().filter(|s| s.team == 0) {
+        assert_eq!(s.order.kind, OrderKind::Attack);
+        assert!(world.dist(s.order.target, target) < 1.0);
+    }
+    assert!(world.ships.iter().filter(|s| s.team != 0).all(|s| s.order.kind == OrderKind::Mine), "other teams are not affected");
+
+    // Votes stand until changed; a ship sees how its team is voting.
+    let seen = observe(&world, 4);
+    assert_eq!(seen.vote, None);
+    assert!((seen.votes[Plan::AttackA as usize] - 0.6).abs() < 1e-6 && (seen.votes[Plan::Farm as usize] - 0.2).abs() < 1e-6);
+
+    // The vote swings to defending the base, and to the second enemy base.
+    count(&mut world, &vote([Some(Plan::Defend); 5]));
+    assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| s.order.kind == OrderKind::Defend && world.dist(s.order.target, world.bases[0].pos) < 1.0));
+    count(&mut world, &vote([Some(Plan::AttackB); 5]));
+    assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| world.dist(s.order.target, world.bases[2].pos) < 1.0));
+
+    // A team commanded from outside keeps the orders it was given.
+    world.commanded[0] = true;
+    count(&mut world, &vote([Some(Plan::Farm); 5]));
+    assert!(world.ships.iter().filter(|s| s.team == 0).all(|s| s.order.kind == OrderKind::Attack));
 }

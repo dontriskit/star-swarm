@@ -13,7 +13,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Icon, Selectable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
 use map::Camera;
-use swarm_sim::{Class, Config, Controller, HybridBot, ModelBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, UPGRADES, Upgrade, World, observe};
+use swarm_sim::{Class, Config, Plan, Controller, HybridBot, ModelBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, UPGRADES, Upgrade, World, observe};
 
 /// The team the human commands.
 pub const MY_TEAM: u8 = 0;
@@ -58,6 +58,16 @@ fn upgrade_look(upgrade: Upgrade) -> (&'static [u8], &'static str) {
         Upgrade::Agility => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8 H14 A4 4 0 0 1 14 16 H8 M11 13 L8 16 L11 19"/></svg>"#, "zwinność"),
         // Two rounds.
         Upgrade::Ammo => (br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20 V9 L8 5 L10 9 V20 Z M14 20 V9 L16 5 L18 9 V20 Z"/></svg>"#, "amunicja"),
+    }
+}
+
+fn plan_name(plan: Option<Plan>) -> &'static str {
+    match plan {
+        None => "brak",
+        Some(Plan::Farm) => "farma",
+        Some(Plan::Defend) => "obrona",
+        Some(Plan::AttackA) => "atak A",
+        Some(Plan::AttackB) => "atak B",
     }
 }
 
@@ -164,6 +174,9 @@ impl Game {
         let seed = playback.as_ref().map_or(seed, |r| r.seed);
         let world = playback.as_ref().map_or_else(|| World::new(Config::default(), seed), Replay::world);
         let camera = Camera::looking_at(world.bases[MY_TEAM as usize].pos);
+        let mut world = world;
+        // You give the orders for your own team; its ships' votes are not counted.
+        world.commanded[MY_TEAM as usize] = playback.is_none();
         Game {
             recording: Replay::new(seed, &world.cfg),
             status: match &playback {
@@ -216,6 +229,8 @@ impl Game {
         let seed = self.seed.wrapping_add(1);
         let mut fresh = Game::new(seed, None);
         fresh.pilots = (0..fresh.world.ships.len()).map(|_| Box::new(ModelBot::new(net.clone(), ModelBot::HOLD)) as Box<dyn Controller>).collect();
+        // Nobody commands here: every team follows its own ships' votes.
+        fresh.world.commanded.iter_mut().for_each(|c| *c = false);
         fresh.status = Watch::report(&path);
         fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None });
         *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, paused: self.paused, camera: self.camera, spin: self.spin, ..fresh };
@@ -397,6 +412,7 @@ impl Game {
                 .gap_2()
                 .child(div().size_3().rounded_sm().bg(rgb(TEAM_COLORS[t % TEAM_COLORS.len()])))
                 .child(div().flex_1().child(who))
+                .child(div().w(px(64.)).text_color(muted).child(if self.world.commanded[t] { "rozkazy" } else { plan_name(self.world.plans[t]) }))
                 .child(div().w(px(84.)).flex().justify_end().child(base_text))
                 .child(div().w(px(72.)).flex().justify_end().child(crystals.to_string()))
                 .child(div().w(px(56.)).flex().justify_end().child(self.team_score(t as u8).to_string()))
@@ -406,6 +422,7 @@ impl Game {
             .gap_2()
             .text_color(muted)
             .child(div().flex_1().child("Drużyna"))
+            .child(div().w(px(64.)).child("Plan"))
             .child(div().w(px(84.)).flex().justify_end().child("Baza (HP)"))
             .child(div().w(px(72.)).flex().justify_end().child("Kryształy"))
             .child(div().w(px(56.)).flex().justify_end().child("Wynik"));

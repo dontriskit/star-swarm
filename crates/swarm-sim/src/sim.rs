@@ -101,12 +101,29 @@ pub struct Weapon {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Buy {
     Upgrade(Upgrade),
-    /// Move up to tier 2 as the given class: stronger hull and shields, new guns, higher upgrade cap.
+    /// Move up one tier: a bigger, stronger ship with a higher upgrade cap, starting again
+    /// without upgrades. Leaving tier 1 means picking the class; later the class is kept.
     Tier(Class),
 }
 
 /// Ship tiers run from 1 to this.
-pub const TIERS: u8 = 2;
+pub const TIERS: u8 = 3;
+
+/// What a team does together. Ships vote; the plan with the most votes becomes every ship's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Plan {
+    /// Mine together, staying near each other.
+    Farm,
+    /// Gather at the team's own base and fight whoever comes.
+    Defend,
+    /// Attack the first enemy base still standing, counting teams on from one's own.
+    AttackA,
+    /// Attack the second one (the same base as AttackA when only one is left).
+    AttackB,
+}
+
+pub const PLANS: [Plan; 4] = [Plan::Farm, Plan::Defend, Plan::AttackA, Plan::AttackB];
 
 /// What a commander tells a ship to do. The ship still flies itself; the order
 /// is part of its observation.
@@ -143,6 +160,8 @@ pub struct Action {
     /// Burn the boost tank for extra thrust and top speed.
     pub boost: bool,
     pub buy: Option<Buy>,
+    /// Vote for what the team should do; None keeps the ship's last vote.
+    pub vote: Option<Plan>,
 }
 
 #[derive(Clone, Debug)]
@@ -155,7 +174,14 @@ pub struct Config {
     pub rock_count: usize,
     pub max_ticks: u32,
 
+    /// Radius of a tier-1 ship. See [`Config::ship_radii`] for the others.
     pub ship_radius: f32,
+    /// Radius of a ship per tier: bigger ships take up more room and are easier to hit.
+    pub ship_radii: [f32; TIERS as usize],
+    /// Share of the closing speed two enemy ships take as damage when they ram each other.
+    pub ram_damage: f32,
+    /// Ticks between counts of the ships' votes on the team plan.
+    pub plan_ticks: u32,
     pub thrust_accel: f32,
     pub drag: f32,
     pub max_speed: f32,
@@ -168,12 +194,15 @@ pub struct Config {
     pub shield_delay: u16,
     /// Cargo room per tier.
     pub cargo: [u32; TIERS as usize],
-    /// Hull, shield and damage multiplier per tier.
-    pub tier_power: [f32; TIERS as usize],
     /// Highest upgrade level per tier.
     pub tier_levels: [u8; TIERS as usize],
-    /// Crystals to move from tier 1 to tier 2.
-    pub tier_cost: u32,
+    /// Crystals to move up from tier 1, and from tier 2.
+    pub tier_cost: [u32; TIERS as usize - 1],
+    /// How much one level of each upgrade adds, indexed by [`Upgrade`].
+    pub upgrade_steps: [f32; 8],
+    /// A ship fresh into a tier is this fraction of a fully upgraded ship of the tier below,
+    /// in every stat: a little worse at first, better once upgraded again.
+    pub tier_discount: f32,
 
     pub base_hp: f32,
     pub base_radius: f32,
@@ -218,7 +247,6 @@ pub struct Config {
     pub pickup_radius: f32,
 
     pub upgrade_cost: u32,
-    pub upgrade_step: f32,
 
     pub respawn_ticks: u16,
     pub kill_score: u32,
@@ -235,6 +263,9 @@ impl Default for Config {
             rock_count: 420,
             max_ticks: 18000,
             ship_radius: 12.0,
+            ship_radii: [12.0, 15.0, 19.0],
+            ram_damage: 0.05,
+            plan_ticks: 30,
             thrust_accel: 220.0,
             drag: 0.6,
             max_speed: 240.0,
@@ -243,10 +274,13 @@ impl Default for Config {
             shield: 40.0,
             shield_regen: 4.0,
             shield_delay: 60,
-            cargo: [60, 120],
-            tier_power: [1.0, 1.5],
-            tier_levels: [3, 5],
-            tier_cost: 60,
+            cargo: [60, 120, 200],
+            tier_levels: [3, 4, 5],
+            tier_cost: [60, 120],
+            // Attack, health, fire rate, shield, speed, regen, agility, ammo: fighting stats grow
+            // fast, mobility slowly.
+            upgrade_steps: [0.2, 0.2, 0.05, 0.2, 0.05, 0.2, 0.05, 0.2],
+            tier_discount: 0.95,
             base_hp: 1000.0,
             base_radius: 60.0,
             base_heal_radius: 120.0,
@@ -277,7 +311,6 @@ impl Default for Config {
             crystal_ticks: 600,
             pickup_radius: 26.0,
             upgrade_cost: 10,
-            upgrade_step: 0.2,
             respawn_ticks: 90,
             kill_score: 20,
             view_range: 600.0,
@@ -286,17 +319,23 @@ impl Default for Config {
 }
 
 impl Config {
-    fn boost(&self, ship: &Ship, u: Upgrade) -> f32 {
-        1.0 + self.upgrade_step * ship.levels[u as usize] as f32
+    /// What a ship of a tier starts from in one stat, as a multiple of a new tier-1 ship:
+    /// a fully upgraded ship of the tier below, less the discount.
+    pub fn tier_base(&self, u: Upgrade, tier: u8) -> f32 {
+        (1..tier).fold(1.0, |base, t| base * (1.0 + self.upgrade_steps[u as usize] * self.max_level(t) as f32) * self.tier_discount)
     }
-    fn power(&self, ship: &Ship) -> f32 {
-        self.tier_power[ship.tier as usize - 1]
+    /// A ship's multiplier in one stat: its tier's starting point, raised by its upgrade level.
+    pub fn boost(&self, ship: &Ship, u: Upgrade) -> f32 {
+        self.tier_base(u, ship.tier) * (1.0 + self.upgrade_steps[u as usize] * ship.levels[u as usize] as f32)
+    }
+    pub fn radius_of(&self, s: &Ship) -> f32 {
+        self.ship_radii[s.tier as usize - 1]
     }
     pub fn hull_max(&self, s: &Ship) -> f32 {
-        self.hull * self.power(s) * self.boost(s, Upgrade::Health)
+        self.hull * self.boost(s, Upgrade::Health)
     }
     pub fn shield_max(&self, s: &Ship) -> f32 {
-        self.shield * self.power(s) * self.boost(s, Upgrade::Shield)
+        self.shield * self.boost(s, Upgrade::Shield)
     }
     pub fn weapon(&self, class: Class) -> &Weapon {
         &self.weapons[class as usize]
@@ -339,7 +378,8 @@ impl Config {
     pub fn price(&self, s: &Ship, buy: Buy) -> Option<u32> {
         match buy {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
-            Buy::Tier(class) => (s.tier < TIERS && class != Class::Basic).then_some(self.tier_cost),
+            // Leaving tier 1 needs a real class; after that the class named is ignored.
+            Buy::Tier(class) => (s.tier < TIERS && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
         }
     }
     pub fn rock_radius_of(&self, size: u8) -> f32 {
@@ -376,6 +416,8 @@ pub struct Ship {
     pub spill: f32,
     pub cargo: u32,
     pub levels: [u8; 8],
+    /// The ship's standing vote on the team plan.
+    pub vote: Option<Plan>,
     pub cooldown: u16,
     pub alive: bool,
     pub respawn: u16,
@@ -467,6 +509,10 @@ pub struct World {
     pub shots: Vec<Shot>,
     /// One per team, indexed by team.
     pub bases: Vec<Base>,
+    /// The plan each team's ships last voted in, indexed by team; None until someone votes.
+    pub plans: Vec<Option<Plan>>,
+    /// Teams whose orders come from outside (a human commander): their votes are not counted.
+    pub commanded: Vec<bool>,
     pub events: Vec<Event>,
     rng: Rng,
 }
@@ -488,6 +534,8 @@ impl World {
             rocks: Vec::new(),
             crystals: Vec::new(),
             shots: Vec::new(),
+            plans: vec![None; bases.len()],
+            commanded: vec![false; bases.len()],
             bases,
             events: Vec::new(),
             rng: Rng::new(0),
@@ -511,6 +559,7 @@ impl World {
                     spill: 0.0,
                     cargo: 0,
                     levels: [0; 8],
+                    vote: None,
                     cooldown: 0,
                     alive: true,
                     respawn: 0,
@@ -549,6 +598,42 @@ impl World {
 
     pub fn set_order(&mut self, ship: usize, order: Order) {
         self.ships[ship].order = order;
+    }
+
+    /// Counts every team's votes and turns the winning plan into the order of all its ships.
+    /// Teams commanded from outside, and teams where nobody has voted, keep their orders.
+    fn count_votes(&mut self) {
+        for team in 0..self.bases.len() {
+            if self.commanded[team] {
+                continue;
+            }
+            let mut tally = [0u32; PLANS.len()];
+            let mut middle = Vec3::default();
+            for s in self.ships.iter().filter(|s| s.team as usize == team && s.alive) {
+                middle = middle.add(s.pos);
+                if let Some(vote) = s.vote {
+                    tally[vote as usize] += 1;
+                }
+            }
+            let most = *tally.iter().max().unwrap_or(&0);
+            if most == 0 {
+                continue;
+            }
+            // On a tie the standing plan stays if it is among the leaders.
+            let plan = self.plans[team].filter(|p| tally[*p as usize] == most).unwrap_or_else(|| PLANS[tally.iter().position(|n| *n == most).unwrap()]);
+            self.plans[team] = Some(plan);
+            let home = self.bases[team].pos;
+            // Enemy bases still standing, counting teams on from this one.
+            let enemies: Vec<Vec3> = (1..self.bases.len()).map(|k| &self.bases[(team + k) % self.bases.len()]).filter(|b| b.alive()).map(|b| b.pos).collect();
+            let order = match plan {
+                // The team's own middle is the place to stay near.
+                Plan::Farm => Order { kind: OrderKind::Mine, target: if middle.len() > 1e-3 { middle.unit() } else { home } },
+                Plan::Defend => Order { kind: OrderKind::Defend, target: home },
+                Plan::AttackA => Order { kind: OrderKind::Attack, target: enemies.first().copied().unwrap_or(home) },
+                Plan::AttackB => Order { kind: OrderKind::Attack, target: enemies.get(1).or(enemies.first()).copied().unwrap_or(home) },
+            };
+            self.ships.iter_mut().filter(|s| s.team as usize == team).for_each(|s| s.order = order);
+        }
     }
 
     /// Distance between two positions along the surface.
@@ -652,6 +737,17 @@ impl World {
         let dt = self.cfg.dt;
         let radius = self.cfg.radius;
 
+        // Votes: a ship keeps its vote until it casts another; every so often each team's
+        // votes are counted and the winning plan becomes the order of all its ships.
+        for (ship, act) in self.ships.iter_mut().zip(actions) {
+            if act.vote.is_some() {
+                ship.vote = act.vote;
+            }
+        }
+        if self.tick % self.cfg.plan_ticks == 0 {
+            self.count_votes();
+        }
+
         // Ships: buy, steer, move, shoot, respawn.
         for i in 0..self.ships.len() {
             let cfg = &self.cfg;
@@ -674,8 +770,12 @@ impl World {
                     match what {
                         Buy::Upgrade(u) => ship.levels[u as usize] += 1,
                         Buy::Tier(class) => {
+                            if ship.tier == 1 {
+                                ship.class = class;
+                            }
                             ship.tier += 1;
-                            ship.class = class;
+                            // A new tier starts again without upgrades.
+                            ship.levels = [0; 8];
                             ship.hull = cfg.hull_max(ship);
                             ship.shield = cfg.shield_max(ship);
                         }
@@ -722,7 +822,7 @@ impl World {
                     let dir = geo::turn(ship.pos, ship.fwd, slot * weapon.fan);
                     let aside = if weapon.fan == 0.0 { left.scale(slot * 14.0) } else { Vec3::default() };
                     self.shots.push(Shot {
-                        pos: geo::nudge(radius, ship.pos, dir.scale(cfg.ship_radius).add(aside)),
+                        pos: geo::nudge(radius, ship.pos, dir.scale(cfg.radius_of(ship)).add(aside)),
                         vel: ship.vel.add(dir.scale(weapon.speed)),
                         ticks: life,
                         life,
@@ -785,7 +885,7 @@ impl World {
                 continue;
             }
             let hit = self.ships.iter().position(|s| {
-                s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.ship_radius
+                s.alive && s.team != shot.team && geo::chord(radius, s.pos, shot.pos) < self.cfg.radius_of(s)
             });
             if let Some(v) = hit {
                 let dropped = Self::hurt(&self.cfg, &mut self.ships[v], damage);
@@ -815,11 +915,11 @@ impl World {
         for r in 0..self.rocks.len() {
             let rock = &mut self.rocks[r];
             (rock.pos, rock.vel) = geo::advance(radius, rock.pos, rock.vel, dt);
-            let reach = self.cfg.rock_radius * rock.size as f32 + self.cfg.ship_radius;
             for (i, ship) in self.ships.iter_mut().enumerate() {
                 if !ship.alive {
                     continue;
                 }
+                let reach = self.cfg.rock_radius * rock.size as f32 + self.cfg.radius_of(ship);
                 let dist = geo::chord(radius, rock.pos, ship.pos);
                 if dist >= reach || dist < 1e-3 {
                     continue;
@@ -838,6 +938,42 @@ impl World {
                     spilled.push((ship.pos, dropped));
                     ship.last_hit_by = None;
                     self.events.push(Event::Crashed { ship: i as u16, damage });
+                }
+            }
+        }
+
+        // Ships take up room: two that overlap are pushed apart and bounce; enemies also take
+        // damage by how hard they met.
+        for i in 0..self.ships.len() {
+            for j in i + 1..self.ships.len() {
+                let (a, b) = (&self.ships[i], &self.ships[j]);
+                if !a.alive || !b.alive {
+                    continue;
+                }
+                let reach = self.cfg.radius_of(a) + self.cfg.radius_of(b);
+                let dist = geo::chord(radius, a.pos, b.pos);
+                if dist >= reach || dist < 1e-3 {
+                    continue;
+                }
+                // Each ship's way straight away from the other, along the surface where it is.
+                let (na, nb) = (geo::tangent(a.pos, a.pos.sub(b.pos)).unit(), geo::tangent(b.pos, b.pos.sub(a.pos)).unit());
+                let closing = a.vel.dot(na) + b.vel.dot(nb);
+                let (enemies, apart) = (a.team != b.team, (reach - dist) / 2.0);
+                for (k, n, other) in [(i, na, j), (j, nb, i)] {
+                    let ship = &mut self.ships[k];
+                    ship.pos = geo::travel(radius, ship.pos, n, apart);
+                    ship.vel = geo::tangent(ship.pos, ship.vel);
+                    ship.fwd = geo::tangent(ship.pos, ship.fwd).unit();
+                    if closing < 0.0 {
+                        ship.vel = ship.vel.sub(n.scale(0.75 * closing));
+                        if enemies {
+                            let damage = -closing * self.cfg.ram_damage;
+                            let dropped = Self::hurt(&self.cfg, ship, damage);
+                            spilled.push((ship.pos, dropped));
+                            ship.last_hit_by = Some(other as u16);
+                            self.events.push(Event::Crashed { ship: k as u16, damage });
+                        }
+                    }
                 }
             }
         }
@@ -906,7 +1042,9 @@ impl World {
                 ship.lives = self.cfg.lives;
                 if ship.tier > 1 {
                     ship.tier -= 1;
-                    ship.class = Class::Basic;
+                    if ship.tier == 1 {
+                        ship.class = Class::Basic;
+                    }
                     let cap = self.cfg.max_level(ship.tier);
                     ship.levels.iter_mut().for_each(|l| *l = (*l).min(cap));
                 } else {

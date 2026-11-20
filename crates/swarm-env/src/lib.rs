@@ -64,6 +64,10 @@ pub struct EpisodeStats {
     pub classes: [f32; 4],
     /// Team 0's mean level of each upgrade at the end, indexed by [`swarm_sim::Upgrade`].
     pub upgrades: [f32; 8],
+    /// Share of team 0's ships at tier 1, 2 and 3 at the end.
+    pub tiers: [f32; 3],
+    /// Share of the match team 0 spent under each plan, indexed by [`swarm_sim::Plan`]; the rest it had none.
+    pub plans: [f32; 4],
 }
 
 impl EpisodeStats {
@@ -82,11 +86,15 @@ impl EpisodeStats {
             lost: !world.bases[0].alive(),
             classes: std::array::from_fn(|c| team.iter().filter(|s| s.class as usize == c).count() as f32 / team.len() as f32),
             upgrades: std::array::from_fn(|u| team.iter().map(|s| s.levels[u] as f32).sum::<f32>() / team.len() as f32),
+            tiers: std::array::from_fn(|t| team.iter().filter(|s| s.tier as usize == t + 1).count() as f32 / team.len() as f32),
+            plans: [0.0; 4],
         }
     }
 }
 
 struct Slot {
+    /// Ticks team 0 has spent under each plan in the match in progress.
+    planned: [u32; 4],
     world: World,
     commander: ScriptedCommander,
     index: u64,
@@ -118,7 +126,7 @@ impl VecEnv {
         let slots = (0..envs as u64)
             .map(|index| {
                 let seed = Self::seed_of(seed, index, 0, envs as u64);
-                Slot { world: World::new(cfg.clone(), seed), commander: ScriptedCommander::new(seed), index, episode: 0 }
+                Slot { planned: [0; 4], world: World::new(cfg.clone(), seed), commander: ScriptedCommander::new(seed), index, episode: 0 }
             })
             .collect();
         VecEnv { cfg, rewards, frame_skip, learners, seed, slots, finished: Vec::new() }
@@ -245,11 +253,16 @@ impl VecEnv {
                     }
                     // An upgrade is bought once, not once per held tick.
                     held.iter_mut().for_each(|a| a.buy = None);
+                    if let Some(plan) = slot.world.plans[0] {
+                        slot.planned[plan as usize] += 1;
+                    }
                     if slot.world.done() {
                         if let Some(winner) = slot.world.winner() {
                             (0..rewards.len()).filter(|s| team_of(*s) == winner as usize).for_each(|s| rewards[s] += pay.win);
                         }
-                        let stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
+                        let mut stats = EpisodeStats::of(&slot.world, slot.index, slot.episode);
+                        stats.plans = slot.planned.map(|ticks| ticks as f32 / slot.world.tick.max(1) as f32);
+                        slot.planned = [0; 4];
                         slot.episode += 1;
                         let next = Self::seed_of(seed, slot.index, slot.episode, envs);
                         slot.world = World::new(cfg.clone(), next);

@@ -1,11 +1,11 @@
 //! Recorded matches: the seed plus every ship's action on every tick, with a
 //! state hash every [`HASH_EVERY`] ticks so a diverging playback is detected.
 
-use crate::sim::{Action, Buy, Config, TIER2, UPGRADES, World};
+use crate::sim::{Action, Buy, Config, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0005";
+const MAGIC: &[u8; 8] = b"SWRP0006";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
@@ -30,11 +30,16 @@ pub fn buy_of(code: u8) -> Option<Buy> {
     }
 }
 
+/// How many values the vote takes: no new vote, or one of the plans.
+pub const VOTE_CODES: usize = 1 + PLANS.len();
+
 /// Packs an action into 16 bits: thrust (bit 0), turn (bits 1-2: right, straight, left),
-/// fire (bit 3), boost (bit 4), what to buy (bits 5-8, see [`buy_code`]).
+/// fire (bit 3), boost (bit 4), what to buy (bits 5-8, see [`buy_code`]), and the vote on the
+/// team plan (bits 9-11: 0 keeps the last vote, 1 to 4 farm, defend, attack A, attack B).
 pub fn encode(a: &Action) -> u16 {
     let buy = buy_code(a.buy) as u16;
-    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5
+    let vote = a.vote.map_or(0, |p| p as u16 + 1);
+    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5 | vote << 9
 }
 
 pub fn decode(b: u16) -> Action {
@@ -44,6 +49,7 @@ pub fn decode(b: u16) -> Action {
         fire: b & 8 != 0,
         boost: b & 16 != 0,
         buy: buy_of(((b >> 5) & 15) as u8),
+        vote: (((b >> 9) & 7) as usize).checked_sub(1).and_then(|i| PLANS.get(i).copied()),
     }
 }
 
