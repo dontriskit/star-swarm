@@ -7,7 +7,7 @@ pub const NEAR: usize = 6;
 pub const SHOTS: usize = 4;
 /// How many enemy bases a ship knows about (the nearest ones still standing).
 pub const BASES: usize = 2;
-const SELF_LEN: usize = 11 + CLASSES.len() + UPGRADES.len() + 4 + ORDER_KINDS + 2 + 2 * PLANS.len() + 2;
+const SELF_LEN: usize = 11 + 4 + 3 + CLASSES.len() + UPGRADES.len() + 4 + ORDER_KINDS + 2 + 2 * PLANS.len() + 2;
 const BASE_LEN: usize = 4;
 /// How many teammates a ship's team radar shows (the nearest ones).
 pub const MATES: usize = 6;
@@ -80,6 +80,16 @@ pub struct Observation {
     pub ammo_max: f32,
     /// Boost tank, 0 to 1.
     pub boost: f32,
+    /// Points to spend, earned by handing crystals over at the base.
+    pub points: u32,
+    /// Drones the ship has.
+    pub drones: u8,
+    /// The level of the ship's own base.
+    pub base_level: u8,
+    /// How far the team is towards its base's next level, 0 to 1 (1 at the top level).
+    pub base_progress: f32,
+    /// The nearest ownerless drone in sight, in the ship's frame.
+    pub free_drone: Option<Vec2>,
     pub levels: [u8; 8],
     /// The ship's own base; `hp` is 0 once it has been destroyed.
     pub base: BaseObs,
@@ -115,6 +125,7 @@ fn nearest(mut all: Vec<Near>, keep: usize) -> Vec<Near> {
 pub fn observe(world: &World, ship: usize) -> Observation {
     let cfg = &world.cfg;
     let me = &world.ships[ship];
+    let home = &world.bases[me.team as usize];
     // Everything is expressed in this ship's own frame: x forward, y to the left.
     let local = |v: Vec3| geo::frame(me.pos, me.fwd, geo::tangent(me.pos, v));
     let see = |pos: Vec3, vel: Vec3, radius: f32, hp: f32, enemy: bool, fwd: Option<Vec3>| {
@@ -138,6 +149,7 @@ pub fn observe(world: &World, ship: usize) -> Observation {
     let known = &world.seen_base_hp[me.team as usize];
     let base = |team: usize| {
         let at = world.to_frame(me.pos, me.fwd, world.bases[team].pos);
+        // Against the hit points of a new base, so a levelled-up base reads above 1.
         BaseObs { pos: at, dist: at.len(), hp: known[team] / cfg.base_hp }
     };
     let mut enemy_bases: Vec<BaseObs> = (0..world.bases.len()).filter(|t| *t != me.team as usize && known[*t] > 0.0).map(base).collect();
@@ -180,6 +192,22 @@ pub fn observe(world: &World, ship: usize) -> Observation {
         ammo: me.ammo,
         ammo_max: cfg.ammo_max(me),
         boost: me.boost,
+        points: me.points,
+        drones: world.drones.iter().filter(|d| d.owner == Some(ship as u16)).count() as u8,
+        base_level: home.level,
+        base_progress: match cfg.next_base_level_at(home.level) {
+            Some(next) => {
+                let from = if home.level > 1 { cfg.base_level_at[home.level as usize - 2] } else { 0 };
+                (home.deposited.saturating_sub(from) as f32 / (next - from).max(1) as f32).min(1.0)
+            }
+            None => 1.0,
+        },
+        free_drone: world
+            .drones
+            .iter()
+            .filter(|d| d.owner.is_none() && geo::chord(cfg.radius, me.pos, d.pos) < cfg.view_range)
+            .map(|d| world.to_frame(me.pos, me.fwd, d.pos))
+            .min_by(|a, b| a.len().total_cmp(&b.len())),
         levels: me.levels,
         base: base(me.team as usize),
         order: me.order.kind,
@@ -259,6 +287,12 @@ impl Observation {
             self.boost,
             self.lives as f32 / cfg.lives.max(1) as f32,
         ]);
+        // A ship that could afford anything it wants has "plenty"; beyond that the number says little.
+        put(&[(self.points as f32 / 200.0).min(2.0), self.drones as f32 / 3.0, self.base_level as f32 / cfg.base_levels as f32, self.base_progress]);
+        match self.free_drone {
+            Some(d) => put(&[1.0, d.x / view, d.y / view]),
+            None => put(&[0.0; 3]),
+        }
         let mut class = [0.0; CLASSES.len()];
         class[self.class as usize] = 1.0;
         put(&class);

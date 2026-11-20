@@ -203,6 +203,14 @@ pub fn paint(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: boo
         }
     }
 
+    // Drones: a small diamond in the owner's colour, grey when nobody owns it.
+    for drone in world.drones.iter().filter(|d| in_sight(d.pos) || d.owner.is_some_and(|o| world.ships[o as usize].team == MY_TEAM)) {
+        if let Some(p) = view.at(drone.pos) {
+            let color = drone.owner.map_or(rgb(0x8a93a6), |o| team_color(world.ships[o as usize].team));
+            fill_shape(window, &polygon(p, 3.5, 4, 0.0), color);
+        }
+    }
+
     for shot in world.shots.iter().filter(|s| s.team == MY_TEAM || in_sight(s.pos)) {
         if let Some(p) = view.at(shot.pos) {
             dot(window, p, 1.2, team_color(shot.team));

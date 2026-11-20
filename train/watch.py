@@ -22,7 +22,7 @@ p.add_argument("--teams", type=int, default=3)
 p.add_argument("--ships-per-team", type=int, default=7)
 p.add_argument("--rocks", type=int, default=270)
 p.add_argument("--radius", type=float, default=1200.0)
-p.add_argument("--max-ticks", type=int, default=18000)
+p.add_argument("--max-ticks", type=int, default=36000)
 args = p.parse_args()
 
 saved = torch.load(args.policy, map_location="cpu")
@@ -44,7 +44,7 @@ with torch.no_grad():
         stats = env.take_stats()
 
 with open(args.out, "wb") as f:
-    f.write(b"SWRP0008")
+    f.write(b"SWRP0009")
     f.write(struct.pack("<QfHHII", args.seed, args.radius, args.teams, args.ships_per_team, args.rocks, args.max_ticks))
     f.write(struct.pack("<Q", len(frames) // 2))
     f.write(frames)

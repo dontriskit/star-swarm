@@ -31,10 +31,10 @@ struct Env {
 #[pymethods]
 impl Env {
     /// `rewards` overrides reward weights by name: collect, rock, buy, hit, kill, crash, death,
-    /// base_hit, base_lost, win, lose, hurt, time, draw. Teams `0..learners` take the actions passed to `step`;
+    /// base_hit, base_lost, win, lose, hurt, time, draw, deposit, base_level. Teams `0..learners` take the actions passed to `step`;
     /// the rest fly on the scripted bot (default: every team is a learner).
     #[new]
-    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=7, rock_count=270, radius=1200.0, max_ticks=18000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
+    #[pyo3(signature = (envs, seed=0, frame_skip=3, teams=3, ships_per_team=7, rock_count=270, radius=1200.0, max_ticks=36000, rewards=None, learners=None, base_hp=1000.0, turret_damage=15.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         envs: usize,
@@ -74,6 +74,8 @@ impl Env {
                 "hurt" => &mut pay.hurt,
                 "time" => &mut pay.time,
                 "draw" => &mut pay.draw,
+                "deposit" => &mut pay.deposit,
+                "base_level" => &mut pay.base_level,
                 other => return Err(PyValueError::new_err(format!("unknown reward weight: {other}"))),
             };
             *slot = value;
@@ -111,7 +113,8 @@ impl Env {
     /// Takes one little-endian uint16 per agent:
     /// thrust | turn << 1 | fire << 3 | boost << 4 | buy << 5 | vote << 9,
     /// with turn in 0..=2 (right, straight, left); buy 0 for nothing, 1..=8 for an upgrade,
-    /// 9..=12 for the next tier (as a Lancer, Twin, Scatter or Ram when leaving tier 1); and vote 0 to
+    /// 9..=12 for the next tier (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 for a
+    /// drone, 14 for a base repair; and vote 0 to
     /// keep the ship's mode or 1..=4 to switch to farm, defend, attack A, attack B.
     /// Returns (rewards as float32, dones as uint8), one entry per agent.
     fn step<'py>(&mut self, py: Python<'py>, actions: &[u8]) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
@@ -146,8 +149,8 @@ impl Env {
     /// minutes, crystals, upgrade levels, kills, deaths (per-ship averages), won, lost (0 or 1),
     /// slot, matches that slot had finished before, then the share of ships in each class
     /// (Basic, Lancer, Twin, Scatter, Ram), the mean level of each of the eight upgrades, the share of
-    /// ships at tier 1, 2 and 3, and the share of the match spent under each plan (farm, defend,
-    /// attack A, attack B).
+    /// ships at tier 1, 2 and 3, the share of ship-time spent in each mode (farm, defend,
+    /// attack A, attack B), the base level reached, crystals handed over per ship, drones per ship.
     fn take_stats(&mut self) -> Vec<Vec<f32>> {
         self.inner
             .take_stats()
@@ -158,6 +161,7 @@ impl Env {
                 row.extend(s.upgrades);
                 row.extend(s.tiers);
                 row.extend(s.plans);
+                row.extend([s.base_level, s.deposited, s.drones]);
                 row
             })
             .collect()

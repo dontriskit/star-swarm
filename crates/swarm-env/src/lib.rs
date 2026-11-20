@@ -41,11 +41,15 @@ pub struct Rewards {
     pub time: f32,
     /// From every ship when a match runs out of time with no winner (subtracted).
     pub draw: f32,
+    /// Per crystal a ship hands over at its base.
+    pub deposit: f32,
+    /// To every ship of a team when its base reaches a new level.
+    pub base_level: f32,
 }
 
 impl Default for Rewards {
     fn default() -> Self {
-        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0 }
+        Rewards { collect: 1.0, rock: 0.5, buy: 2.0, hit: 0.0, kill: 0.0, crash: 0.05, death: 5.0, base_hit: 0.0, base_lost: 0.0, win: 0.0, lose: 0.0, hurt: 0.0, time: 0.0, draw: 0.0, deposit: 0.0, base_level: 0.0 }
     }
 }
 
@@ -72,6 +76,12 @@ pub struct EpisodeStats {
     pub tiers: [f32; 3],
     /// Share of ship-time team 0 spent in each mode, indexed by [`swarm_sim::Plan`]; the rest in none.
     pub plans: [f32; 4],
+    /// The level team 0's base reached.
+    pub base_level: f32,
+    /// Crystals team 0's ships handed over at the base, per ship.
+    pub deposited: f32,
+    /// Drones team 0's ships had at the end, per ship.
+    pub drones: f32,
 }
 
 impl EpisodeStats {
@@ -92,6 +102,9 @@ impl EpisodeStats {
             upgrades: std::array::from_fn(|u| team.iter().map(|s| s.levels[u] as f32).sum::<f32>() / team.len() as f32),
             tiers: std::array::from_fn(|t| team.iter().filter(|s| s.tier as usize == t + 1).count() as f32 / team.len() as f32),
             plans: [0.0; 4],
+            base_level: world.bases[0].level as f32,
+            deposited: mean(|s| s.deposited),
+            drones: world.drones.iter().filter(|d| d.owner.is_some_and(|o| world.ships[o as usize].team == 0)).count() as f32 / team.len() as f32,
         }
     }
 }
@@ -321,6 +334,10 @@ impl VecEnv {
                                 }
                             }
                             Event::Demoted { .. } => {}
+                            Event::Deposited { ship, amount } => rewards[ship as usize] += pay.deposit * amount as f32,
+                            Event::BaseLevel { team, .. } => {
+                                (0..rewards.len()).filter(|s| team_of(*s) == team as usize).for_each(|s| rewards[s] += pay.base_level);
+                            }
                             Event::Crashed { ship, damage } => rewards[ship as usize] -= (pay.crash + pay.hurt) * damage,
                             Event::Killed { by, victim } => {
                                 rewards[victim as usize] -= pay.death;
@@ -424,7 +441,7 @@ mod tests {
     fn a_bought_upgrade_is_charged_once_per_decision() {
         let cfg = Config { rock_count: 0, ..mining() };
         let mut env = VecEnv::new(cfg, 1, 1, 3, Rewards::default());
-        env.slots[0].world.ships[0].cargo = 100;
+        env.slots[0].world.ships[0].points = 100;
         let buy = replay::encode(&Action { buy: Some(swarm_sim::Buy::Upgrade(swarm_sim::Upgrade::Attack)), ..Action::default() });
         let (mut rewards, mut dones) = (vec![0f32; 4], vec![0u8; 4]);
         env.step(&[buy, 0, 0, 0], &mut rewards, &mut dones);

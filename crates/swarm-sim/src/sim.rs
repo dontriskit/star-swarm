@@ -116,7 +116,12 @@ pub enum Buy {
     Upgrade(Upgrade),
     /// Move up one tier: a bigger, stronger ship with a higher upgrade cap, starting again
     /// without upgrades. Leaving tier 1 means picking the class; later the class is kept.
+    /// The team's base has to be at least the level of the tier moved up to.
     Tier(Class),
+    /// A drone that follows the ship, breaks nearby rocks and gathers crystals for it.
+    Drone,
+    /// Repair the team's base.
+    Repair,
 }
 
 /// Ship tiers run from 1 to this.
@@ -259,7 +264,32 @@ pub struct Config {
     pub crystal_armor: f32,
 
     pub rock_radius: f32,
+    /// Hit points of the smallest rock; a rock of size s has s squared times as many.
     pub rock_hp: f32,
+    /// Crystals a rock of size 1, 2 and 3 leaves behind.
+    pub rock_drops: [u32; 3],
+    /// Highest level a base can reach.
+    pub base_levels: u8,
+    /// Crystals a team has to bring to its base, in total, for the base to reach level 2, 3, and so on.
+    pub base_level_at: [u32; 6],
+    /// Hit points a base gains with every level.
+    pub base_hp_per_level: f32,
+    /// Share of its damage a base's turret gains with every level.
+    pub turret_per_level: f32,
+    /// Crystals a ship next to its base hands over per tick.
+    pub deposit_rate: u32,
+    /// Points one repair costs, and base hit points it restores.
+    pub repair_step: u32,
+    /// Points a drone costs.
+    pub drone_cost: u32,
+    /// Drones a ship of tier 1, 2 and 3 can have.
+    pub drone_slots: [u8; TIERS as usize],
+    /// How far from its owner a drone looks for rocks.
+    pub drone_reach: f32,
+    pub drone_speed: f32,
+    /// Ticks between a drone's shots.
+    pub drone_cooldown: u16,
+    pub drone_damage: f32,
     pub rock_speed: f32,
     pub crash_damage: f32,
 
@@ -281,7 +311,7 @@ impl Default for Config {
             teams: 3,
             ships_per_team: 7,
             rock_count: 270,
-            max_ticks: 18000,
+            max_ticks: 36000,
             ship_radius: 12.0,
             ship_radii: [12.0, 15.0, 19.0],
             ram_damage: 0.1,
@@ -309,11 +339,11 @@ impl Default for Config {
             turret_damage: 15.0,
             turret_cooldown: 8,
             weapons: [
-                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 8, damage: 10.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 14, damage: 30.0 },
-                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 8, damage: 11.0 },
-                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 5, damage: 8.0 },
-                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 10, damage: 8.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 470.0, speed: 325.0, cooldown: 8, damage: 1.0 },
+                Weapon { lasers: 1, fan: 0.0, range: 800.0, speed: 500.0, cooldown: 14, damage: 3.0 },
+                Weapon { lasers: 2, fan: 0.0, range: 500.0, speed: 350.0, cooldown: 8, damage: 1.1 },
+                Weapon { lasers: 3, fan: 0.14, range: 300.0, speed: 300.0, cooldown: 5, damage: 0.8 },
+                Weapon { lasers: 1, fan: 0.0, range: 260.0, speed: 300.0, cooldown: 10, damage: 0.8 },
             ],
             bodies: [
                 Body { hull: 1.0, ram_deal: 1.0, ram_take: 1.0 },
@@ -326,7 +356,7 @@ impl Default for Config {
             shot_falloff: 0.4,
             ammo: 30.0,
             ammo_regen: 4.0,
-            ammo_damage: 10.0,
+            ammo_damage: 1.0,
             boost_thrust: 2.5,
             boost_speed: 1.6,
             boost_drain: 0.5,
@@ -335,7 +365,20 @@ impl Default for Config {
             lives: 3,
             crystal_armor: 1.0,
             rock_radius: 18.0,
-            rock_hp: 30.0,
+            rock_hp: 10.0,
+            rock_drops: [2, 6, 15],
+            base_levels: 7,
+            base_level_at: [1000, 2500, 4500, 7000, 10000, 14000],
+            base_hp_per_level: 200.0,
+            turret_per_level: 0.15,
+            deposit_rate: 5,
+            repair_step: 10,
+            drone_cost: 40,
+            drone_slots: [1, 2, 3],
+            drone_reach: 240.0,
+            drone_speed: 170.0,
+            drone_cooldown: 10,
+            drone_damage: 1.0,
             rock_speed: 12.0,
             crash_damage: 0.15,
             crystal_ticks: 600,
@@ -411,13 +454,25 @@ impl Config {
     pub fn cost(&self, level: u8, tier: u8) -> Option<u32> {
         (level < self.max_level(tier)).then(|| self.upgrade_cost * (level as u32 + 1))
     }
-    /// Price of what a ship wants to buy, or None when it cannot be bought at all.
-    pub fn price(&self, s: &Ship, buy: Buy) -> Option<u32> {
+    /// Price in points of what a ship wants to buy, or None when it cannot be bought at all.
+    /// `base` is the ship's own base and `drones` how many drones it already has.
+    pub fn price(&self, s: &Ship, buy: Buy, base: &Base, drones: usize) -> Option<u32> {
         match buy {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
-            // Leaving tier 1 needs a real class; after that the class named is ignored.
-            Buy::Tier(class) => (s.tier < TIERS && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
+            // Leaving tier 1 needs a real class; after that the class named is ignored. A ship
+            // cannot outgrow its base: tier 2 needs a level-2 base, tier 3 a level-3 one.
+            Buy::Tier(class) => (s.tier < TIERS && base.level > s.tier && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
+            Buy::Drone => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_cost),
+            Buy::Repair => (base.alive() && base.hp < self.base_hp_max(base.level)).then_some(self.repair_step),
         }
+    }
+    /// Hit points of a base of a given level when whole.
+    pub fn base_hp_max(&self, level: u8) -> f32 {
+        self.base_hp + self.base_hp_per_level * (level.max(1) - 1) as f32
+    }
+    /// Crystals a base of this level needs in total to reach the next one, or None at the top.
+    pub fn next_base_level_at(&self, level: u8) -> Option<u32> {
+        (level < self.base_levels).then(|| self.base_level_at[level as usize - 1])
     }
     pub fn rock_radius_of(&self, size: u8) -> f32 {
         self.rock_radius * size as f32
@@ -451,7 +506,12 @@ pub struct Ship {
     pub boost: f32,
     /// Damage taken on the cargo that has not yet knocked a whole crystal loose.
     pub spill: f32,
+    /// Crystals on board. They buy nothing until handed over at the team's base.
     pub cargo: u32,
+    /// Points to spend: one for every crystal the ship has handed over at its base.
+    pub points: u32,
+    /// Crystals the ship has handed over in all.
+    pub deposited: u32,
     pub levels: [u8; 8],
     /// The ship's mode; None until it picks one.
     pub vote: Option<Plan>,
@@ -512,6 +572,20 @@ pub struct Base {
     pub hp: f32,
     /// Ticks until the turret can fire again.
     pub cooldown: u16,
+    /// 1 to [`Config::base_levels`]. A higher level means more hit points, a stronger turret,
+    /// and higher ship tiers for the team.
+    pub level: u8,
+    /// Crystals the team has handed over in all; enough of them raise the level.
+    pub deposited: u32,
+}
+
+/// A mining helper. It follows its owner, breaks rocks near it and gathers crystals for it.
+/// When its owner is destroyed it drifts until any ship with room for it flies up and takes it.
+#[derive(Clone, Debug)]
+pub struct Drone {
+    pub pos: Vec3,
+    pub owner: Option<u16>,
+    pub cooldown: u16,
 }
 
 impl Base {
@@ -528,6 +602,10 @@ pub enum Event {
     Bought { ship: u16, what: Buy },
     BaseHit { by: u16, team: u8, damage: f32 },
     BaseDestroyed { by: u16, team: u8 },
+    /// A ship handed crystals over at its base.
+    Deposited { ship: u16, amount: u32 },
+    /// A team's base reached a new level.
+    BaseLevel { team: u8, level: u8 },
     /// Out of lives: a tier-2 ship fell back to tier 1, or a tier-1 ship lost its upgrades.
     Demoted { ship: u16 },
     /// `by` is None when a base turret did it.
@@ -544,6 +622,7 @@ pub struct World {
     pub rocks: Vec<Rock>,
     pub crystals: Vec<Crystal>,
     pub shots: Vec<Shot>,
+    pub drones: Vec<Drone>,
     /// One per team, indexed by team.
     pub bases: Vec<Base>,
     /// The mode most of each team's ships are in, indexed by team; None until one picks a mode.
@@ -557,7 +636,6 @@ pub struct World {
     rng: Rng,
 }
 
-const CRYSTALS_PER_SIZE: [u32; 4] = [0, 2, 5, 10];
 const MAX_DROPPED: u32 = 8;
 
 impl World {
@@ -566,7 +644,7 @@ impl World {
         // Evenly spaced around the equator, so every team sees the same layout
         // from its own base and none starts closer to its enemies.
         let bases: Vec<Base> = (0..cfg.teams)
-            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0 })
+            .map(|t| Base { pos: Vec3::from_lon_lat(std::f32::consts::TAU * t as f32 / cfg.teams as f32, 0.0), hp: cfg.base_hp, cooldown: 0, level: 1, deposited: 0 })
             .collect();
         let mut world = World {
             tick: 0,
@@ -574,6 +652,7 @@ impl World {
             rocks: Vec::new(),
             crystals: Vec::new(),
             shots: Vec::new(),
+            drones: Vec::new(),
             plans: vec![None; bases.len()],
             seen_base_hp: vec![vec![cfg.base_hp; bases.len()]; bases.len()],
             commanded: vec![false; bases.len()],
@@ -599,6 +678,8 @@ impl World {
                     boost: 1.0,
                     spill: 0.0,
                     cargo: 0,
+                    points: 0,
+                    deposited: 0,
                     levels: [0; 8],
                     vote: None,
                     cooldown: 0,
@@ -806,6 +887,9 @@ impl World {
             self.count_votes();
         }
 
+        // Teams whose ships paid for a repair this tick.
+        let mut repairs: Vec<u8> = Vec::new();
+
         // Ships: buy, steer, move, shoot, respawn.
         for i in 0..self.ships.len() {
             let cfg = &self.cfg;
@@ -823,9 +907,12 @@ impl World {
             }
             let act = actions[i];
             if let Some(what) = act.buy {
-                if let Some(cost) = cfg.price(ship, what).filter(|cost| ship.cargo >= *cost) {
-                    ship.cargo -= cost;
+                let drones = self.drones.iter().filter(|d| d.owner == Some(i as u16)).count();
+                if let Some(cost) = cfg.price(ship, what, home, drones).filter(|cost| ship.points >= *cost) {
+                    ship.points -= cost;
                     match what {
+                        Buy::Drone => self.drones.push(Drone { pos: ship.pos, owner: Some(i as u16), cooldown: 0 }),
+                        Buy::Repair => repairs.push(ship.team),
                         Buy::Upgrade(u) => ship.levels[u as usize] += 1,
                         Buy::Tier(class) => {
                             if ship.tier == 1 {
@@ -893,6 +980,86 @@ impl World {
             }
         }
 
+        for team in repairs {
+            let base = &mut self.bases[team as usize];
+            base.hp = (base.hp + self.cfg.repair_step as f32).min(self.cfg.base_hp_max(base.level));
+        }
+
+        // Ships next to their own base hand over the crystals they carry: every crystal is a
+        // point for the ship and counts towards the base's next level.
+        for i in 0..self.ships.len() {
+            let ship = &mut self.ships[i];
+            let base = &mut self.bases[ship.team as usize];
+            if !ship.alive || ship.cargo == 0 || !base.alive() || geo::chord(radius, base.pos, ship.pos) > self.cfg.base_heal_radius {
+                continue;
+            }
+            let amount = ship.cargo.min(self.cfg.deposit_rate);
+            ship.cargo -= amount;
+            ship.points += amount;
+            ship.deposited += amount;
+            base.deposited += amount;
+            self.events.push(Event::Deposited { ship: i as u16, amount });
+            while self.cfg.next_base_level_at(base.level).is_some_and(|at| base.deposited >= at) {
+                base.level += 1;
+                // The new hit points come with the level.
+                base.hp += self.cfg.base_hp_per_level;
+                self.events.push(Event::BaseLevel { team: ship.team, level: base.level });
+            }
+        }
+
+        // Drones: an orphan is taken by the first ship with room that flies up to it; an owned one
+        // goes for the nearest rock near its owner, or trails its owner, and shoots rocks in range.
+        for d in 0..self.drones.len() {
+            let drone = &self.drones[d];
+            let Some(owner) = drone.owner.filter(|o| self.ships[*o as usize].alive) else {
+                let taker = self.ships.iter().enumerate().position(|(i, s)| {
+                    s.alive
+                        && geo::chord(radius, s.pos, drone.pos) < self.cfg.pickup_radius
+                        && self.drones.iter().filter(|x| x.owner == Some(i as u16)).count() < self.cfg.drone_slots[s.tier as usize - 1] as usize
+                });
+                self.drones[d].owner = taker.map(|i| i as u16);
+                continue;
+            };
+            let ship = &self.ships[owner as usize];
+            let rock = self
+                .rocks
+                .iter()
+                .filter(|r| r.hp > 0.0 && geo::chord(radius, ship.pos, r.pos) < self.cfg.drone_reach)
+                .min_by(|a, b| geo::chord(radius, drone.pos, a.pos).total_cmp(&geo::chord(radius, drone.pos, b.pos)))
+                .map(|r| (r.pos, self.cfg.rock_radius * r.size as f32));
+            // Crystals lying about come first, while the owner has room for them; then rocks; else trail the owner.
+            let crystal = (ship.cargo < self.cfg.cargo_max(ship))
+                .then(|| {
+                    self.crystals
+                        .iter()
+                        .filter(|c| !c.boost_cell && geo::chord(radius, ship.pos, c.pos) < self.cfg.drone_reach)
+                        .min_by(|a, b| geo::chord(radius, drone.pos, a.pos).total_cmp(&geo::chord(radius, drone.pos, b.pos)))
+                        .map(|c| c.pos)
+                })
+                .flatten();
+            let (goal, keep) = match (crystal, rock) {
+                (Some(pos), _) => (pos, 0.0),
+                (None, Some((pos, size))) => (pos, size + 80.0),
+                (None, None) => (ship.pos, 45.0),
+            };
+            let (team, pos) = (ship.team, drone.pos);
+            let drone = &mut self.drones[d];
+            drone.cooldown = drone.cooldown.saturating_sub(1);
+            let way = geo::toward(radius, pos, goal);
+            if way.len() > keep {
+                drone.pos = geo::travel(radius, pos, way.unit(), (self.cfg.drone_speed * dt).min(way.len() - keep));
+            }
+            if let Some((at, _)) = rock {
+                let gun = self.cfg.weapon(Class::Basic);
+                let aim = geo::toward(radius, drone.pos, at);
+                if drone.cooldown == 0 && aim.len() < gun.range * 0.6 {
+                    drone.cooldown = self.cfg.drone_cooldown;
+                    let life = self.cfg.shot_ticks(Class::Basic);
+                    self.shots.push(Shot { pos: drone.pos, vel: aim.unit().scale(gun.speed), ticks: life, life, damage: self.cfg.drone_damage, owner: Some(owner), team });
+                }
+            }
+        }
+
         // Turrets: every standing base fires at the nearest enemy ship in range, leading its target.
         if self.cfg.turret_damage > 0.0 {
             for (team, base) in self.bases.iter_mut().enumerate() {
@@ -910,13 +1077,14 @@ impl World {
                     let gun = self.cfg.weapon(Class::Basic);
                     let dir = to.add(vel.scale(to.len() / gun.speed)).unit();
                     let life = self.cfg.shot_ticks(Class::Basic);
+                    let stronger = 1.0 + self.cfg.turret_per_level * (base.level - 1) as f32;
                     base.cooldown = self.cfg.turret_cooldown;
                     self.shots.push(Shot {
                         pos: geo::nudge(radius, base.pos, dir.scale(self.cfg.base_radius)),
                         vel: dir.scale(gun.speed),
                         ticks: life,
                         life,
-                        damage: self.cfg.turret_damage,
+                        damage: self.cfg.turret_damage * stronger,
                         owner: None,
                         team: team as u8,
                     });
@@ -1052,7 +1220,7 @@ impl World {
             }
             let (pos, rock_size, by) = (self.rocks[r].pos, self.rocks[r].size, self.rocks[r].last_hit_by);
             self.events.push(Event::RockDestroyed { by, size: rock_size });
-            self.scatter(pos, CRYSTALS_PER_SIZE[rock_size as usize], 0.0, self.cfg.rock_radius * rock_size as f32, true);
+            self.scatter(pos, self.cfg.rock_drops[rock_size as usize - 1], 0.0, self.cfg.rock_radius * rock_size as f32, true);
             self.rocks[r] = Self::new_rock(&self.cfg, &self.bases, &mut self.rng);
         }
 
@@ -1060,9 +1228,20 @@ impl World {
         let cfg = &self.cfg;
         let ships = &mut self.ships;
         let events = &mut self.events;
+        let drones = &self.drones;
         self.crystals.retain_mut(|c| {
             c.ticks -= 1;
             let mut best: Option<(usize, f32)> = None;
+            // A drone gathers crystals (not boost cells) for its owner, as long as the owner has room.
+            if !c.boost_cell {
+                for d in drones {
+                    let Some(i) = d.owner.map(|o| o as usize) else { continue };
+                    let dist = geo::chord(radius, d.pos, c.pos);
+                    if ships[i].alive && ships[i].cargo < cfg.cargo_max(&ships[i]) && dist < cfg.pickup_radius && best.is_none_or(|(_, b)| dist < b) {
+                        best = Some((i, dist));
+                    }
+                }
+            }
             for (i, s) in ships.iter().enumerate() {
                 // A boost cell is worth picking up until the tank is full; a crystal needs cargo room.
                 let wanted = if c.boost_cell { s.boost < 1.0 } else { s.cargo < cfg.cargo_max(s) };
@@ -1150,6 +1329,7 @@ impl World {
             put(s.boost.to_bits());
             put(s.spill.to_bits());
             put(s.cargo);
+            put(s.points);
             put(s.score);
             put(s.alive as u32);
             put(s.respawn as u32);
@@ -1163,6 +1343,13 @@ impl World {
         }
         for b in &self.bases {
             put(b.hp.to_bits());
+            put(b.level as u32);
+            put(b.deposited);
+        }
+        put(self.drones.len() as u32);
+        for d in &self.drones {
+            spot(d.pos).into_iter().for_each(&mut put);
+            put(d.owner.map_or(u32::MAX, u32::from));
         }
         put(self.crystals.len() as u32);
         for c in &self.crystals {

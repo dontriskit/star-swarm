@@ -140,8 +140,8 @@ impl Watch {
             .map(|(path, _)| path)
     }
 
-    /// The last few training lines of a run as table rows: update, matches won, crystals per
-    /// ship per minute, upgrade levels per ship, share of ships above tier 1.
+    /// The last few training lines of a run as table rows: update, matches won, crystals handed
+    /// over per ship per minute, upgrade levels per ship with the base level, share of ships above tier 1.
     fn progress(run_file: &Path) -> Vec<[String; 5]> {
         let text = std::fs::read_to_string(run_file.with_file_name("metrics.jsonl")).unwrap_or_default();
         let rows: Vec<[String; 5]> = text
@@ -156,8 +156,8 @@ impl Watch {
                 [
                     format!("{:.0}", number("update")),
                     format!("{:.0}%", number("win_rate") * 100.0),
-                    format!("{:.1}", number("crystals_per_min")),
-                    format!("{:.1}", number("levels")),
+                    format!("{:.1}", number("deposited_per_min")),
+                    format!("{:.1} · baza {:.1}", number("levels"), number("base_level")),
                     // "tiers" is a list starting with the share still at tier 1.
                     format!("{:.0}%", (1.0 - number("tiers")) * 100.0),
                 ]
@@ -534,7 +534,15 @@ impl Game {
 
         let teams = (0..self.world.bases.len()).map(|t| {
             let base = &self.world.bases[t];
-            let base_text = if base.alive() { format!("{:.0}", base.hp) } else { "zniszczona".to_string() };
+            // Hit points, level, and crystals handed over towards the next level.
+            let base_text = if !base.alive() {
+                "zniszczona".to_string()
+            } else {
+                match self.world.cfg.next_base_level_at(base.level) {
+                    Some(next) => format!("{:.0} · poz. {} · {}/{}", base.hp, base.level, base.deposited, next),
+                    None => format!("{:.0} · poz. {}", base.hp, base.level),
+                }
+            };
             let name = TEAM_NAMES[t % TEAM_NAMES.len()];
             let crystals: u32 = self.world.ships.iter().filter(|s| s.team == t as u8).map(|s| s.collected).sum();
             let live = self.watch.as_ref().is_some_and(|w| w.stream.is_some());
@@ -553,7 +561,7 @@ impl Game {
                 .child(div().size_3().rounded_sm().bg(rgb(TEAM_COLORS[t % TEAM_COLORS.len()])))
                 .child(div().flex_1().child(who))
                 .child(div().w(px(92.)).text_color(muted).child(if self.world.commanded[t] { "rozkazy".to_string() } else { mode_split(&self.world, t as u8) }))
-                .child(div().w(px(84.)).flex().justify_end().child(base_text))
+                .child(div().w(px(176.)).flex().justify_end().child(base_text))
                 .child(div().w(px(72.)).flex().justify_end().child(crystals.to_string()))
                 .child(div().w(px(56.)).flex().justify_end().child(self.team_score(t as u8).to_string()))
         });
@@ -563,7 +571,7 @@ impl Game {
             .text_color(muted)
             .child(div().flex_1().child("Drużyna"))
             .child(div().w(px(92.)).child("Tryby"))
-            .child(div().w(px(84.)).flex().justify_end().child("Baza (HP)"))
+            .child(div().w(px(176.)).flex().justify_end().child("Baza: HP · poziom · oddane"))
             .child(div().w(px(72.)).flex().justify_end().child("Kryształy"))
             .child(div().w(px(56.)).flex().justify_end().child("Wynik"));
 
@@ -587,6 +595,7 @@ impl Game {
             .child(column(72., "Kadłub".into()))
             .child(column(64., "Tarcza".into()))
             .child(column(68., "Ładunek".into()))
+            .child(column(60., "Punkty".into()))
             .child(column(56., "Amun.".into()))
             .child(column(64., "Dopalacz".into()))
             .child("Rozkaz");
@@ -613,6 +622,7 @@ impl Game {
                 row.child(column(72., format!("{:.0}/{:.0}", ship.hull.max(0.0), cfg.hull_max(ship))))
                     .child(column(64., format!("{:.0}/{:.0}", ship.shield, cfg.shield_max(ship))))
                     .child(column(68., format!("{}/{}", ship.cargo, cfg.cargo_max(ship))))
+                    .child(column(60., ship.points.to_string()))
                     .child(column(56., format!("{:.0}/{:.0}", ship.ammo, cfg.ammo_max(ship))))
                     .child(column(64., format!("{:.0}%", ship.boost * 100.0)))
                     .child(order_name(ship.order.kind))
@@ -653,13 +663,14 @@ impl Game {
                 .child(div().w(px(104.)).whitespace_nowrap().child(format!("{} T{}", class_name(ship.class), ship.tier)))
                 .child(div().w(px(40.)).text_color(muted).child(format!("♥{}", ship.lives)))
                 .child(div().w(px(52.)).text_color(muted).child(plan_name(ship.vote)))
+                .child(div().w(px(34.)).text_color(muted).child(format!("d{}", self.world.drones.iter().filter(|d| d.owner == Some(i as u16)).count())))
                 .children(levels)
         });
 
         div()
             .id("panel")
             .overflow_y_scroll()
-            .w(px(600.))
+            .w(px(660.))
             .h_full()
             .flex()
             .flex_col()
@@ -759,8 +770,8 @@ impl Game {
             .children(self.watch.as_ref().filter(|w| !w.progress.is_empty()).map(|watch| {
                 // How training is going: the latest measurements of the run being watched.
                 let cell = |text: String, width: f32| div().w(px(width)).flex().justify_end().child(text);
-                let head = ["Aktualizacja", "Wygrane", "Kryształy/min", "Ulepszenia", "Powyżej T1"];
-                let widths = [96., 72., 104., 88., 88.];
+                let head = ["Aktualizacja", "Wygrane", "Oddane/min", "Ulepszenia · poz. bazy", "Powyżej T1"];
+                let widths = [96., 72., 96., 168., 88.];
                 div()
                     .flex()
                     .flex_col()
@@ -769,7 +780,7 @@ impl Game {
                     .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
                     .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
             }))
-            .child(div().text_color(muted).child("Drzewko: typ, tier, życia, tryb i poziom każdego ulepszenia"))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, życia, tryb, drony (d) i poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
     }

@@ -18,7 +18,7 @@ policy.load_state_dict(saved["model"])
 
 layers = [policy.trunk[0], policy.trunk[2], policy.logits]
 with open(out, "wb") as f:
-    f.write(b"SWPOL006")
+    f.write(b"SWPOL007")
     f.write(struct.pack("<II", saved["obs_len"], saved["hidden"]))
     f.write(struct.pack("<I", len(HEADS)) + struct.pack(f"<{len(HEADS)}I", *HEADS))
     for layer in layers:

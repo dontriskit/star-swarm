@@ -82,11 +82,13 @@ fn a_ship_flying_straight_comes_back_around_the_planet() {
 #[test]
 fn scripted_bots_mine_and_upgrade() {
     let mut world = World::new(Config::default(), 1);
-    run(&mut world, 3000);
+    run(&mut world, 9000);
     let collected: u32 = world.ships.iter().map(|s| s.collected).sum();
+    let handed_over: u32 = world.ships.iter().map(|s| s.deposited).sum();
     let levels: u32 = world.ships.iter().flat_map(|s| s.levels).map(u32::from).sum();
-    assert!(collected > 100, "collected only {collected}");
-    assert!(levels > 10, "bought only {levels} upgrade levels");
+    assert!(collected > 300, "collected only {collected}");
+    assert!(handed_over > 100, "handed over only {handed_over} at the bases");
+    assert!(world.drones.len() + levels as usize > 3, "bought only {} drones and {levels} upgrade levels", world.drones.len());
 }
 
 #[test]
@@ -138,7 +140,9 @@ fn regroup_order_gathers_the_team() {
 fn each_tier_has_a_higher_upgrade_cap_and_starts_again_without_upgrades() {
     let cfg = Config { rock_count: 0, ..Config::default() };
     let mut world = World::new(cfg, 2);
-    world.ships[0].cargo = 1000;
+    // Points pay for everything, and a ship cannot outgrow its base.
+    world.ships[0].points = 1000;
+    world.bases[0].level = 3;
     let mut actions = vec![Action::default(); world.ships.len()];
     let buy = |world: &mut World, actions: &mut Vec<Action>, what: Buy, times: usize| {
         actions[0].buy = Some(what);
@@ -150,22 +154,22 @@ fn each_tier_has_a_higher_upgrade_cap_and_starts_again_without_upgrades() {
     // Tier 1 stops at level 3: 10 + 20 + 30 crystals.
     buy(&mut world, &mut actions, Buy::Upgrade(Upgrade::Attack), 10);
     assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 3);
-    assert_eq!(world.ships[0].cargo, 1000 - 60);
+    assert_eq!(world.ships[0].points, 1000 - 60);
     let full_tier1 = world.cfg.damage(&world.ships[0]);
 
     // Tier 2: paid for once, the class is chosen, the upgrades are gone.
     buy(&mut world, &mut actions, Buy::Tier(Class::Twin), 1);
     assert_eq!((world.ships[0].tier, world.ships[0].class), (2, Class::Twin));
     assert_eq!(world.ships[0].levels, [0; 8]);
-    assert_eq!(world.ships[0].cargo, 1000 - 60 - 60);
+    assert_eq!(world.ships[0].points, 1000 - 60 - 60);
     assert_eq!(world.ships[0].hull, world.cfg.hull_max(&world.ships[0]));
 
     // Tier 2 stops at level 4, tier 3 at level 5, and tier 3 keeps the class.
     buy(&mut world, &mut actions, Buy::Upgrade(Upgrade::Attack), 10);
     assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 4);
-    world.ships[0].cargo = 1000;
+    world.ships[0].points = 1000;
     buy(&mut world, &mut actions, Buy::Tier(Class::Lancer), 1);
-    assert_eq!((world.ships[0].tier, world.ships[0].class, world.ships[0].cargo), (3, Class::Twin, 1000 - 120));
+    assert_eq!((world.ships[0].tier, world.ships[0].class, world.ships[0].points), (3, Class::Twin, 1000 - 120));
     buy(&mut world, &mut actions, Buy::Upgrade(Upgrade::Attack), 10);
     assert_eq!(world.ships[0].levels[Upgrade::Attack as usize], 5);
     buy(&mut world, &mut actions, Buy::Tier(Class::Twin), 3);
@@ -209,9 +213,9 @@ fn siege(cfg: Config) -> World {
 
 #[test]
 fn destroying_every_other_base_wins_the_match() {
-    // An undefended base of 100 HP falls to ten shots.
-    let mut world = siege(Config { base_hp: 100.0, turret_damage: 0.0, ..Config::default() });
-    assert_eq!(world.bases[1].hp, 100.0);
+    // An undefended base of 30 HP falls to thirty basic shots.
+    let mut world = siege(Config { base_hp: 30.0, turret_damage: 0.0, ..Config::default() });
+    assert_eq!(world.bases[1].hp, 30.0);
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
     let mut destroyed = false;
     while !world.done() {
@@ -219,14 +223,14 @@ fn destroying_every_other_base_wins_the_match() {
     }
     assert!(destroyed);
     assert_eq!(world.winner(), Some(0));
-    assert!(world.tick < 900, "a 100 HP base should not take {} ticks", world.tick);
+    assert!(world.tick < 900, "a 30 HP base should not take {} ticks", world.tick);
 }
 
 #[test]
 fn a_team_without_a_base_gets_no_new_ships() {
     let mut world = siege(Config::default());
     // A third team keeps the match going after team 1 loses its base.
-    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0 });
+    world.bases.push(Base { pos: Vec3::new(0.0, 0.0, -1.0), hp: 100.0, cooldown: 0, level: 1, deposited: 0 });
     world.plans.push(None);
     world.commanded.push(false);
     world.seen_base_hp.iter_mut().for_each(|seen| seen.push(100.0));
@@ -345,8 +349,8 @@ fn shots_weaken_with_distance_and_stop_at_their_range() {
         None
     };
     let (near, far) = (hit_from(60.0).unwrap(), hit_from(420.0).unwrap());
-    assert!(near > 9.0 && near <= 10.0, "point blank did {near}");
-    assert!(far < 6.0 && far >= 4.0, "at the edge of its range did {far}");
+    assert!(near > 0.9 && near <= 1.0, "point blank did {near}");
+    assert!(far < 0.6 && far >= 0.4, "at the edge of its range did {far}");
     assert_eq!(hit_from(600.0), None, "a basic laser reaches 470");
 }
 
@@ -407,22 +411,22 @@ fn carried_crystals_take_damage_before_the_hull_and_fall_out() {
     let mut world = duel(Config::default(), 150.0);
     world.ships[1].shield = 0.0;
     world.ships[1].shield_wait = u16::MAX;
-    world.ships[1].cargo = 12;
+    world.ships[1].cargo = 6;
     let fire = [Action { fire: true, ..Action::default() }, Action::default()];
 
     // The first hits cost crystals, not hull.
     let mut hits = 0;
-    while hits < 1 {
+    while hits < 3 {
         hits += world.step(&fire).iter().filter(|e| matches!(e, Event::Hit { victim: 1, .. })).count();
     }
     assert_eq!(world.ships[1].hull, 100.0);
-    assert!(world.ships[1].cargo < 12 && world.ships[1].cargo >= 12 - 9, "cargo {}", world.ships[1].cargo);
+    assert!(world.ships[1].cargo < 6 && world.ships[1].cargo >= 3, "cargo {}", world.ships[1].cargo);
     assert!(!world.crystals.is_empty(), "the lost crystals lie on the map");
     // They land outside the ship's own reach, so it does not simply scoop them back up.
     assert!(world.crystals.iter().all(|c| world.dist(c.pos, world.ships[1].pos) > world.cfg.pickup_radius));
 
     // Keep firing: the hull starts to go only once the hold is empty.
-    for _ in 0..90 {
+    for _ in 0..150 {
         world.step(&fire);
     }
     assert_eq!(world.ships[1].cargo, 0);
@@ -562,6 +566,7 @@ fn an_enemy_bases_health_is_only_known_from_what_the_team_has_seen() {
     // Nobody of team 0 is near base 1: it still believes the base is whole. Team 1 knows its own base.
     assert_eq!(observe(&world, 0).enemy_bases[0].hp, 1.0);
     assert_eq!(observe(&world, 1).base.hp, 0.4);
+    // (Team 1's base reads against the 1000 hit points of a new base.)
     // A scout within view range brings the news.
     world.ships[0].pos = world.offset(world.bases[1].pos, 0.0, 300.0);
     world.step(&[Action::default(); 2]);
@@ -626,10 +631,10 @@ fn harder_hitting_shots_cost_more_ammo() {
         s.levels[Upgrade::Attack as usize] = attack;
         world.cfg.volley_cost(&s)
     };
-    // One ammo buys 10 damage: a basic shot of 10 costs 1, a Lancer's 30 costs 3.
+    // One ammo buys one point of damage: a basic shot of 1 costs 1, a Lancer's 3 costs 3.
     assert!((cost(Class::Basic, 0) - 1.0).abs() < 1e-6);
     assert!((cost(Class::Lancer, 0) - 3.0).abs() < 1e-6);
-    assert!((cost(Class::Twin, 0) - 2.2).abs() < 1e-6, "two lasers of 11");
+    assert!((cost(Class::Twin, 0) - 2.2).abs() < 1e-6, "two lasers of 1.1");
     // Attack upgrades make every shot hit harder and cost more.
     assert!(cost(Class::Basic, 3) > cost(Class::Basic, 0) * 1.5);
 
@@ -644,4 +649,129 @@ fn harder_hitting_shots_cost_more_ammo() {
         shots += (world.shots.len() > before) as u32;
     }
     assert_eq!(shots, 10);
+}
+
+/// One ship of one team, parked 60 from its base with crystals on board; no rocks.
+fn at_home(cargo: u32) -> World {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 2);
+    world.ships[0].pos = world.offset(world.bases[0].pos, 0.0, 60.0);
+    world.face(0, world.bases[0].pos);
+    world.ships[1].pos = POLE;
+    world.ships[0].cargo = cargo;
+    world
+}
+
+#[test]
+fn crystals_handed_over_at_the_base_become_points() {
+    let mut world = at_home(23);
+    let idle = [Action::default(); 2];
+    let mut handed = 0;
+    for _ in 0..10 {
+        handed += world.step(&idle).iter().map(|e| if let Event::Deposited { ship: 0, amount } = e { *amount } else { 0 }).sum::<u32>();
+    }
+    assert_eq!((world.ships[0].cargo, world.ships[0].points, handed), (0, 23, 23));
+    assert_eq!(world.bases[0].deposited, 23);
+    assert_eq!(world.bases[0].level, 1);
+
+    // Away from the base nothing is handed over, and crystals on board buy nothing.
+    let mut world = at_home(40);
+    world.ships[0].pos = POLE;
+    let buy = [Action { buy: Some(Buy::Upgrade(Upgrade::Attack)), ..Action::default() }, Action::default()];
+    for _ in 0..10 {
+        world.step(&buy);
+    }
+    assert_eq!((world.ships[0].cargo, world.ships[0].points, world.ships[0].levels[Upgrade::Attack as usize]), (40, 0, 0));
+}
+
+#[test]
+fn enough_crystals_raise_the_base_a_level_and_let_ships_move_up_a_tier() {
+    let mut world = at_home(0);
+    world.ships[0].points = 500;
+    let tier_up = [Action { buy: Some(Buy::Tier(Class::Twin)), ..Action::default() }, Action::default()];
+    world.step(&tier_up);
+    assert_eq!(world.ships[0].tier, 1, "a level-1 base cannot support a tier-2 ship");
+
+    // The team has handed over 995 crystals so far; this ship brings the rest.
+    world.bases[0].deposited = 995;
+    world.ships[0].cargo = 10;
+    let mut levelled = false;
+    for _ in 0..5 {
+        levelled |= world.step(&[Action::default(); 2]).iter().any(|e| matches!(e, Event::BaseLevel { team: 0, level: 2 }));
+    }
+    assert!(levelled);
+    assert_eq!(world.bases[0].level, 2);
+    assert_eq!(world.bases[0].hp, 1200.0, "the level comes with 200 more hit points");
+    assert_eq!(observe(&world, 0).base_level, 2);
+
+    world.step(&tier_up);
+    assert_eq!(world.ships[0].tier, 2);
+    world.ships[0].points = 500;
+    world.step(&tier_up);
+    assert_eq!(world.ships[0].tier, 2, "tier 3 needs a level-3 base");
+    assert_eq!(world.cfg.next_base_level_at(2), Some(2500));
+    assert_eq!(world.cfg.next_base_level_at(7), None);
+}
+
+#[test]
+fn points_repair_the_base() {
+    let mut world = at_home(0);
+    world.ships[0].points = 25;
+    world.bases[0].hp = 500.0;
+    let repair = [Action { buy: Some(Buy::Repair), ..Action::default() }, Action::default()];
+    for _ in 0..5 {
+        world.step(&repair);
+    }
+    // Two repairs of 10 points for 10 hit points each; 5 points are not enough for a third.
+    assert_eq!((world.bases[0].hp, world.ships[0].points), (520.0, 5));
+    world.bases[0].hp = 1000.0;
+    world.ships[0].points = 50;
+    world.step(&repair);
+    assert_eq!(world.ships[0].points, 50, "a whole base takes no repairs");
+}
+
+#[test]
+fn a_drone_mines_for_its_owner_and_can_be_taken_when_the_owner_dies() {
+    let cfg = Config { teams: 2, ships_per_team: 1, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 2);
+    world.ships[0].pos = POLE;
+    world.ships[1].pos = world.offset(POLE, 2.0, 1500.0);
+    world.ships[0].points = 100;
+    let buy = [Action { buy: Some(Buy::Drone), ..Action::default() }, Action::default()];
+    world.step(&buy);
+    world.step(&buy);
+    assert_eq!(world.drones.len(), 1, "a tier-1 ship has room for one drone");
+    assert_eq!(world.ships[0].points, 60);
+
+    // A small rock 150 away: the ship does nothing, the drone goes and breaks it and brings the crystals in.
+    let spot = world.offset(POLE, 0.3, 150.0);
+    world.rocks.push(Rock { pos: spot, vel: Vec3::default(), size: 1, hp: 10.0, last_hit_by: None });
+    let idle = [Action::default(); 2];
+    for _ in 0..600 {
+        world.step(&idle);
+        if world.ships[0].cargo > 0 {
+            break;
+        }
+    }
+    assert!(world.ships[0].cargo > 0, "the drone gathered nothing");
+    assert_eq!(observe(&world, 0).drones, 1);
+
+    // The owner is destroyed: the drone is left where it is, and the enemy that flies up takes it.
+    world.ships[0].hull = -1.0;
+    world.step(&idle);
+    world.step(&idle);
+    assert_eq!(world.drones[0].owner, None);
+    world.ships[1].pos = world.drones[0].pos;
+    world.step(&idle);
+    assert_eq!(world.drones[0].owner, Some(1));
+}
+
+#[test]
+fn small_rocks_are_quick_work_and_big_ones_pay_more() {
+    let cfg = Config::default();
+    assert_eq!((cfg.rock_hp_of(1), cfg.rock_hp_of(2), cfg.rock_hp_of(3)), (10.0, 40.0, 90.0));
+    assert_eq!(cfg.rock_drops, [2, 6, 15]);
+    // Per shot a basic ship gets the most out of the smallest rocks.
+    let per_hp = |size: u8| cfg.rock_drops[size as usize - 1] as f32 / cfg.rock_hp_of(size);
+    assert!(per_hp(1) > per_hp(2) && per_hp(1) > per_hp(3));
 }

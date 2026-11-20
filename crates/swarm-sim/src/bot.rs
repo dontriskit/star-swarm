@@ -40,6 +40,8 @@ const AIM: f32 = 0.1;
 const FIGHT_RANGE: f32 = 260.0;
 /// Below this share of its hull a ship with a base to go to breaks off for repairs.
 const RETREAT: f32 = 0.35;
+/// With its hold this full a mining ship flies home to hand the crystals over.
+const UNLOAD: f32 = 0.5;
 
 impl ScriptedBot {
     /// Bots for a whole fleet: ship `i` gets its tier-2 class by turns, so every class shows up.
@@ -115,21 +117,31 @@ impl ScriptedBot {
         if let Some(c) = obs.crystals.iter().find(wanted) {
             return Self::fly(c.pos, 0.0, obs, cfg);
         }
-        match obs.rocks.first() {
+        // Prefer rocks this ship can break soon: a big rock nearby is worth less than a small one a little farther.
+        let effort = |r: &&Near| r.dist + r.hp * cfg.rock_hp_of(3) * 12.0 / cfg.weapon(obs.class).damage.max(0.1);
+        match obs.rocks.iter().min_by(|a, b| effort(a).total_cmp(&effort(b))) {
             Some(rock) => Self::shoot(rock, 140.0, obs, cfg),
             // Nothing in sight: cruise until something shows up.
             None => Action { thrust: true, ..Action::default() },
         }
     }
 
-    /// Buys one level of everything, then saves up for the next tier (which starts again
-    /// without upgrades); at the top tier it spreads crystals evenly over the upgrades.
+    /// Spends points: repairs a badly damaged base first, then fills its drone slots, then buys
+    /// one level of everything, then the next tier once the base allows it (a new tier starts
+    /// again without upgrades); otherwise it spreads points evenly over the upgrades.
     fn shop(&self, obs: &Observation, cfg: &Config) -> Option<Buy> {
+        if obs.base.hp > 0.0 && obs.base.hp < 0.6 && obs.points >= cfg.repair_step {
+            return Some(Buy::Repair);
+        }
+        if obs.drones < cfg.drone_slots[obs.tier as usize - 1] {
+            return (obs.points >= cfg.drone_cost).then_some(Buy::Drone);
+        }
         let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
         let lowest = obs.levels[next as usize];
+        let can_tier = obs.tier < TIERS && obs.base_level > obs.tier;
         match cfg.cost(lowest, obs.tier) {
-            Some(cost) if lowest == 0 || obs.tier == TIERS => (obs.cargo >= cost).then_some(Buy::Upgrade(next)),
-            _ => (obs.tier < TIERS && obs.cargo >= cfg.tier_cost[obs.tier as usize - 1]).then_some(Buy::Tier(self.prefers)),
+            Some(cost) if lowest == 0 || !can_tier => (obs.points >= cost).then_some(Buy::Upgrade(next)),
+            _ => (can_tier && obs.points >= cfg.tier_cost[obs.tier as usize - 1]).then_some(Buy::Tier(self.prefers)),
         }
     }
 }
@@ -142,8 +154,11 @@ impl Controller for ScriptedBot {
         let enemy = obs.ships.iter().find(|s| s.enemy);
         let healthy = obs.hull > 0.4 * obs.hull_max;
         let home = obs.base.hp > 0.0;
-        let mut act = if home && obs.hull < RETREAT * obs.hull_max && obs.base.dist > cfg.base_heal_radius * 0.6 {
-            // Badly hurt: back to the base for repairs.
+        // Crystals are worth nothing until handed over: with a well-filled hold, and no orders
+        // to be somewhere else, head home.
+        let unload = home && obs.cargo as f32 >= UNLOAD * obs.cargo_max as f32 && matches!(obs.order, OrderKind::Mine | OrderKind::Defend);
+        let mut act = if home && (unload || obs.hull < RETREAT * obs.hull_max) && obs.base.dist > cfg.base_heal_radius * 0.6 {
+            // Badly hurt or loaded up: back to the base.
             Self::fly(obs.base.pos, 0.0, obs, cfg)
         } else {
             match obs.order {

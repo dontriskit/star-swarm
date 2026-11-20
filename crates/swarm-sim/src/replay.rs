@@ -5,19 +5,21 @@ use crate::sim::{Action, Buy, Config, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP0008";
+const MAGIC: &[u8; 8] = b"SWRP0009";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
-pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len();
+pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len() + 2;
 
 /// What to buy as a small number: 0 nothing, 1 to 8 an upgrade, 9 to 12 the next tier
-/// (as a Lancer, Twin, Scatter or Ram when leaving tier 1).
+/// (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 a drone, 14 a base repair.
 pub fn buy_code(buy: Option<Buy>) -> u8 {
     match buy {
         None => 0,
         Some(Buy::Upgrade(u)) => u as u8 + 1,
         Some(Buy::Tier(class)) => (UPGRADES.len() + TIER2.iter().position(|c| *c == class).map_or(0, |i| i + 1)) as u8,
+        Some(Buy::Drone) => (UPGRADES.len() + TIER2.len() + 1) as u8,
+        Some(Buy::Repair) => (UPGRADES.len() + TIER2.len() + 2) as u8,
     }
 }
 
@@ -26,7 +28,9 @@ pub fn buy_of(code: u8) -> Option<Buy> {
     match code as usize {
         0 => None,
         n if n <= UPGRADES.len() => Some(Buy::Upgrade(UPGRADES[n - 1])),
-        n if n < BUY_CODES => Some(Buy::Tier(TIER2[n - UPGRADES.len() - 1])),
+        n if n <= UPGRADES.len() + TIER2.len() => Some(Buy::Tier(TIER2[n - UPGRADES.len() - 1])),
+        n if n == UPGRADES.len() + TIER2.len() + 1 => Some(Buy::Drone),
+        n if n == UPGRADES.len() + TIER2.len() + 2 => Some(Buy::Repair),
         _ => None,
     }
 }
