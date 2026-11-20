@@ -120,6 +120,8 @@ def train(args):
     env = make_env(args, args.envs, args.seed)
     n, steps = env.agents, args.steps
     policy = Policy(args.hidden).to(device)
+    if args.init:
+        policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
 
     obs_buf = torch.zeros(steps, n, OBS_LEN, device=device)
@@ -132,6 +134,8 @@ def train(args):
     obs = observe(env, device)
     stats, started, samples = [], time.time(), 0
     for update in range(1, args.updates + 1):
+        # Exploration bonus fades linearly, so the policy ends up decisive.
+        entropy_coef = args.entropy_coef + (args.entropy_end - args.entropy_coef) * (update - 1) / max(args.updates - 1, 1)
         with torch.no_grad():
             for t in range(steps):
                 actions, logp, value = policy.act(obs)
@@ -168,7 +172,7 @@ def train(args):
                 ratio = (logp - b_logp[idx]).exp()
                 policy_loss = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
                 value_loss = 0.5 * (value - b_ret[idx]).pow(2).mean()
-                loss = policy_loss + args.value_coef * value_loss - args.entropy_coef * entropy.mean()
+                loss = policy_loss + args.value_coef * value_loss - entropy_coef * entropy.mean()
                 optim.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
@@ -214,6 +218,8 @@ if __name__ == "__main__":
     p.add_argument("--clip", type=float, default=0.2)
     p.add_argument("--value-coef", type=float, default=0.5)
     p.add_argument("--entropy-coef", type=float, default=0.01)
+    p.add_argument("--entropy-end", type=float, default=None, help="entropy coefficient at the last update (default: no fading)")
+    p.add_argument("--init", default=None, metavar="POLICY.PT", help="start from a saved policy")
     p.add_argument("--log-every", type=int, default=10)
     # The match: one team mining, three minutes long, a decision every 0.1 s.
     p.add_argument("--frame-skip", type=int, default=3)
@@ -223,4 +229,7 @@ if __name__ == "__main__":
     p.add_argument("--world-size", type=float, default=1400.0)
     p.add_argument("--max-ticks", type=int, default=5400)
     p.add_argument("--reward", action="append", default=[], metavar="NAME=WEIGHT", help="override a reward weight, e.g. --reward buy=4")
-    train(p.parse_args())
+    args = p.parse_args()
+    if args.entropy_end is None:
+        args.entropy_end = args.entropy_coef
+    train(args)
