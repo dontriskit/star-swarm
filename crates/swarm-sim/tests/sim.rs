@@ -74,9 +74,9 @@ fn a_ship_flying_straight_comes_back_around_the_planet() {
             break;
         }
     }
-    // Once around is 1885 units; at about 240 a second that is roughly 8 s after getting up to speed.
+    // Once around is 1885 units; at about 150 a second that is roughly 13 s after getting up to speed.
     assert!(farthest > 900.0, "only got {farthest} away, half-way around is 942");
-    assert!(back.is_some_and(|t| (220..330).contains(&t)), "back at the start after {back:?} ticks");
+    assert!(back.is_some_and(|t| (360..480).contains(&t)), "back at the start after {back:?} ticks");
 }
 
 #[test]
