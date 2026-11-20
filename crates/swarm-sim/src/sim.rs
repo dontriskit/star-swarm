@@ -338,11 +338,12 @@ pub struct Config {
     pub dock_speed: f32,
     /// Share of the impact speed a rock takes as damage when a ship flies into it.
     pub ram_rock: f32,
-    /// Hit points of a shield drone.
+    /// The least hit points a shield drone has; see [`Config::drone_share`].
     pub drone_hp: f32,
     /// Points one repair costs, and base hit points it restores.
     pub repair_step: u32,
-    /// Points a drone costs, by [`DroneKind`].
+    /// Points a drone costs a tier-1 ship, by [`DroneKind`]; a ship of a higher tier pays that
+    /// many times its tier, for the stronger drone it gets.
     pub drone_cost: [u32; 3],
     /// Drones a ship of tier 1, 2 and 3 can have.
     pub drone_slots: [u8; TIERS as usize],
@@ -351,7 +352,10 @@ pub struct Config {
     pub drone_speed: f32,
     /// Ticks between a drone's shots.
     pub drone_cooldown: u16,
-    pub drone_damage: f32,
+    /// A drone is as good as the ship it belongs to. By [`DroneKind`]: an eco drone and a
+    /// combat drone put out this share of their owner's firepower (four eco drones make mining
+    /// two and a half times as fast), a shield drone has this share of its owner's hull.
+    pub drone_share: [f32; 3],
     pub rock_speed: f32,
     /// Rocks grow in farms: clusters of one kind, scattered over the whole planet with open space
     /// between them. The kinds of farm: smallest and biggest rock size, and rocks to a farm.
@@ -489,7 +493,7 @@ impl Default for Config {
             drone_reach: 240.0,
             drone_speed: 170.0,
             drone_cooldown: 7,
-            drone_damage: 2.0,
+            drone_share: [0.375, 0.3, 0.2],
             rock_speed: 12.0,
             crash_damage: 0.15,
             crystal_ticks: 200,
@@ -567,6 +571,20 @@ impl Config {
     pub fn speed_of(&self, s: &Ship) -> f32 {
         self.body(s.class).speed * self.boost(s, Upgrade::Speed)
     }
+    /// What a drone of a ship costs it.
+    pub fn drone_price(&self, kind: DroneKind, tier: u8) -> u32 {
+        self.drone_cost[kind as usize] * tier as u32
+    }
+    /// Damage of one shot of a drone of this ship: its share of what the ship's own guns put
+    /// out in the time between two of the drone's shots.
+    pub fn drone_shot(&self, s: &Ship, kind: DroneKind) -> f32 {
+        let per_tick = self.weapon(s.class).lasers as f32 * self.damage(s) / self.cooldown(s) as f32;
+        self.drone_share[kind as usize] * per_tick * self.drone_cooldown as f32
+    }
+    /// Hit points of a shield drone of this ship.
+    pub fn drone_hull(&self, s: &Ship) -> f32 {
+        (self.drone_share[DroneKind::Shield as usize] * self.hull_max(s)).max(self.drone_hp)
+    }
     /// How big a ship's shots are: its gun's size, growing with the damage they do.
     pub fn shot_radius(&self, s: &Ship) -> f32 {
         self.weapon(s.class).size * self.boost(s, Upgrade::Attack).sqrt()
@@ -605,7 +623,7 @@ impl Config {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
             // Leaving tier 1 needs a real class; after that the class named is ignored.
             Buy::Tier(class) => (s.tier < TIERS && self.base_allows(s.tier, base.level) && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
-            Buy::Drone(kind) => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_cost[kind as usize]),
+            Buy::Drone(kind) => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_price(kind, s.tier)),
             Buy::Repair => (base.alive() && base.hp < self.base_hp_max(base.level)).then_some(self.repair_step),
             // Selling costs nothing; what it pays is handled where it happens.
             Buy::SellDrone => (drones > 0).then_some(0),
@@ -1374,11 +1392,11 @@ impl World {
                 if let Some(cost) = cfg.price(ship, what, home, drones).filter(|cost| ship.points >= *cost) {
                     ship.points -= cost;
                     match what {
-                        Buy::Drone(kind) => self.drones.push(Drone { pos: ship.pos, owner: Some(i as u16), cooldown: 0, kind, hp: cfg.drone_hp }),
+                        Buy::Drone(kind) => self.drones.push(Drone { pos: ship.pos, owner: Some(i as u16), cooldown: 0, kind, hp: cfg.drone_hull(ship) }),
                         Buy::SellDrone => {
                             // The last one bought goes, for half of what it cost.
                             if let Some(at) = self.drones.iter().rposition(|d| d.owner == Some(i as u16)) {
-                                ship.points += cfg.drone_cost[self.drones.remove(at).kind as usize] / 2;
+                                ship.points += cfg.drone_price(self.drones.remove(at).kind, ship.tier) / 2;
                             }
                         }
                         Buy::Repair => repairs.push(ship.team),
@@ -1588,7 +1606,7 @@ impl World {
                         vel: aim.unit().scale(gun.speed),
                         ticks: life,
                         life,
-                        damage: self.cfg.drone_damage,
+                        damage: self.cfg.drone_shot(&self.ships[owner as usize], kind),
                         owner: Some(owner),
                         team,
                         mining: kind == DroneKind::Eco,

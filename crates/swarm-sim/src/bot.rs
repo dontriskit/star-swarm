@@ -155,7 +155,7 @@ impl ScriptedBot {
         if obs.drones < cfg.drone_slots[obs.tier as usize - 1] {
             // The first drone mines; any further one fights.
             let kind = if obs.drone_kinds[DroneKind::Eco as usize] == 0 { DroneKind::Eco } else { DroneKind::Combat };
-            return (obs.points >= cfg.drone_cost[kind as usize]).then_some(Buy::Drone(kind));
+            return (obs.points >= cfg.drone_price(kind, obs.tier)).then_some(Buy::Drone(kind));
         }
         // While the base allows a higher tier, rush for it: a tier is worth more than the
         // upgrades it wipes. Only a first level of attack and of ammo is bought on the way, to

@@ -560,6 +560,30 @@ fn big_ships_clear_rock_fast_and_the_biggest_needs_no_upgrades() {
 }
 
 #[test]
+fn drones_are_as_good_as_their_ship() {
+    let cfg = Config::default();
+    let ship = |class: Class, tier: u8| {
+        let mut s = duel(Config::default(), 5000.0).ships[0].clone();
+        s.class = class;
+        s.tier = tier;
+        s
+    };
+    // What a ship's own guns put out a second, and what one drone of a kind adds.
+    let guns = |s: &Ship| cfg.weapon(s.class).lasers as f32 * cfg.damage(s) / (cfg.cooldown(s) as f32 * cfg.dt);
+    let drone = |s: &Ship, kind: DroneKind| cfg.drone_shot(s, kind) / (cfg.drone_cooldown as f32 * cfg.dt);
+    for s in [ship(Class::Basic, 1), ship(Class::Twin, 4), ship(Class::Lancer, 7)] {
+        // Four eco drones make mining two and a half times as fast; combat drones add less.
+        assert!(((guns(&s) + 4.0 * drone(&s, DroneKind::Eco)) / guns(&s) - 2.5).abs() < 0.01);
+        assert!((drone(&s, DroneKind::Combat) / guns(&s) - 0.2).abs() < 0.01);
+    }
+    // A bigger ship's drones hit harder, last longer and cost more.
+    let (small, big) = (ship(Class::Twin, 2), ship(Class::Twin, 5));
+    assert!(cfg.drone_shot(&big, DroneKind::Combat) > 2.0 * cfg.drone_shot(&small, DroneKind::Combat));
+    assert!(cfg.drone_hull(&big) > 2.0 * cfg.drone_hull(&small) && (cfg.drone_hull(&ship(Class::Basic, 1)) - 30.0).abs() < 0.01);
+    assert_eq!((cfg.drone_price(DroneKind::Eco, 1), cfg.drone_price(DroneKind::Eco, 5), cfg.drone_price(DroneKind::Combat, 5)), (40, 200, 300));
+}
+
+#[test]
 fn a_team_learns_how_hard_an_enemy_hits_by_being_hit() {
     let mut world = duel(Config::default(), 150.0);
     assert_eq!(observe(&world, 1).ships[0].threat, 0.0, "nothing is known of a ship that has not hit yet");
