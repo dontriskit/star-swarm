@@ -86,6 +86,7 @@ To watch training as it happens, run this next to it. The trainer streams one of
 
 ```sh
 cargo run --release -p swarm-gui -- --watch runs      # shows one of the trainer's own matches as it is played
+cargo run --release -p swarm-gui -- --wins runs       # replays the matches the team being trained won, razed a base in or came first in
 ```
 
 The run first measures the scripted bot on a fixed set of matches, then trains, then plays the trained policy on the same matches. Each line of `runs/<name>/metrics.jsonl` is one measurement for team 0: how often it won, how often it lost its base, crystals per ship per minute, upgrade levels, kills and deaths. It also records what the ships turned into: the share of each class and the mean level of each upgrade. In training the policy plays earlier copies of itself and is paid only for winning, losing, damage to bases and damage taken; nothing is paid for mining or upgrading.
