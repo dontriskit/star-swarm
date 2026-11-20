@@ -25,7 +25,7 @@ py=.venv/bin/python
 # (OPPONENT=mirror BOTS=1; BOTS=0 makes it three of ours, OPPONENT=scripted one). Each update
 # is 128 matches x 512 decisions (77 s of play) x 18 ships: about 1.2 million samples. Long stretches, and credit that reaches some 15 s back directly (lam 0.99),
 # so that a flight somewhere or a fight is learned from what came of it.
-stages=("100 0 30 0.01 0.01 1" "300 5 50 0.01 0.005 1" "600 10 75 0.002 0.0005 0.8" "1000 15 150 0.0005 0.0003 0.5")
+stages=("100 0 30 0.01 0.01 1" "300 5 50 0.01 0.005 1" "600 10 75 0.0005 0.0003 0.8" "1000 15 150 0.0003 0.0002 0.5")
 for i in "${!stages[@]}"; do
   [ $((i + 1)) -ge "$first" ] || continue
   read -r hp turret updates entropy_start entropy_end share <<<"${stages[$i]}"
