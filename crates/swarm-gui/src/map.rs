@@ -247,10 +247,14 @@ fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: b
 
     for crystal in world.crystals.iter().filter(|c| in_sight(c.pos)) {
         if let Some(p) = view.at(crystal.pos) {
-            // Boost cells are larger and orange.
+            // A boost cell is no crystal: a hollow yellow diamond, so it is not taken for one
+            // (or for the orange team).
+            if crystal.boost_cell {
+                stroke_shape(window, &polygon(p, 4.0, 4, 0.0), 1.2, rgb(0xffe04a));
+                continue;
+            }
             // Bigger packs are drawn bigger, but always smaller than a ship; a fading pack shrinks.
-            let (half, color) = if crystal.boost_cell { (2.0, rgb(0xff9f43)) } else { (1.4 + (crystal.value as f32).sqrt() * 0.3, rgb(0x8ef0c8)) };
-            dot(window, p, half, color);
+            dot(window, p, 1.4 + (crystal.value as f32).sqrt() * 0.3, rgb(0x8ef0c8));
         }
     }
 
