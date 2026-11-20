@@ -623,6 +623,98 @@ fn a_ship_that_is_hit_calls_for_help_and_its_team_hears() {
 }
 
 #[test]
+fn rockets_and_mines_are_bought_in_stacks_that_take_equipment_slots() {
+    let mut world = at_home(0);
+    world.ships[0].points = 1000;
+    let buy = |world: &mut World, what: Buy| {
+        world.step(&[Action { buy: Some(what), ..Action::default() }, Action::default()]);
+    };
+    // A tier-1 ship has one slot: with a drone in it there is no room for rockets.
+    buy(&mut world, Buy::Drone(DroneKind::Eco));
+    assert_eq!((world.drones.len(), world.ships[0].points), (1, 960));
+    buy(&mut world, Buy::Ordnance(Ordnance::SmallRocket));
+    assert_eq!((world.ships[0].ord, world.ships[0].points), ([0; 4], 960));
+    // At tier 2 there are two slots, and a stack of four small rockets costs 30 a tier.
+    world.ships[0].tier = 2;
+    buy(&mut world, Buy::Ordnance(Ordnance::SmallRocket));
+    assert_eq!((world.ships[0].ord, world.ships[0].points), ([4, 0, 0, 0], 900));
+    assert_eq!((observe(&world, 0).ord, observe(&world, 0).free_slots), ([4, 0, 0, 0], 0));
+    buy(&mut world, Buy::Ordnance(Ordnance::SmallMine));
+    assert_eq!(world.ships[0].ord, [4, 0, 0, 0], "both slots are taken");
+    // A stack holds its slot until the last of it is used.
+    world.ships[0].ord[0] = 1;
+    buy(&mut world, Buy::Ordnance(Ordnance::SmallMine));
+    assert_eq!(world.ships[0].ord, [1, 0, 0, 0]);
+    world.ships[0].ord[0] = 0;
+    buy(&mut world, Buy::Ordnance(Ordnance::SmallMine));
+    assert_eq!((world.ships[0].ord, world.ships[0].points), ([0, 0, 6, 0], 840), "six small mines to a stack");
+    // Stack sizes: four small rockets, two big ones, six small mines, four big ones; seven slots at the top.
+    assert_eq!(world.cfg.ord_stack, [4, 2, 6, 4]);
+    world.ships[0].tier = TIERS;
+    assert_eq!(world.cfg.free_slots(&world.ships[0], 1), 5);
+}
+
+#[test]
+fn a_rocket_is_one_heavy_hit() {
+    let mut world = duel(Config::default(), 300.0);
+    world.ships[0].ord[Ordnance::SmallRocket as usize] = 2;
+    let launch = [Action { rocket: true, ..Action::default() }, Action::default()];
+    let mut hits = Vec::new();
+    let mut launched_at = Vec::new();
+    for tick in 0..60 {
+        let before = world.shots.len();
+        hits.extend(world.step(&launch).iter().filter_map(|e| if let Event::Hit { by: Some(0), victim: 1, damage } = e { Some(*damage) } else { None }));
+        if world.shots.len() > before {
+            launched_at.push(tick);
+        }
+    }
+    // Eight laser shots' worth each, a second apart, and then there are none left.
+    assert_eq!(hits, [16.0, 16.0]);
+    assert_eq!(launched_at, [0, 20]);
+    assert_eq!(world.ships[0].ord, [0; 4]);
+    assert_eq!(world.ships[1].shield, 100.0 - 32.0);
+    assert!(world.shots.is_empty(), "nothing more comes out of an empty slot");
+    assert_eq!(observe(&world, 1).ships[0].threat, 0.0, "a rocket says nothing of how hard the ship's guns hit");
+}
+
+#[test]
+fn a_mine_waits_for_an_enemy_and_can_be_laid_against_a_base() {
+    let mut world = duel(Config::default(), 600.0);
+    let idle = [Action::default(); 2];
+    world.ships[0].ord[Ordnance::SmallMine as usize] = 1;
+    world.step(&[Action { mine: true, ..Action::default() }, Action::default()]);
+    assert_eq!((world.mines.len(), world.ships[0].ord[2]), (1, 0));
+    let spot = world.mines[0].pos;
+    // Its layer sitting on it does not set it off, armed or not.
+    for _ in 0..40 {
+        world.step(&idle);
+    }
+    assert_eq!(world.mines.len(), 1);
+    assert_eq!(observe(&world, 1).shots.len(), 1, "the enemy sees it as a threat from 600 away");
+    // An enemy that comes within reach does: twelve laser shots' worth to everything hostile in the blast.
+    world.ships[0].pos = world.offset(spot, 0.0, 400.0);
+    world.ships[1].pos = world.offset(spot, 3.0, 60.0);
+    let events = world.step(&idle).to_vec();
+    assert!(world.mines.is_empty());
+    assert!(events.iter().any(|e| matches!(e, Event::Hit { by: Some(0), victim: 1, damage } if *damage == 24.0)));
+    assert_eq!((world.ships[1].shield, world.ships[0].shield), (76.0, 100.0));
+    assert!(observe(&world, 1).calling, "and the one it hit calls for help");
+
+    // Laid against an enemy base it goes off as soon as it is armed, and the base takes the blast.
+    let enemy_base = world.bases[1].pos;
+    world.ships[1].pos = world.offset(enemy_base, 2.0, 2000.0);
+    world.ships[0].pos = world.offset(enemy_base, 0.0, 250.0);
+    world.ships[0].ord[Ordnance::BigMine as usize] = 1;
+    world.step(&[Action { mine: true, ..Action::default() }, Action::default()]);
+    let mut dealt = 0.0;
+    for _ in 0..35 {
+        dealt += world.step(&idle).iter().map(|e| if let Event::BaseHit { by: 0, team: 1, damage } = e { *damage } else { 0.0 }).sum::<f32>();
+    }
+    assert_eq!((dealt, world.bases[1].hp), (60.0, world.cfg.base_hp - 60.0), "thirty laser shots' worth from a big mine");
+    assert!(world.mines.is_empty());
+}
+
+#[test]
 fn a_team_learns_how_hard_an_enemy_hits_by_being_hit() {
     let mut world = duel(Config::default(), 150.0);
     assert_eq!(observe(&world, 1).ships[0].threat, 0.0, "nothing is known of a ship that has not hit yet");
@@ -1041,7 +1133,7 @@ fn at_home(cargo: u32) -> World {
     world
 }
 
-const UNLOAD: Action = Action { thrust: false, brake: false, turn: 0, fire: false, boost: false, deposit: true, buy: None, vote: None };
+const UNLOAD: Action = Action { thrust: false, brake: false, turn: 0, fire: false, rocket: false, mine: false, boost: false, deposit: true, buy: None, vote: None };
 
 #[test]
 fn crystals_are_handed_over_inside_the_base_a_tenth_of_a_hold_a_second() {
@@ -1518,6 +1610,6 @@ fn a_ship_sees_the_twelve_nearest_rocks_within_its_wider_view() {
     assert!(world.cfg.view_range > 1000.0 && world.cfg.view_range < world.cfg.radar_range);
     // All twelve are in the vector a policy gets: the last six have their rows near the end.
     let v = seen.to_vec(&world.cfg);
-    let present = v[OBS_LEN - 140..OBS_LEN - 80].chunks(10).filter(|row| row[0] == 1.0).count();
+    let present = v[OBS_LEN - 146..OBS_LEN - 86].chunks(10).filter(|row| row[0] == 1.0).count();
     assert_eq!(present, 6);
 }

@@ -37,7 +37,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN + 6 + 7 + MATES;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2 + (ROCKS - NEAR) * NEAR_LEN + NEAR + 1 + NEAR + FIELDS * FIELD_LEN + 6 + 7 + MATES + 6;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -136,6 +136,11 @@ pub struct Observation {
     pub in_base: bool,
     /// What the ship did last: its own previous action.
     pub last: crate::sim::Action,
+    /// Rockets and mines on board by [`crate::sim::Ordnance`], equipment slots still free,
+    /// and whether the ship can launch now.
+    pub ord: [u8; 4],
+    pub free_slots: u8,
+    pub launch_ready: bool,
     /// Whether this ship is calling for help itself, the nearest teammate that is, and whether
     /// the team's base is sounding its alarm.
     pub calling: bool,
@@ -444,6 +449,13 @@ impl<'a> Scan<'a> {
                 shots.offer(seen, seen.dist);
             }
         }
+        // An enemy mine in sight is a threat like a shot, one that stands still: its radius is
+        // how close is too close.
+        for m in world.mines.iter().filter(|m| m.team != me.team) {
+            if let Some(seen) = see(self.out_of_sight(me.pos, m.pos), m.pos, Vec3::default(), cfg.mine_trigger[m.big as usize], m.damage / cfg.hull, true, None) {
+                shots.offer(seen, seen.dist);
+            }
+        }
 
         Observation {
             alive: me.alive,
@@ -467,6 +479,9 @@ impl<'a> Scan<'a> {
             drone_kinds: DRONE_KINDS.map(|k| world.drones.iter().filter(|d| d.owner == Some(ship as u16) && d.kind == k).count() as u8),
             in_base: me.docked,
             last: me.last,
+            ord: me.ord,
+            free_slots: cfg.free_slots(me, self.drones[ship] as usize) as u8,
+            launch_ready: me.launch_wait == 0,
             calling: me.distress > 0,
             call: mates()
                 .filter(|m| world.ships[*m].distress > 0)
@@ -688,6 +703,11 @@ impl Observation {
         for slot in 0..MATES {
             put(&[self.mates.get(slot).map_or(0.0, |m| m.calling as u8 as f32)]);
         }
+        // Rockets and mines on board (in stacks; two stacks read as 1), free slots, ready to launch.
+        for (k, count) in self.ord.iter().enumerate() {
+            put(&[*count as f32 / (2.0 * cfg.ord_stack[k].max(1) as f32)]);
+        }
+        put(&[self.free_slots as f32 / crate::sim::TIERS as f32, self.launch_ready as u8 as f32]);
         debug_assert_eq!(at, OBS_LEN);
     }
 }

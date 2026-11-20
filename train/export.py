@@ -28,7 +28,7 @@ layers = [
     (policy.logits.weight, policy.logits.bias),
 ]
 with open(out, "wb") as f:
-    f.write(b"SWPOL010")
+    f.write(b"SWPOL011")
     f.write(struct.pack("<III", saved["obs_len"], saved["hidden"], MEMORY))
     f.write(struct.pack("<I", len(HEADS)) + struct.pack(f"<{len(HEADS)}I", *HEADS))
     for weight, bias in layers:

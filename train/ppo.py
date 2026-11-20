@@ -21,7 +21,8 @@ from swarm_py import OBS_LEN, Env
 
 # Sizes of the seven action heads: thrust, turn, fire, boost, buy, mode (what the ship sets out
 # to do), deposit (hand crystals over while inside the base).
-HEADS = (2, 3, 2, 2, 18, 5, 2, 2)
+# Thrust, turn, weapons (nothing, guns, a rocket, a mine), boost, buy, mode, deposit, brake.
+HEADS = (2, 3, 4, 2, 22, 5, 2, 2)
 PLANS = ("farm", "defend", "attack_a", "attack_b")
 REWARDS = ("collect", "rock", "buy", "hit", "kill", "crash", "death", "base_hit", "base_lost", "win", "lose", "hurt", "time", "draw", "deposit", "base_level", "rock_hit", "edge", "hull", "bare", "place", "tier", "abandon", "rescue")
 CLASSES = ("basic", "lancer", "twin", "scatter", "ram")
@@ -124,7 +125,8 @@ def forget(policy: Policy, how: str, device, hidden: int):
 def pack(actions: torch.Tensor) -> bytes:
     """One little-endian uint16 per agent, the encoding Env.step expects."""
     a = actions
-    code = a[:, 0] | (a[:, 1] << 1) | (a[:, 2] << 3) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 10) | (a[:, 6] << 13) | (a[:, 7] << 14)
+    # Weapons share bits 3 and 15: guns are bit 3, a rocket bit 15, a mine both.
+    code = a[:, 0] | (a[:, 1] << 1) | ((a[:, 2] & 1) << 3) | ((a[:, 2] >> 1) << 15) | (a[:, 3] << 4) | (a[:, 4] << 5) | (a[:, 5] << 10) | (a[:, 6] << 13) | (a[:, 7] << 14)
     return code.cpu().numpy().astype("<u2").tobytes()
 
 

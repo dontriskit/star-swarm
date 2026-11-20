@@ -1,6 +1,6 @@
 use crate::obs::{BaseObs, Near, Observation};
 use crate::rng::Rng;
-use crate::sim::{Action, Buy, Class, Config, DroneKind, Order, OrderKind, TIER2, TIERS, UPGRADES, Upgrade, Vec2, World};
+use crate::sim::{Action, Buy, Class, Config, DroneKind, Order, OrderKind, Ordnance, TIER2, TIERS, UPGRADES, Upgrade, Vec2, World};
 
 /// Anything that flies a ship: a human's input, a scripted bot, a trained
 /// policy, a remote agent.
@@ -154,10 +154,17 @@ impl ScriptedBot {
         if obs.base.hp > 0.0 && obs.base.hp < 0.6 && obs.points >= cfg.repair_step {
             return Some(Buy::Repair);
         }
-        if obs.drones < cfg.drone_slots[obs.tier as usize - 1] {
-            // The first drone mines; any further one fights.
-            let kind = if obs.drone_kinds[DroneKind::Eco as usize] == 0 { DroneKind::Eco } else { DroneKind::Combat };
-            return (obs.points >= cfg.drone_price(kind, obs.tier)).then_some(Buy::Drone(kind));
+        if obs.free_slots > 0 {
+            // The first slot is for a drone that mines, and is saved up for. After that a guard
+            // keeps small mines and every other ship from tier 2 up small rockets, bought when
+            // there are points to spare; the rest goes towards the next tier.
+            if obs.drone_kinds[DroneKind::Eco as usize] == 0 {
+                return (obs.points >= cfg.drone_price(DroneKind::Eco, obs.tier)).then_some(Buy::Drone(DroneKind::Eco));
+            }
+            let kind = if obs.order == OrderKind::Defend { Ordnance::SmallMine } else { Ordnance::SmallRocket };
+            if obs.ord[kind as usize] == 0 && (obs.tier >= 2 || kind == Ordnance::SmallMine) && obs.points >= cfg.ord_price(kind, obs.tier) {
+                return Some(Buy::Ordnance(kind));
+            }
         }
         // While the base allows a higher tier, rush for it: a tier is worth more than the
         // upgrades it wipes. Only a first level of attack and of ammo is bought on the way, to
@@ -238,6 +245,19 @@ impl Controller for ScriptedBot {
         let ramming = obs.shield > 0.5 * obs.shield_max && obs.rocks.first().is_some_and(|r| r.radius <= cfg.rock_radius_of(2));
         if let Some(dodge) = Self::dodge(obs, cfg).filter(|_| !ramming) {
             act = Action { fire: act.fire, ..dodge };
+        }
+        if obs.launch_ready {
+            // A rocket for an enemy ship dead ahead and close enough not to miss.
+            let rockets = obs.ord[Ordnance::SmallRocket as usize] + obs.ord[Ordnance::BigRocket as usize] > 0;
+            let ahead = |e: &&Near| e.dist < 500.0 && e.pos.y.atan2(e.pos.x).abs() < AIM;
+            if rockets && act.fire && obs.ships.iter().filter(|s| s.enemy).any(|e| ahead(&e)) {
+                act.rocket = true;
+            }
+            // A guard lays its mines in the way of enemies coming at the base.
+            let mines = obs.ord[Ordnance::SmallMine as usize] + obs.ord[Ordnance::BigMine as usize] > 0;
+            if mines && obs.order == OrderKind::Defend && obs.base.dist < 900.0 && !obs.in_base && enemy.is_some_and(|e| e.dist < 700.0) {
+                act.mine = true;
+            }
         }
         act.deposit = obs.in_base;
         act.buy = self.shop(obs, cfg).filter(|_| obs.in_base);

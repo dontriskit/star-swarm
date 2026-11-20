@@ -1,15 +1,15 @@
 //! Recorded matches: the seed plus every ship's action on every tick, with a
 //! state hash every [`HASH_EVERY`] ticks so a diverging playback is detected.
 
-use crate::sim::{Action, Buy, Config, DroneKind, PLANS, TIER2, UPGRADES, World};
+use crate::sim::{Action, Buy, Config, DroneKind, ORDNANCE, PLANS, TIER2, UPGRADES, World};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"SWRP000C";
+const MAGIC: &[u8; 8] = b"SWRP000D";
 pub const HASH_EVERY: u32 = 300;
 
 /// How many values [`buy_code`] can take.
-pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len() + 5;
+pub const BUY_CODES: usize = 1 + UPGRADES.len() + TIER2.len() + 5 + ORDNANCE.len();
 
 /// What to buy as a small number: 0 nothing, 1 to 8 an upgrade, 9 to 12 the next tier
 /// (as a Lancer, Twin, Scatter or Ram when leaving tier 1), 13 an eco drone, 14 a base repair,
@@ -24,6 +24,8 @@ pub fn buy_code(buy: Option<Buy>) -> u8 {
         Some(Buy::Drone(DroneKind::Shield)) => 15,
         Some(Buy::Drone(DroneKind::Combat)) => 16,
         Some(Buy::SellDrone) => 17,
+        // 18 to 21: a stack of small rockets, big rockets, small mines, big mines.
+        Some(Buy::Ordnance(kind)) => 18 + kind as u8,
     }
 }
 
@@ -38,6 +40,7 @@ pub fn buy_of(code: u8) -> Option<Buy> {
         15 => Some(Buy::Drone(DroneKind::Shield)),
         16 => Some(Buy::Drone(DroneKind::Combat)),
         17 => Some(Buy::SellDrone),
+        n @ 18..=21 => Some(Buy::Ordnance(ORDNANCE[n - 18])),
         _ => None,
     }
 }
@@ -51,14 +54,18 @@ pub const VOTE_CODES: usize = 1 + PLANS.len();
 pub fn encode(a: &Action) -> u16 {
     let buy = buy_code(a.buy) as u16;
     let vote = a.vote.map_or(0, |p| p as u16 + 1);
-    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (a.fire as u16) << 3 | (a.boost as u16) << 4 | buy << 5 | vote << 10 | (a.deposit as u16) << 13 | (a.brake as u16) << 14
+    // Weapons share bits 3 and 15: guns alone are bit 3, a rocket bit 15, a mine both.
+    let (guns, special) = if a.mine { (true, true) } else if a.rocket { (false, true) } else { (a.fire, false) };
+    a.thrust as u16 | ((a.turn.clamp(-1, 1) + 1) as u16) << 1 | (guns as u16) << 3 | (special as u16) << 15 | (a.boost as u16) << 4 | buy << 5 | vote << 10 | (a.deposit as u16) << 13 | (a.brake as u16) << 14
 }
 
 pub fn decode(b: u16) -> Action {
     Action {
         thrust: b & 1 != 0,
         turn: (((b >> 1) & 3) as i8 - 1).clamp(-1, 1),
-        fire: b & 8 != 0,
+        fire: b & 8 != 0 && b & (1 << 15) == 0,
+        rocket: b & 8 == 0 && b & (1 << 15) != 0,
+        mine: b & 8 != 0 && b & (1 << 15) != 0,
         boost: b & 16 != 0,
         buy: buy_of(((b >> 5) & 31) as u8),
         vote: (((b >> 10) & 7) as usize).checked_sub(1).and_then(|i| PLANS.get(i).copied()),

@@ -22,12 +22,15 @@ from ppo import HEADS, MEMORY, OBS_LEN, Policy, observe, pack
 from swarm_py import Env
 
 # Where each head's choice sits in the 16-bit action: shift and mask, in the order of HEADS.
+# The weapons head is put together from bits 3 (guns) and 15 (rocket; both for a mine).
 BITS = ((0, 1), (1, 3), (3, 1), (4, 1), (5, 31), (10, 7), (13, 1), (14, 1))
 
 
 def unpack(raw: bytes, device) -> torch.Tensor:
     code = torch.from_numpy(np.frombuffer(raw, dtype="<u2").astype(np.int64)).to(device)
-    return torch.stack([(code >> shift) & mask for shift, mask in BITS], dim=-1)
+    heads = [(code >> shift) & mask for shift, mask in BITS]
+    heads[2] = heads[2] | (((code >> 15) & 1) << 1)
+    return torch.stack(heads, dim=-1)
 
 
 def main():

@@ -258,6 +258,16 @@ fn paint_globe(world: &World, selected: &BTreeSet<usize>, camera: Camera, fog: b
         }
     }
 
+    // Mines: a small hollow square in the layer's colour, a bigger one for a big mine, with
+    // its blast drawn faintly around it while it is close to going off.
+    for mine in world.mines.iter().filter(|m| m.team == MY_TEAM || in_sight(m.pos)) {
+        if let Some(p) = view.at(mine.pos) {
+            let mut color = team_color(mine.team);
+            color.a = if mine.arm > 0 { 0.4 } else { 0.9 };
+            stroke_shape(window, &polygon(p, if mine.big { 5.0 } else { 3.5 }, 4, std::f32::consts::FRAC_PI_4), 1.2, color);
+        }
+    }
+
     // Drones: a small diamond in the owner's colour, grey when nobody owns it.
     for drone in world.drones.iter().filter(|d| in_sight(d.pos) || d.owner.is_some_and(|o| world.ships[o as usize].team == MY_TEAM)) {
         if let Some(p) = view.at(drone.pos) {

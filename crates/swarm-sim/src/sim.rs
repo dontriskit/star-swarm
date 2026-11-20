@@ -135,6 +135,35 @@ pub enum Buy {
     Repair,
     /// Sell one of the ship's drones back for half its price.
     SellDrone,
+    /// A stack of rockets or mines, into one free equipment slot.
+    Ordnance(Ordnance),
+}
+
+/// What a ship carries in its equipment slots and uses up: rockets, fired ahead for one heavy
+/// hit, and mines, left behind to go off under the next enemy that comes by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Ordnance {
+    SmallRocket,
+    BigRocket,
+    SmallMine,
+    BigMine,
+}
+
+pub const ORDNANCE: [Ordnance; 4] = [Ordnance::SmallRocket, Ordnance::BigRocket, Ordnance::SmallMine, Ordnance::BigMine];
+
+/// A mine lying where a ship left it.
+#[derive(Clone, Debug)]
+pub struct Mine {
+    pub pos: Vec3,
+    pub owner: u16,
+    pub team: u8,
+    pub big: bool,
+    /// What it does to every enemy ship and base in its blast.
+    pub damage: f32,
+    /// Ticks until it is armed, and ticks until it gives out unused.
+    pub arm: u16,
+    pub ticks: u32,
 }
 
 /// What a drone does for its owner.
@@ -208,6 +237,10 @@ pub struct Order {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Action {
     pub thrust: bool,
+    /// Launch a rocket, or lay a mine, if the ship carries one. A ship does one thing with its
+    /// weapons at a time: laying a mine wins over launching a rocket, and either over firing.
+    pub rocket: bool,
+    pub mine: bool,
     /// Slow down, whichever way the nose points. Braking wins over thrust.
     pub brake: bool,
     /// -1 turns right, 1 turns left, 0 holds.
@@ -345,8 +378,25 @@ pub struct Config {
     /// Points a drone costs a tier-1 ship, by [`DroneKind`]; a ship of a higher tier pays that
     /// many times its tier, for the stronger drone it gets.
     pub drone_cost: [u32; 3],
-    /// Drones a ship of tier 1, 2 and 3 can have.
-    pub drone_slots: [u8; TIERS as usize],
+    /// Equipment. A ship has as many slots as its tier; a drone takes one, and so does every
+    /// stack of rockets or mines, started or full. By [`Ordnance`]: how many make a stack,
+    /// what a stack costs a tier-1 ship (higher tiers pay that times their tier, for the
+    /// harder hit), and how many of the ship's own laser shots one is worth in damage.
+    pub ord_stack: [u8; 4],
+    pub ord_cost: [u32; 4],
+    pub ord_damage: [f32; 4],
+    /// Rockets fly straight ahead: speed, reach, and size by kind (small, big).
+    pub rocket_speed: f32,
+    pub rocket_range: f32,
+    pub rocket_radius: [f32; 2],
+    /// Mines, by kind (small, big): how close an enemy ship (or base) sets one off, and how
+    /// far its blast reaches. Then: ticks until a laid mine is armed, ticks it lies before
+    /// giving out, and ticks a ship waits between two launches.
+    pub mine_trigger: [f32; 2],
+    pub mine_blast: [f32; 2],
+    pub mine_arm: u16,
+    pub mine_ticks: u32,
+    pub launch_wait: u16,
     /// How far from its owner a drone looks for rocks.
     pub drone_reach: f32,
     pub drone_speed: f32,
@@ -491,7 +541,17 @@ impl Default for Config {
             drone_hp: 30.0,
             repair_step: 10,
             drone_cost: [40, 40, 60],
-            drone_slots: [1, 2, 3, 4, 4, 4, 4],
+            ord_stack: [4, 2, 6, 4],
+            ord_cost: [30, 50, 30, 50],
+            ord_damage: [8.0, 20.0, 12.0, 30.0],
+            rocket_speed: 520.0,
+            rocket_range: 900.0,
+            rocket_radius: [10.0, 16.0],
+            mine_trigger: [70.0, 110.0],
+            mine_blast: [130.0, 210.0],
+            mine_arm: 30,
+            mine_ticks: 9000,
+            launch_wait: 20,
             drone_reach: 240.0,
             drone_speed: 170.0,
             drone_cooldown: 7,
@@ -574,6 +634,19 @@ impl Config {
     pub fn speed_of(&self, s: &Ship) -> f32 {
         self.body(s.class).speed * self.boost(s, Upgrade::Speed)
     }
+    /// Equipment slots a ship has free, with this many drones.
+    pub fn free_slots(&self, s: &Ship, drones: usize) -> usize {
+        let stacks: usize = ORDNANCE.iter().map(|k| (s.ord[*k as usize] as usize).div_ceil(self.ord_stack[*k as usize].max(1) as usize)).sum();
+        (s.tier as usize).saturating_sub(drones + stacks)
+    }
+    /// What a stack of rockets or mines costs a ship of this tier.
+    pub fn ord_price(&self, kind: Ordnance, tier: u8) -> u32 {
+        self.ord_cost[kind as usize] * tier as u32
+    }
+    /// What one rocket or mine of this ship does.
+    pub fn ord_hit(&self, s: &Ship, kind: Ordnance) -> f32 {
+        self.ord_damage[kind as usize] * self.damage(s)
+    }
     /// What a drone of a ship costs it.
     pub fn drone_price(&self, kind: DroneKind, tier: u8) -> u32 {
         self.drone_cost[kind as usize] * tier as u32
@@ -626,7 +699,8 @@ impl Config {
             Buy::Upgrade(u) => self.cost(s.levels[u as usize], s.tier),
             // Leaving tier 1 needs a real class; after that the class named is ignored.
             Buy::Tier(class) => (s.tier < TIERS && self.base_allows(s.tier, base.level) && (s.tier > 1 || class != Class::Basic)).then(|| self.tier_cost[s.tier as usize - 1]),
-            Buy::Drone(kind) => (drones < self.drone_slots[s.tier as usize - 1] as usize).then_some(self.drone_price(kind, s.tier)),
+            Buy::Drone(kind) => (self.free_slots(s, drones) > 0).then_some(self.drone_price(kind, s.tier)),
+            Buy::Ordnance(kind) => (self.free_slots(s, drones) > 0).then_some(self.ord_price(kind, s.tier)),
             Buy::Repair => (base.alive() && base.hp < self.base_hp_max(base.level)).then_some(self.repair_step),
             // Selling costs nothing; what it pays is handled where it happens.
             Buy::SellDrone => (drones > 0).then_some(0),
@@ -679,6 +753,9 @@ pub struct Ship {
     pub streak: u32,
     /// Volleys of the current burst still to come.
     pub burst_left: u8,
+    /// Rockets and mines on board, by [`Ordnance`], and ticks until the next can be launched.
+    pub ord: [u8; 4],
+    pub launch_wait: u16,
     /// Ticks left of its call for help: a ship an enemy has just hit calls, and every teammate
     /// hears where it is.
     pub distress: u16,
@@ -953,6 +1030,7 @@ pub struct World {
     pub crystals: Vec<Crystal>,
     pub shots: Vec<Shot>,
     pub drones: Vec<Drone>,
+    pub mines: Vec<Mine>,
     /// One per team, indexed by team.
     pub bases: Vec<Base>,
     /// The rock farms; see [`Config::farm_rings`].
@@ -994,6 +1072,7 @@ impl World {
             crystals: Vec::new(),
             shots: Vec::new(),
             drones: Vec::new(),
+            mines: Vec::new(),
             farms: Vec::new(),
             farm_live: Vec::new(),
             index: RockIndex::default(),
@@ -1025,6 +1104,8 @@ impl World {
                     last: Action::default(),
                     distress: 0,
                     aggro: 0,
+                    ord: [0; 4],
+                    launch_wait: 0,
                     saved: [[0; 8]; TIERS as usize],
                     ammo: 0.0,
                     boost: 1.0,
@@ -1416,6 +1497,7 @@ impl World {
                             }
                         }
                         Buy::Repair => repairs.push(ship.team),
+                        Buy::Ordnance(kind) => ship.ord[kind as usize] += cfg.ord_stack[kind as usize],
                         Buy::Upgrade(u) => ship.levels[u as usize] += 1,
                         Buy::Tier(class) => {
                             if ship.tier == 1 {
@@ -1507,6 +1589,35 @@ impl World {
                     });
                 }
             }
+            // Rockets and mines: one launch at a time, a mine before a rocket, the small ones first.
+            ship.launch_wait = ship.launch_wait.saturating_sub(1);
+            if (act.rocket || act.mine) && ship.launch_wait == 0 {
+                let kinds = if act.mine { [Ordnance::SmallMine, Ordnance::BigMine] } else { [Ordnance::SmallRocket, Ordnance::BigRocket] };
+                if let Some(kind) = kinds.into_iter().find(|k| ship.ord[*k as usize] > 0) {
+                    ship.ord[kind as usize] -= 1;
+                    ship.launch_wait = cfg.launch_wait;
+                    let damage = cfg.ord_hit(ship, kind);
+                    let big = matches!(kind, Ordnance::BigRocket | Ordnance::BigMine);
+                    if act.mine {
+                        self.mines.push(Mine { pos: ship.pos, owner: i as u16, team: ship.team, big, damage, arm: cfg.mine_arm, ticks: cfg.mine_ticks });
+                    } else {
+                        let life = ((cfg.rocket_range / (cfg.rocket_speed * dt)).round() as u16).max(1);
+                        self.shots.push(Shot {
+                            pos: geo::nudge(radius, ship.pos, ship.fwd.scale(cfg.radius_of(ship))),
+                            vel: ship.vel.add(ship.fwd.scale(cfg.rocket_speed)),
+                            ticks: life,
+                            life,
+                            damage,
+                            owner: Some(i as u16),
+                            team: ship.team,
+                            mining: false,
+                            // Not the ship's guns: what it does says nothing of how hard they hit.
+                            from_ship: false,
+                            radius: cfg.rocket_radius[big as usize],
+                        });
+                    }
+                }
+            }
         }
 
         for team in repairs {
@@ -1553,7 +1664,7 @@ impl World {
                 let taker = self.ships.iter().enumerate().position(|(i, s)| {
                     s.alive
                         && geo::chord(radius, s.pos, drone.pos) < self.cfg.pickup_radius
-                        && self.drones.iter().filter(|x| x.owner == Some(i as u16)).count() < self.cfg.drone_slots[s.tier as usize - 1] as usize
+                        && self.cfg.free_slots(s, self.drones.iter().filter(|x| x.owner == Some(i as u16)).count()) > 0
                 });
                 self.drones[d].owner = taker.map(|i| i as u16);
                 continue;
@@ -1760,6 +1871,59 @@ impl World {
             }
         }
         self.shots.retain(|s| s.ticks > 0);
+
+        // Mines: once armed, one goes off when an enemy ship comes close, or at once if it lies
+        // against an enemy base, and hits every enemy ship and base in its blast.
+        let mut blasts: Vec<Mine> = Vec::new();
+        {
+            let (ships, bases, cfg) = (&self.ships, &self.bases, &self.cfg);
+            self.mines.retain_mut(|m| {
+                m.ticks = m.ticks.saturating_sub(1);
+                if m.arm > 0 {
+                    m.arm -= 1;
+                    return m.ticks > 0;
+                }
+                let trigger = cfg.mine_trigger[m.big as usize];
+                let tripped = ships.iter().any(|s| s.alive && s.team != m.team && geo::closer(radius, s.pos, m.pos, trigger + cfg.radius_of(s)))
+                    || bases.iter().enumerate().any(|(t, b)| t as u8 != m.team && b.alive() && geo::closer(radius, b.pos, m.pos, trigger + cfg.base_radius));
+                if tripped {
+                    blasts.push(m.clone());
+                    return false;
+                }
+                m.ticks > 0
+            });
+        }
+        for mine in blasts {
+            let reach = self.cfg.mine_blast[mine.big as usize];
+            for v in 0..self.ships.len() {
+                let ship = &self.ships[v];
+                if !ship.alive || ship.team == mine.team || !geo::closer(radius, ship.pos, mine.pos, reach + self.cfg.radius_of(ship)) {
+                    continue;
+                }
+                let hull = ship.hull;
+                let dropped = Self::hurt(&self.cfg, &mut self.ships[v], mine.damage, true);
+                spilled.push((self.ships[v].pos, dropped));
+                if self.ships[v].hull < hull {
+                    self.events.push(Event::HullLost { ship: v as u16, amount: hull - self.ships[v].hull });
+                }
+                self.ships[v].last_hit_by = Some(mine.owner);
+                self.ships[mine.owner as usize].aggro = self.cfg.distress_ticks;
+                self.events.push(Event::Hit { by: Some(mine.owner), victim: v as u16, damage: mine.damage });
+            }
+            for team in 0..self.bases.len() {
+                let base = &mut self.bases[team];
+                if team as u8 == mine.team || !base.alive() || !geo::closer(radius, base.pos, mine.pos, reach + self.cfg.base_radius) {
+                    continue;
+                }
+                let dealt = mine.damage.min(base.hp);
+                base.hp -= mine.damage;
+                base.alarm = self.cfg.distress_ticks;
+                self.events.push(Event::BaseHit { by: mine.owner, team: team as u8, damage: dealt });
+                if !base.alive() {
+                    self.events.push(Event::BaseDestroyed { by: mine.owner, team: team as u8 });
+                }
+            }
+        }
         // A shield drone that has taken too much is gone.
         self.drones.retain(|d| d.hp > 0.0);
 
@@ -1982,6 +2146,8 @@ impl World {
             ship.alive = false;
             ship.respawn = self.cfg.respawn_ticks;
             ship.cargo = 0;
+            // What it carried in its slots is gone with it.
+            ship.ord = [0; 4];
             ship.deaths += 1;
             // Dying costs points: a fixed sum and a share of what the ship had.
             let lost = self.cfg.death_points + (ship.points as f32 * self.cfg.death_share) as u32;
@@ -2048,6 +2214,8 @@ impl World {
             put(s.streak);
             put(s.burst_left as u32);
             put(s.distress as u32);
+            put(u32::from_le_bytes(s.ord));
+            put(s.launch_wait as u32);
             put(s.aggro as u32);
             put(crate::replay::encode(&s.last) as u32);
             for l in s.saved.iter().flatten() {
@@ -2092,6 +2260,11 @@ impl World {
         }
         for felt in self.felt_damage.iter().flatten() {
             put(felt.to_bits());
+        }
+        put(self.mines.len() as u32);
+        for m in &self.mines {
+            spot(m.pos).into_iter().for_each(&mut put);
+            put(m.ticks);
         }
         put(self.shots.len() as u32);
         for s in &self.shots {

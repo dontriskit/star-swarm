@@ -790,7 +790,7 @@ impl Game {
                 .child(div().w(px(58.)).text_color(muted).child({
                     // Drones by kind: eco, shield, combat.
                     let count = |kind| self.world.drones.iter().filter(|d| d.owner == Some(i as u16) && d.kind == kind).count();
-                    format!("e{} t{} b{}", count(swarm_sim::DroneKind::Eco), count(swarm_sim::DroneKind::Shield), count(swarm_sim::DroneKind::Combat))
+                    format!("e{} t{} b{} r{} R{} m{} M{}", count(swarm_sim::DroneKind::Eco), count(swarm_sim::DroneKind::Shield), count(swarm_sim::DroneKind::Combat), ship.ord[0], ship.ord[1], ship.ord[2], ship.ord[3])
                 }))
                 .children(levels)
         });
@@ -939,7 +939,7 @@ impl Game {
                     .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
                     .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
             }))
-            .child(div().text_color(muted).child("Drzewko: typ, tier, życia (od tieru 2) i seria zabójstw, tryb, drony (eko, tarcza, bojowy) i poziom każdego ulepszenia"))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, życia (od tieru 2) i seria zabójstw, tryb, drony (eko, tarcza, bojowy), rakiety (r małe, R duże) i miny (m małe, M duże) oraz poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
     }

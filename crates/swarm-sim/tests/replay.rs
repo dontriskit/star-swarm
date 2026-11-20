@@ -12,6 +12,7 @@ fn every_action_survives_encoding() {
                 .chain(TIER2.iter().copied().map(Buy::Tier))
                 .chain(DRONE_KINDS.iter().copied().map(Buy::Drone))
                 .chain([Buy::Repair, Buy::SellDrone])
+                .chain(ORDNANCE.iter().copied().map(Buy::Ordnance))
                 .map(Some),
         )
         .collect();
@@ -19,16 +20,20 @@ fn every_action_survives_encoding() {
     let votes: Vec<Option<Plan>> = std::iter::once(None).chain(PLANS.iter().copied().map(Some)).collect();
     for thrust in [false, true] {
         for turn in [-1, 0, 1] {
-            for (fire, boost) in [(false, false), (false, true), (true, false), (true, true)] {
+            // One thing with the weapons at a time: nothing, guns, a rocket or a mine.
+            for (fire, rocket, mine) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true)] {
                 for &buy in &buys {
                     for &vote in &votes {
-                        for (deposit, brake) in [(false, false), (false, true), (true, false), (true, true)] {
-                            let a = Action { thrust, brake, turn, fire, boost, deposit, buy, vote };
+                        for (deposit, brake, boost) in [(false, false, false), (false, true, true), (true, false, true), (true, true, false)] {
+                            let a = Action { thrust, brake, turn, fire, rocket, mine, boost, deposit, buy, vote };
                             assert_eq!(decode(encode(&a)), a);
                         }
                     }
                 }
             }
+            // Asked for together, a mine wins over a rocket and either over the guns.
+            let all = Action { thrust, turn, fire: true, rocket: true, mine: true, ..Action::default() };
+            assert!(decode(encode(&all)).mine && !decode(encode(&all)).fire);
         }
     }
 }
