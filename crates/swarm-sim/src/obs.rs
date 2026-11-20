@@ -22,7 +22,7 @@ const CONTACT_LEN: usize = 3;
 const NEAR_LEN: usize = 10;
 /// Length of [`Observation::to_vec`].
 pub const OBS_LEN: usize =
-    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 1;
+    SELF_LEN + BASES * BASE_LEN + MATES * MATE_LEN + CONTACTS * CONTACT_LEN + (3 * NEAR + SHOTS) * NEAR_LEN + SECTORS + 2 * NEAR + 2 * MATES + DRONE_KINDS.len() + 2;
 
 /// A nearby object in the observing ship's frame: x forward, y to the left,
 /// world units.
@@ -98,8 +98,12 @@ pub struct Observation {
     /// Drones the ship has, in all and by [`crate::DroneKind`].
     pub drones: u8,
     pub drone_kinds: [u8; 3],
-    /// Inside its own base, where crystals are handed over and things are bought.
+    /// Docked: at rest inside its own base with one of its places, where crystals are handed
+    /// over and things are bought.
     pub in_base: bool,
+    /// How many of the team's ships are docked in the base, this one included, and how many it takes.
+    pub base_docked: u8,
+    pub base_slots: u8,
     /// The level of the ship's own base.
     pub base_level: u8,
     /// How far the team is towards its base's next level, 0 to 1 (1 at the top level).
@@ -387,7 +391,9 @@ impl<'a> Scan<'a> {
             points: me.points,
             drones: self.drones[ship],
             drone_kinds: DRONE_KINDS.map(|k| world.drones.iter().filter(|d| d.owner == Some(ship as u16) && d.kind == k).count() as u8),
-            in_base: home.alive() && geo::chord(cfg.radius, home.pos, me.pos) < cfg.base_radius,
+            in_base: me.docked,
+            base_docked: world.ships.iter().filter(|s| s.team == me.team && s.docked).count() as u8,
+            base_slots: cfg.base_slots as u8,
             base_level: home.level,
             base_progress: match cfg.next_base_level_at(home.level) {
                 Some(next) => {
@@ -538,6 +544,8 @@ impl Observation {
         }
         put(&self.drone_kinds.map(|n| n as f32 / 3.0));
         put(&[self.in_base as u8 as f32]);
+        // How full the base is: 1 means every place is taken.
+        put(&[self.base_docked as f32 / self.base_slots.max(1) as f32]);
         debug_assert_eq!(at, OBS_LEN);
     }
 }

@@ -962,3 +962,46 @@ fn long_range_radar_shows_far_enemies_and_which_way_the_rocks_are() {
     assert_eq!(radar.iter().sum::<f32>(), 6.0);
     assert!(observe(&world, 0).rocks.is_empty(), "neither is close enough to see clearly");
 }
+
+#[test]
+fn a_base_has_two_places_and_only_ships_at_rest_take_them() {
+    let cfg = Config { teams: 2, ships_per_team: 4, rock_count: 0, turret_damage: 0.0, ..Config::default() };
+    let mut world = World::new(cfg, 2);
+    let base = world.bases[0].pos;
+    // Three ships at rest inside the base, well clear of each other, and a fourth flying through it.
+    for i in 0..4 {
+        world.ships[i].pos = world.offset(base, i as f32 * 2.1, if i < 3 { 38.0 } else { 5.0 });
+        world.ships[i].vel = Vec3::default();
+        world.ships[i].cargo = 60;
+        world.ships[i].points = 50;
+    }
+    // It leaves through the gap between the first two.
+    world.ships[3].vel = geo::bearing(world.ships[3].pos, 1.05).scale(120.0);
+    let n = world.ships.len();
+    let mut unload = vec![Action::default(); n];
+    for a in unload.iter_mut().take(4) {
+        *a = Action { deposit: true, buy: Some(Buy::Upgrade(Upgrade::Attack)), ..Action::default() };
+    }
+    world.step(&unload);
+    let docked: Vec<bool> = world.ships[..4].iter().map(|s| s.docked).collect();
+    assert_eq!(docked, [true, true, false, false], "two places, first come first served; a moving ship does not dock");
+    // Only the docked ships bought and are unloading.
+    assert_eq!(world.ships[..4].iter().map(|s| s.points).collect::<Vec<_>>(), [40, 40, 50, 50]);
+    for _ in 0..30 {
+        world.step(&unload);
+    }
+    assert!(world.ships[0].cargo < 60 && world.ships[1].cargo < 60);
+    assert_eq!(world.ships[2].cargo, 60, "the third waits");
+    // Everyone on the team can see that the base is full.
+    let seen = observe(&world, 2);
+    assert_eq!((seen.in_base, seen.base_docked, seen.base_slots), (false, 2, 2));
+    assert!(observe(&world, 0).in_base);
+
+    // One leaves: it gives up its place as soon as it moves, and the waiting ship takes it.
+    let mut leave = unload.clone();
+    leave[0] = Action { thrust: true, ..Action::default() };
+    for _ in 0..30 {
+        world.step(&leave);
+    }
+    assert!(!world.ships[0].docked && world.ships[2].docked);
+}

@@ -175,12 +175,16 @@ impl Controller for ScriptedBot {
         let loaded = obs.cargo as f32 >= UNLOAD * obs.cargo_max as f32 || (obs.in_base && obs.cargo > 0);
         let shopping = obs.in_base && self.shop(obs, cfg).is_some();
         let unload = home && free && (loaded || shopping);
-        let mut act = if unload && obs.in_base {
-            // Inside the base: sit still, hand the crystals over, buy.
+        let full = obs.base_docked >= obs.base_slots && !obs.in_base;
+        let mut act = if unload && (obs.in_base || obs.base.dist < cfg.base_radius * 0.6) {
+            // Docked, or inside and coming to rest: sit still, hand the crystals over, buy.
+            Action::default()
+        } else if unload && full && obs.base.dist < cfg.base_heal_radius {
+            // Every place in the base is taken: wait just outside for one to come free.
             Action::default()
         } else if home && (unload || obs.hull < RETREAT * obs.hull_max) && obs.base.dist > cfg.base_radius * 0.5 {
             // Badly hurt or loaded up: back to the base, right into it.
-            Self::fly(obs.base.pos, 0.0, obs, cfg)
+            Self::fly(obs.base.pos, if unload { cfg.base_radius * 0.3 } else { 0.0 }, obs, cfg)
         } else {
             match obs.order {
                 OrderKind::Mine => match enemy {

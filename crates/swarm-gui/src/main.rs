@@ -653,7 +653,7 @@ impl Game {
                     .child(column(60., ship.points.to_string()))
                     .child(column(56., format!("{:.0}/{:.0}", ship.ammo, cfg.ammo_max(ship))))
                     .child(column(64., format!("{:.0}%", ship.boost * 100.0)))
-                    .child(order_name(ship.order.kind))
+                    .child(if ship.docked { "w bazie" } else { order_name(ship.order.kind) })
             } else if self.world.bases[MY_TEAM as usize].alive() {
                 row.child(div().text_color(muted).child("odradza się"))
             } else {

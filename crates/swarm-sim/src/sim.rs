@@ -305,8 +305,12 @@ pub struct Config {
     pub base_hp_per_level: f32,
     /// Share of its damage a base's turret gains with every level.
     pub turret_per_level: f32,
-    /// Share of its full hold a ship inside its base hands over per second.
+    /// Share of its full hold a docked ship hands over per second.
     pub deposit_rate: f32,
+    /// How many ships can be docked in a base at once.
+    pub base_slots: usize,
+    /// A ship inside its base docks once it is slower than this, and undocks when it moves faster.
+    pub dock_speed: f32,
     /// Share of the impact speed a rock takes as damage when a ship flies into it.
     pub ram_rock: f32,
     /// Hit points of a shield drone.
@@ -410,6 +414,8 @@ impl Default for Config {
             base_hp_per_level: 200.0,
             turret_per_level: 0.15,
             deposit_rate: 0.1,
+            base_slots: 2,
+            dock_speed: 20.0,
             ram_rock: 0.2,
             drone_hp: 30.0,
             repair_step: 10,
@@ -566,6 +572,9 @@ pub struct Ship {
     pub deposited: u32,
     /// The part of a crystal handed over so far this tick-by-tick, carried to the next tick.
     pub unload: f32,
+    /// Docked: at rest inside its own base, holding one of the base's places. Only a docked
+    /// ship can hand crystals over or buy.
+    pub docked: bool,
     pub levels: [u8; 8],
     /// The ship's mode; None until it picks one.
     pub vote: Option<Plan>,
@@ -749,6 +758,7 @@ impl World {
                     points: 0,
                     deposited: 0,
                     unload: 0.0,
+                    docked: false,
                     levels: [0; 8],
                     vote: None,
                     cooldown: 0,
@@ -961,6 +971,24 @@ impl World {
             self.count_votes();
         }
 
+        // Docking: a ship at rest inside its own base holds one of the base's few places until
+        // it moves off; a ship that arrives when they are all taken has to wait its turn.
+        let mut taken = vec![0usize; self.bases.len()];
+        let rests_inside = |s: &Ship, bases: &[Base]| {
+            let home = &bases[s.team as usize];
+            s.alive && home.alive() && s.vel.len() < self.cfg.dock_speed && geo::chord(radius, home.pos, s.pos) < self.cfg.base_radius
+        };
+        for s in self.ships.iter_mut() {
+            s.docked = s.docked && rests_inside(s, &self.bases);
+            taken[s.team as usize] += s.docked as usize;
+        }
+        for s in self.ships.iter_mut() {
+            if !s.docked && taken[s.team as usize] < self.cfg.base_slots && rests_inside(s, &self.bases) {
+                s.docked = true;
+                taken[s.team as usize] += 1;
+            }
+        }
+
         // Teams whose ships paid for a repair this tick.
         let mut repairs: Vec<u8> = Vec::new();
 
@@ -980,9 +1008,8 @@ impl World {
                 continue;
             }
             let act = actions[i];
-            // The shop is inside the base.
-            let inside = home.alive() && geo::chord(radius, home.pos, ship.pos) < cfg.base_radius;
-            if let Some(what) = act.buy.filter(|_| inside) {
+            // The shop is for docked ships.
+            if let Some(what) = act.buy.filter(|_| ship.docked) {
                 let drones = self.drones.iter().filter(|d| d.owner == Some(i as u16)).count();
                 if let Some(cost) = cfg.price(ship, what, home, drones).filter(|cost| ship.points >= *cost) {
                     ship.points -= cost;
@@ -1068,13 +1095,13 @@ impl World {
             base.hp = (base.hp + self.cfg.repair_step as f32).min(self.cfg.base_hp_max(base.level));
         }
 
-        // A ship inside its own base hands over the crystals it carries for as long as it asks
-        // to, a tenth of a full hold a second: every crystal is a point for the ship and counts
-        // towards the base's next level.
+        // A docked ship hands over the crystals it carries for as long as it asks to, a tenth of
+        // a full hold a second: every crystal is a point for the ship and counts towards the
+        // base's next level.
         for i in 0..self.ships.len() {
             let ship = &mut self.ships[i];
             let base = &mut self.bases[ship.team as usize];
-            if !ship.alive || !actions[i].deposit || ship.cargo == 0 || !base.alive() || geo::chord(radius, base.pos, ship.pos) >= self.cfg.base_radius {
+            if !ship.docked || !actions[i].deposit || ship.cargo == 0 {
                 ship.unload = 0.0;
                 continue;
             }
@@ -1508,6 +1535,7 @@ impl World {
             put(s.spill.to_bits());
             put(s.cargo);
             put(s.points);
+            put(s.docked as u32);
             put(s.score);
             put(s.alive as u32);
             put(s.respawn as u32);
