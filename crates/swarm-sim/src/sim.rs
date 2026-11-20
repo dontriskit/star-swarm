@@ -460,7 +460,7 @@ impl Default for Config {
             boost_drain: 0.5,
             boost_regen: 0.1,
             boost_cell_chance: 0.15,
-            lives: 0,
+            lives: 3,
             crystal_armor: 1.0,
             rock_radius: 22.0,
             rock_hp: 20.0,
@@ -647,6 +647,9 @@ pub struct Ship {
     pub streak: u32,
     /// Volleys of the current burst still to come.
     pub burst_left: u8,
+    /// The upgrade levels the ship had at each tier when it moved up from it; what it falls
+    /// back to when it runs out of lives at the tier above.
+    pub saved: [[u8; 8]; TIERS as usize],
     /// Shots on board.
     pub ammo: f32,
     /// Boost tank, 0 to 1.
@@ -976,6 +979,7 @@ impl World {
                     lives: world.cfg.lives,
                     streak: 0,
                     burst_left: 0,
+                    saved: [[0; 8]; TIERS as usize],
                     ammo: 0.0,
                     boost: 1.0,
                     spill: 0.0,
@@ -1335,9 +1339,12 @@ impl World {
                             if ship.tier == 1 {
                                 ship.class = class;
                             }
+                            // What it was is kept, to fall back to.
+                            ship.saved[ship.tier as usize - 1] = ship.levels;
                             ship.tier += 1;
-                            // A new tier starts again without upgrades.
+                            // A new tier starts again without upgrades, and with a fresh set of lives.
                             ship.levels = [0; 8];
+                            ship.lives = cfg.lives;
                             ship.hull = cfg.hull_max(ship);
                             ship.shield = cfg.shield_max(ship);
                         }
@@ -1884,20 +1891,20 @@ impl World {
             let lost = self.cfg.death_points + (ship.points as f32 * self.cfg.death_share) as u32;
             ship.points -= lost.min(ship.points);
             let run = std::mem::take(&mut ship.streak);
-            ship.lives = ship.lives.saturating_sub(1);
-            if self.cfg.lives > 0 && ship.lives == 0 {
-                ship.lives = self.cfg.lives;
-                if ship.tier > 1 {
+            // A ship above tier 1 has lives. Out of them, it is again the ship it was just before
+            // it moved up, upgrades and all, with a fresh set of lives. A tier-1 ship has
+            // nothing to fall back to and loses only points.
+            if self.cfg.lives > 0 && ship.tier > 1 {
+                ship.lives = ship.lives.saturating_sub(1);
+                if ship.lives == 0 {
                     ship.tier -= 1;
                     if ship.tier == 1 {
                         ship.class = Class::Basic;
                     }
-                    let cap = self.cfg.max_level(ship.tier);
-                    ship.levels.iter_mut().for_each(|l| *l = (*l).min(cap));
-                } else {
-                    ship.levels = [0; 8];
+                    ship.levels = ship.saved[ship.tier as usize - 1];
+                    ship.lives = self.cfg.lives;
+                    self.events.push(Event::Demoted { ship: i as u16 });
                 }
-                self.events.push(Event::Demoted { ship: i as u16 });
             }
             if let Some(k) = by {
                 let team = self.ships[k as usize].team;
@@ -1944,6 +1951,9 @@ impl World {
             put(s.lives as u32);
             put(s.streak);
             put(s.burst_left as u32);
+            for l in s.saved.iter().flatten() {
+                put(*l as u32);
+            }
             put(s.ammo.to_bits());
             put(s.boost.to_bits());
             put(s.spill.to_bits());

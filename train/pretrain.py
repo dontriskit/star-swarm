@@ -41,6 +41,7 @@ def main():
     p.add_argument("--every", type=int, default=32, help="decisions gathered between lessons")
     p.add_argument("--minibatch", type=int, default=16384)
     p.add_argument("--own-share", type=float, default=0.5, help="share of matches flown by the policy itself")
+    p.add_argument("--init", default=None, metavar="POLICY.PT", help="start from a saved policy instead of a fresh one")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -49,6 +50,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     env = Env(args.envs, seed=args.seed, learners=3)
     policy = Policy(args.hidden).to(device)
+    if args.init:
+        policy.load_state_dict(torch.load(args.init, map_location=device)["model"])
     optim = torch.optim.Adam(policy.parameters(), lr=args.lr)
     # The first matches are the scripted bot's, the rest the policy's own.
     own = (torch.arange(env.agents, device=device) // env.ships) >= int(args.envs * (1 - args.own_share))

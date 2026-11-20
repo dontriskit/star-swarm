@@ -706,7 +706,7 @@ impl Game {
                 .child(div().size_2().mr_1().rounded_sm().bg(color))
                 .child(div().w(px(22.)).text_color(muted).child(format!("{}", i % cfg.ships_per_team + 1)))
                 .child(div().w(px(104.)).whitespace_nowrap().child(format!("{} T{}", class_name(ship.class), ship.tier)))
-                .child(div().w(px(40.)).text_color(muted).child(format!("⚔{}", ship.streak)))
+                .child(div().w(px(40.)).text_color(muted).child(if ship.tier > 1 { format!("♥{} ⚔{}", ship.lives, ship.streak) } else { format!("⚔{}", ship.streak) }))
                 .child(div().w(px(52.)).text_color(muted).child(plan_name(ship.vote)))
                 .child(div().w(px(58.)).text_color(muted).child({
                     // Drones by kind: eco, shield, combat.
@@ -840,7 +840,7 @@ impl Game {
                     .child(div().flex().text_color(muted).children(head.iter().zip(widths).map(|(h, w)| cell(h.to_string(), w))))
                     .children(watch.progress.iter().map(|row| div().flex().children(row.iter().zip(widths).map(|(v, w)| cell(v.clone(), w)))))
             }))
-            .child(div().text_color(muted).child("Drzewko: typ, tier, seria zabójstw, tryb, drony (eko, tarcza, bojowy) i poziom każdego ulepszenia"))
+            .child(div().text_color(muted).child("Drzewko: typ, tier, życia (od tieru 2) i seria zabójstw, tryb, drony (eko, tarcza, bojowy) i poziom każdego ulepszenia"))
             .child(legend)
             .child(div().flex().flex_col().children(tech))
     }

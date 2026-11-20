@@ -145,9 +145,9 @@ impl ScriptedBot {
         }
     }
 
-    /// Spends points: repairs a badly damaged base first, then fills its drone slots, then buys
-    /// one level of everything, then the next tier once the base allows it (a new tier starts
-    /// again without upgrades); otherwise it spreads points evenly over the upgrades.
+    /// Spends points: repairs a badly damaged base first, then fills its drone slots, then
+    /// rushes for the next tier while the base allows one; at the highest tier the base allows
+    /// it spreads points evenly over the upgrades.
     fn shop(&self, obs: &Observation, cfg: &Config) -> Option<Buy> {
         if obs.base.hp > 0.0 && obs.base.hp < 0.6 && obs.points >= cfg.repair_step {
             return Some(Buy::Repair);
@@ -157,13 +157,22 @@ impl ScriptedBot {
             let kind = if obs.drone_kinds[DroneKind::Eco as usize] == 0 { DroneKind::Eco } else { DroneKind::Combat };
             return (obs.points >= cfg.drone_cost[kind as usize]).then_some(Buy::Drone(kind));
         }
-        let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
-        let lowest = obs.levels[next as usize];
-        let can_tier = obs.tier < TIERS && cfg.base_allows(obs.tier, obs.base_level);
-        match cfg.cost(lowest, obs.tier) {
-            Some(cost) if lowest == 0 || !can_tier => (obs.points >= cost).then_some(Buy::Upgrade(next)),
-            _ => (can_tier && obs.points >= cfg.tier_cost[obs.tier as usize - 1]).then_some(Buy::Tier(self.prefers)),
+        // While the base allows a higher tier, rush for it: a tier is worth more than the
+        // upgrades it wipes. Only a first level of attack and of ammo is bought on the way, to
+        // mine faster; everything else is saved for the tier.
+        if obs.tier < TIERS && cfg.base_allows(obs.tier, obs.base_level) {
+            if obs.points >= cfg.tier_cost[obs.tier as usize - 1] {
+                return Some(Buy::Tier(self.prefers));
+            }
+            return [Upgrade::Attack, Upgrade::Ammo]
+                .into_iter()
+                .find(|u| obs.levels[*u as usize] == 0)
+                .filter(|_| cfg.cost(0, obs.tier).is_some_and(|cost| obs.points >= cost))
+                .map(Buy::Upgrade);
         }
+        // As high as the base lets it go: spread the points evenly over the upgrades.
+        let next = PRIORITY.iter().copied().min_by_key(|u| obs.levels[*u as usize])?;
+        cfg.cost(obs.levels[next as usize], obs.tier).filter(|cost| obs.points >= *cost).map(|_| Buy::Upgrade(next))
     }
 }
 

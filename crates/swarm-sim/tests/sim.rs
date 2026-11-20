@@ -370,43 +370,49 @@ fn shields_take_the_damage_first_and_grow_back() {
 }
 
 #[test]
-fn three_deaths_demote_a_ship() {
-    // Lives are off by default; a match can still be set up with them.
-    let mut world = duel(Config { lives: 3, ..Config::default() }, 150.0);
+fn a_ship_above_tier_one_has_three_lives_and_falls_back_to_what_it_was() {
+    let mut world = at_home(0);
     let idle = [Action::default(); 2];
     let kill = |world: &mut World| {
         // Well below zero: a ship that respawned inside its base is docked and being repaired.
-        world.ships[1].hull = -1000.0;
+        world.ships[0].hull = -1000.0;
         world.step(&idle);
-        assert!(!world.ships[1].alive);
+        assert!(!world.ships[0].alive);
         for _ in 0..world.cfg.respawn_ticks + 1 {
             world.step(&idle);
         }
-        assert!(world.ships[1].alive);
+        assert!(world.ships[0].alive);
     };
+    let tier_up = [Action { buy: Some(Buy::Tier(Class::Lancer)), ..Action::default() }, Action::default()];
 
-    // A tier-3 ship with upgrades above the lower tiers' caps.
-    world.ships[1].tier = 3;
-    world.ships[1].class = Class::Lancer;
-    world.ships[1].levels = [5, 4, 3, 2, 1, 0, 5, 5];
+    // A tier-1 ship loses only points, however often it dies.
+    world.ships[0].levels = [3, 1, 0, 2, 0, 0, 0, 3];
+    for _ in 0..4 {
+        kill(&mut world);
+    }
+    assert_eq!((world.ships[0].tier, world.ships[0].levels), (1, [3, 1, 0, 2, 0, 0, 0, 3]));
+
+    // Up to tier 2 and on to tier 3, with some upgrades bought at tier 2.
+    world.ships[0].points = 2000;
+    world.step(&tier_up);
+    assert_eq!((world.ships[0].tier, world.ships[0].class, world.ships[0].levels, world.ships[0].lives), (2, Class::Lancer, [0; 8], 3));
+    world.ships[0].levels = [4, 0, 0, 0, 0, 0, 0, 1];
+    world.step(&tier_up);
+    assert_eq!((world.ships[0].tier, world.ships[0].levels, world.ships[0].lives), (3, [0; 8], 3), "a new tier, a fresh set of lives");
+
+    // Two deaths cost lives only; the third puts it back at tier 2 as it was, with three lives.
+    world.ships[0].levels = [1, 1, 1, 1, 1, 1, 1, 1];
     kill(&mut world);
     kill(&mut world);
-    assert_eq!((world.ships[1].tier, world.ships[1].lives), (3, 1), "two deaths cost lives only");
+    assert_eq!((world.ships[0].tier, world.ships[0].lives, world.ships[0].levels), (3, 1, [1; 8]));
     kill(&mut world);
-    assert_eq!((world.ships[1].tier, world.ships[1].class, world.ships[1].lives), (2, Class::Lancer, 3), "tier 2 keeps the class");
-    assert_eq!(world.ships[1].levels, [4, 4, 3, 2, 1, 0, 4, 4], "levels above the tier-2 cap are lost");
+    assert_eq!((world.ships[0].tier, world.ships[0].class, world.ships[0].lives), (2, Class::Lancer, 3));
+    assert_eq!(world.ships[0].levels, [4, 0, 0, 0, 0, 0, 0, 1], "the upgrades it had just before moving up");
+    // Three more and it is the tier-1 ship it once was.
     for _ in 0..3 {
         kill(&mut world);
     }
-    assert_eq!((world.ships[1].tier, world.ships[1].class), (1, Class::Basic));
-    assert_eq!(world.ships[1].levels, [3, 3, 3, 2, 1, 0, 3, 3], "levels above the tier-1 cap are lost");
-
-    // Three more deaths at tier 1 wipe the upgrades.
-    for _ in 0..3 {
-        kill(&mut world);
-    }
-    assert_eq!(world.ships[1].levels, [0; 8]);
-    assert_eq!(world.ships[1].tier, 1);
+    assert_eq!((world.ships[0].tier, world.ships[0].class, world.ships[0].levels), (1, Class::Basic, [3, 1, 0, 2, 0, 0, 0, 3]));
 }
 
 #[test]
