@@ -4,14 +4,15 @@ mod map;
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Icon, Selectable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
-use swarm_sim::{Class, Config, Controller, HybridBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, UPGRADES, Upgrade, World, observe};
+use swarm_sim::{Class, Config, Controller, HybridBot, ModelBot, Net, Order, OrderKind, Replay, ScriptedBot, ScriptedCommander, UPGRADES, Upgrade, World, observe};
 #[cfg(test)]
 use swarm_sim::Vec2;
 
@@ -66,6 +67,51 @@ fn order_name(kind: OrderKind) -> &'static str {
     }
 }
 
+/// Watching training: every team flies on the newest policy saved under a directory.
+struct Watch {
+    dir: PathBuf,
+    /// The policy file in use and when it was written.
+    loaded: Option<(PathBuf, SystemTime)>,
+    checked: Instant,
+    /// When the current match ended, to pause briefly before the next one.
+    ended: Option<Instant>,
+}
+
+impl Watch {
+    /// The most recently written `policy.swp` one level under the directory.
+    fn newest(dir: &Path) -> Option<(PathBuf, SystemTime)> {
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|run| {
+                let path = run.ok()?.path().join("policy.swp");
+                let written = std::fs::metadata(&path).ok()?.modified().ok()?;
+                Some((path, written))
+            })
+            .max_by_key(|(_, written)| *written)
+    }
+
+    /// The last training line of the run's metrics, boiled down to the numbers worth watching.
+    fn report(policy: &Path) -> String {
+        let run = policy.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let metrics = policy.with_file_name("metrics.jsonl");
+        let text = std::fs::read_to_string(metrics).unwrap_or_default();
+        let Some(line) = text.lines().rev().find(|l| l.contains("\"kind\": \"train\"") && l.contains("\"win_rate\"")) else {
+            return format!("Przebieg {run}: trening jeszcze nic nie zapisał.");
+        };
+        let number = |key: &str| -> Option<f64> {
+            let rest = &line[line.find(&format!("\"{key}\": "))? + key.len() + 4..];
+            rest[..rest.find([',', '}']).unwrap_or(rest.len())].trim().parse().ok()
+        };
+        format!(
+            "Przebieg {run}, aktualizacja {:.0}: w treningu wygrywa {:.0}% meczów, mecz trwa {:.1} min, {:.1} poziomu ulepszeń na statek.",
+            number("update").unwrap_or(0.0),
+            number("win_rate").unwrap_or(0.0) * 100.0,
+            number("minutes").unwrap_or(0.0),
+            number("levels").unwrap_or(0.0),
+        )
+    }
+}
+
 struct Game {
     world: World,
     seed: u64,
@@ -73,6 +119,8 @@ struct Game {
     pilots: Vec<Box<dyn Controller>>,
     /// Set when a trained network flies your fleet instead of the scripted bot.
     model: Option<Arc<Net>>,
+    /// Set when the window is showing training live.
+    watch: Option<Watch>,
     commander: ScriptedCommander,
     /// What has been played so far, ready to save.
     recording: Replay,
@@ -114,6 +162,7 @@ impl Game {
             },
             pilots: (0..world.ships.len()).map(|i| Box::new(ScriptedBot::for_ship(i)) as Box<dyn Controller>).collect(),
             model: None,
+            watch: None,
             world,
             seed,
             commander: ScriptedCommander::new(seed),
@@ -128,9 +177,53 @@ impl Game {
         }
     }
 
-    /// Orders are given in a live match, not while watching a replay.
+    /// Orders are given in a live match, not while watching a replay or training.
     fn takes_orders(&self) -> bool {
-        self.playback.is_none()
+        self.playback.is_none() && self.watch.is_none()
+    }
+
+    /// Shows training live: every ship of every team flies on the newest policy under `dir`.
+    fn watching(seed: u64, dir: PathBuf) -> Self {
+        let mut game = Game::new(seed, None);
+        game.watch = Some(Watch { dir, loaded: None, checked: Instant::now(), ended: None });
+        game.status = "Czekam na pierwszy zapisany model (uruchom train/live.sh obok treningu).".into();
+        game.reload();
+        game
+    }
+
+    /// Starts a fresh match on the newest saved policy, if there is one to load.
+    fn reload(&mut self) {
+        let Some(watch) = &self.watch else { return };
+        let Some((path, written)) = Watch::newest(&watch.dir) else { return };
+        // A file caught mid-write fails to load; keep what is playing and try again later.
+        let Ok(net) = Net::load(&path) else { return };
+        let net = Arc::new(net);
+        let seed = self.seed.wrapping_add(1);
+        let mut fresh = Game::new(seed, None);
+        fresh.pilots = (0..fresh.world.ships.len()).map(|_| Box::new(ModelBot::new(net.clone(), ModelBot::HOLD)) as Box<dyn Controller>).collect();
+        fresh.status = Watch::report(&path);
+        fresh.watch = Some(Watch { dir: watch.dir.clone(), loaded: Some((path, written)), checked: Instant::now(), ended: None });
+        *self = Game { map_bounds: self.map_bounds.clone(), speed: self.speed, paused: self.paused, ..fresh };
+    }
+
+    /// While watching training: move on to a newer policy once the match in progress has had its time.
+    fn follow_training(&mut self) {
+        let ticks = self.world.tick;
+        let done = self.world.done();
+        let Some(watch) = &mut self.watch else { return };
+        if done && watch.ended.is_none() {
+            watch.ended = Some(Instant::now());
+        }
+        if watch.checked.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        watch.checked = Instant::now();
+        let newer = Watch::newest(&watch.dir).is_some_and(|(path, written)| watch.loaded.as_ref() != Some(&(path, written)));
+        // Leave a finished match on screen for a moment; cut a running one short only after 20 s of play.
+        let rested = watch.ended.is_some_and(|at| at.elapsed() > Duration::from_secs(3));
+        if rested || (newer && (watch.loaded.is_none() || ticks > 600)) {
+            self.reload();
+        }
     }
 
     fn running(&self) -> bool {
@@ -146,6 +239,7 @@ impl Game {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        self.follow_training();
         if !self.running() {
             return;
         }
@@ -183,7 +277,7 @@ impl Game {
                 self.status = format!("Powtórka rozjechała się z nagraniem w ticku {}.", self.world.tick);
             }
         }
-        if self.world.done() {
+        if self.world.done() && self.watch.is_none() {
             self.status = match self.world.winner() {
                 Some(team) => format!("Koniec meczu. Wygrywają {}: ich baza została jako jedyna.", TEAM_NAMES[team as usize % TEAM_NAMES.len()]),
                 None => "Koniec czasu. Nikt nie zniszczył wszystkich cudzych baz.".into(),
@@ -244,6 +338,9 @@ impl Game {
     }
 
     fn restart(&mut self) {
+        if self.watch.is_some() {
+            return self.reload();
+        }
         let seed = self.seed.wrapping_add(1);
         let fresh = match self.model.clone() {
             Some(net) => Game::with_model(seed, net),
@@ -270,10 +367,11 @@ impl Game {
             let base_text = if base.alive() { format!("{:.0}", base.hp) } else { "zniszczona".to_string() };
             let name = TEAM_NAMES[t % TEAM_NAMES.len()];
             let crystals: u32 = self.world.ships.iter().filter(|s| s.team == t as u8).map(|s| s.collected).sum();
-            let who = match (t as u8 == MY_TEAM, self.model.is_some()) {
-                (true, true) => format!("{name} (Ty, model)"),
-                (true, false) => format!("{name} (Ty)"),
-                (false, _) => format!("{name} (skrypt)"),
+            let who = match (self.watch.is_some(), t as u8 == MY_TEAM, self.model.is_some()) {
+                (true, _, _) => format!("{name} (model)"),
+                (_, true, true) => format!("{name} (Ty, model)"),
+                (_, true, false) => format!("{name} (Ty)"),
+                (_, false, _) => format!("{name} (skrypt)"),
             };
             div()
                 .flex()
@@ -429,7 +527,9 @@ impl Game {
                         cx.notify();
                     }))),
             )
-            .child(div().text_color(muted).child(if self.playback.is_some() {
+            .child(div().text_color(muted).child(if self.watch.is_some() {
+                "Podgląd treningu: wszystkie drużyny lecą na najnowszym modelu (rozkazy wyłączone)"
+            } else if self.playback.is_some() {
                 "Powtórka (rozkazy wyłączone)"
             } else if self.model.is_some() {
                 "Rozkaz (Kop: leci model; pozostałe: skrypt)"
@@ -462,7 +562,7 @@ impl Game {
 impl Render for Game {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.advance();
-        if self.running() {
+        if self.running() || self.watch.is_some() {
             window.request_animation_frame();
         }
         let world = self.world.clone();
@@ -503,6 +603,7 @@ fn main() {
     let mut seed = 1;
     let mut playback = None;
     let mut model = None;
+    let mut watch = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match (arg.as_str(), args.next()) {
@@ -513,15 +614,17 @@ fn main() {
             ("--model", Some(path)) => {
                 model = Some(Arc::new(Net::load(&path).unwrap_or_else(|e| fail(&format!("cannot read policy {path}: {e}")))))
             }
-            _ => fail("usage: swarm-gui [--seed N] [--replay FILE | --model POLICY.swp]"),
+            ("--watch", Some(dir)) => watch = Some(PathBuf::from(dir)),
+            _ => fail("usage: swarm-gui [--seed N] [--replay FILE | --model POLICY.swp | --watch RUNS_DIR]"),
         }
     }
     application().with_assets(assets::Assets).run(move |cx| {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         open_window(WindowOptions::default(), cx, move |_, cx| {
-            cx.new(|_| match model {
-                Some(net) if playback.is_none() => Game::with_model(seed, net),
+            cx.new(|_| match (watch, model) {
+                (Some(dir), _) => Game::watching(seed, dir),
+                (None, Some(net)) if playback.is_none() => Game::with_model(seed, net),
                 _ => Game::new(seed, playback),
             })
         })
